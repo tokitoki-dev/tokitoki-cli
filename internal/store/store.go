@@ -1,0 +1,201 @@
+package store
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+
+	"github.com/labx/tracklm-goagent/internal/agent"
+)
+
+const (
+	dirName      = "TrackLM"
+	configFile   = "config.json"
+	queueFile    = "queue.jsonl"
+	tokenFile    = "agent.token"
+	fileMode     = 0o600
+	directoryMod = 0o700
+)
+
+type FileStore struct {
+	dir string
+	mu  sync.Mutex
+}
+
+func DefaultDataDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, dirName), nil
+}
+
+func Open(dir string) (*FileStore, error) {
+	if err := os.MkdirAll(dir, directoryMod); err != nil {
+		return nil, err
+	}
+	return &FileStore{dir: dir}, nil
+}
+
+func (s *FileStore) Token() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.dir, tokenFile)
+	token, err := os.ReadFile(path)
+	if err == nil {
+		return string(token), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	generated, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.WriteFile(path, []byte(generated), fileMode); err != nil {
+		return "", err
+	}
+
+	return generated, nil
+}
+
+func (s *FileStore) LoadSettings() (agent.Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var settings agent.Settings
+	data, err := os.ReadFile(filepath.Join(s.dir, configFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+
+	return settings, json.Unmarshal(data, &settings)
+}
+
+func (s *FileStore) SaveSettings(settings agent.Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return writeFileAtomic(filepath.Join(s.dir, configFile), append(data, '\n'))
+}
+
+func (s *FileStore) AppendHeartbeat(heartbeat agent.Heartbeat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := json.Marshal(heartbeat)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(filepath.Join(s.dir, queueFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, fileMode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+
+	return file.Sync()
+}
+
+func (s *FileStore) Heartbeats() ([]agent.Heartbeat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.readHeartbeatsLocked()
+}
+
+func (s *FileStore) ReplaceHeartbeats(heartbeats []agent.Heartbeat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.dir, queueFile)
+	if len(heartbeats) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+
+	var data []byte
+	for _, heartbeat := range heartbeats {
+		line, err := json.Marshal(heartbeat)
+		if err != nil {
+			return err
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+
+	return writeFileAtomic(path, data)
+}
+
+func (s *FileStore) QueueSize() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	heartbeats, err := s.readHeartbeatsLocked()
+	if err != nil {
+		return 0, err
+	}
+
+	return len(heartbeats), nil
+}
+
+func (s *FileStore) readHeartbeatsLocked() ([]agent.Heartbeat, error) {
+	file, err := os.Open(filepath.Join(s.dir, queueFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var heartbeats []agent.Heartbeat
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var heartbeat agent.Heartbeat
+		if err := json.Unmarshal(scanner.Bytes(), &heartbeat); err != nil {
+			return nil, err
+		}
+		heartbeats = append(heartbeats, heartbeat)
+	}
+
+	return heartbeats, scanner.Err()
+}
+
+func randomToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, fileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

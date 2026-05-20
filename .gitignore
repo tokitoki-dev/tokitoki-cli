@@ -1,0 +1,5 @@
+/tracklm-agent
+/bin/
+*.log
+.DS_Store
+ccusage/

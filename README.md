@@ -1,0 +1,49 @@
+# TrackLM Go Agent
+
+MVP daemon for TrackLM. It exposes a local HTTP API on `127.0.0.1:39391`, stores heartbeats locally, and can batch-sync them to a configured server.
+
+## Run
+
+```sh
+go run ./cmd/tracklm-agent
+```
+
+The agent stores local data under the OS config directory:
+
+```text
+~/Library/Application Support/TrackLM/
+```
+
+## API
+
+`GET /health` is public. All other endpoints require:
+
+```text
+Authorization: Bearer <token>
+```
+
+The token is generated at:
+
+```text
+~/Library/Application Support/TrackLM/agent.token
+```
+
+Endpoints:
+
+```text
+GET  /status
+GET  /settings
+PUT  /settings
+POST /heartbeat
+POST /sync
+POST /quit
+```
+
+Example heartbeat:
+
+```sh
+curl -X POST http://127.0.0.1:39391/heartbeat \
+  -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/TrackLM/agent.token")" \
+  -H "Content-Type: application/json" \
+  -d '{"entity":"/Users/me/project/main.go","project":"tracklm","language":"Go","editor":"VSCode","type":"file"}'
+```
