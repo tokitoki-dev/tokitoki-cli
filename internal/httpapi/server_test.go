@@ -13,6 +13,7 @@ import (
 
 	"github.com/labx/tracklm-goagent/internal/agent"
 	"github.com/labx/tracklm-goagent/internal/store"
+	"github.com/labx/tracklm-goagent/internal/usagedb"
 )
 
 func TestHeartbeatRequiresToken(t *testing.T) {
@@ -122,6 +123,93 @@ func TestClaudeDailyUsageReturnsProjectDateTokens(t *testing.T) {
 	}
 }
 
+func TestDailyUsageReturnsClaudeAndCodexSummaries(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := dir + "/claude"
+	claudeProjectDir := claudeDir + "/projects/project-a/session-a"
+	if err := os.MkdirAll(claudeProjectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		claudeProjectDir+"/chat.jsonl",
+		[]byte(`{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":10,"output_tokens":5}}}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+
+	codexDir := dir + "/codex"
+	codexSessionDir := codexDir + "/sessions/2026/05/21"
+	if err := os.MkdirAll(codexSessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		codexSessionDir+"/rollout-session-a.jsonl",
+		[]byte(
+			`{"timestamp":"2026-05-21T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}`+"\n"+
+				`{"timestamp":"2026-05-21T01:02:04Z","type":"turn_context","payload":{"cwd":"/Users/me/workspace/tracklm","model":"gpt-5.2-codex"}}`+"\n"+
+				`{"timestamp":"2026-05-21T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":8,"output_tokens":4,"reasoning_output_tokens":1,"total_tokens":24}}}}`+"\n",
+		),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_CONFIG_DIR", codexDir)
+
+	router, token := testRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/usage/scan", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/usage/daily?provider=all", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		Data []struct {
+			Provider    string `json:"provider"`
+			Project     string `json:"project"`
+			TotalTokens uint64 `json:"total_tokens"`
+		} `json:"data"`
+		Sources []struct {
+			Provider string `json:"provider"`
+			Error    string `json:"error"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Sources) != 2 {
+		t.Fatalf("len(sources) = %d, want 2", len(response.Sources))
+	}
+	if len(response.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2: %s", len(response.Data), rec.Body.String())
+	}
+	got := map[string]uint64{}
+	for _, row := range response.Data {
+		got[row.Provider+":"+row.Project] = row.TotalTokens
+	}
+	if got["claude:project-a"] != 15 {
+		t.Fatalf("claude tokens = %d, want 15", got["claude:project-a"])
+	}
+	if got["codex:tracklm"] != 24 {
+		t.Fatalf("codex tokens = %d, want 24", got["codex:tracklm"])
+	}
+}
+
 func testRouter(t *testing.T) (http.Handler, string) {
 	t.Helper()
 
@@ -136,7 +224,15 @@ func testRouter(t *testing.T) (http.Handler, string) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(agent.New(fileStore, logger), logger)
+	usageDB, err := usagedb.Open(t.TempDir() + "/usage.bolt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = usageDB.Close()
+	})
+
+	server := NewServer(agent.New(fileStore, logger), usageDB, logger)
 
 	return server.httpServer.Handler, token
 }

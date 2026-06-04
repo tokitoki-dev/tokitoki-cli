@@ -1,5 +1,12 @@
 /tracklm-agent
 /bin/
+/tmp/
+tmp/
 *.log
+*.db
+*.bolt
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 .DS_Store
 ccusage/
