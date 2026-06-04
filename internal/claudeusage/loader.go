@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ type UsageEntry struct {
 	SessionID         *string      `json:"sessionId"`
 	Timestamp         string       `json:"timestamp"`
 	Version           *string      `json:"version"`
+	Entrypoint        *string      `json:"entrypoint"`
 	Message           UsageMessage `json:"message"`
 	CostUSD           *float64     `json:"costUSD"`
 	RequestID         *string      `json:"requestId"`
@@ -78,6 +80,7 @@ type LoadedEntry struct {
 	SessionID           string     `json:"session_id"`
 	ProjectPath         string     `json:"project_path"`
 	Model               string     `json:"model,omitempty"`
+	Client              string     `json:"client,omitempty"`
 	UsageLimitResetTime *time.Time `json:"usage_limit_reset_time,omitempty"`
 }
 
@@ -140,6 +143,8 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			ProjectPath: entry.ProjectPath,
 			SessionID:   entry.SessionID,
 			Model:       entry.Model,
+			OS:          usage.NormalizeOS(runtime.GOOS),
+			Client:      entry.Client,
 			Usage: usage.TokenUsage{
 				InputTokens:              tokens.InputTokens,
 				OutputTokens:             tokens.OutputTokens,
@@ -404,6 +409,11 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		}
 	}
 
+	client := ""
+	if data.Entrypoint != nil {
+		client = usage.NormalizeClient(usage.ProviderClaude, *data.Entrypoint)
+	}
+
 	return LoadedEntry{
 		Data:                data,
 		Timestamp:           timestamp,
@@ -412,6 +422,7 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		SessionID:           sessionID,
 		ProjectPath:         projectPath,
 		Model:               model,
+		Client:              client,
 		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
 	}, true
 }
