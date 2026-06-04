@@ -55,6 +55,18 @@ provider=all|claude|codex
 project=<project name or path>
 ```
 
+`POST /usage/upload` uploads indexed usage events to:
+
+```text
+<server_url>/api/usage-events/batch
+```
+
+When `server_url` is empty, the agent defaults usage uploads to:
+
+```text
+http://127.0.0.1:9093
+```
+
 Example heartbeat:
 
 ```sh

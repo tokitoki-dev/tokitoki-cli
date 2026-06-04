@@ -111,6 +111,25 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 	return insertEvents(s.db, entries)
 }
 
+func (s *DB) UsageEvents() ([]usage.Entry, error) {
+	entries := make([]usage.Entry, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(usageEventsBucket)
+		return bucket.ForEach(func(_, data []byte) error {
+			var entry usage.Entry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return fmt.Errorf("decode usage event: %w", err)
+			}
+			entries = append(entries, entry)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 func insertEvents(db *bolt.DB, entries []usage.Entry) (int, error) {
 	inserted := 0
 	err := db.Update(func(tx *bolt.Tx) error {
