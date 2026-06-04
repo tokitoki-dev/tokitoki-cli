@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,8 +26,9 @@ type codexLine struct {
 }
 
 type sessionMetaPayload struct {
-	ID  string `json:"id"`
-	CWD string `json:"cwd"`
+	ID         string `json:"id"`
+	CWD        string `json:"cwd"`
+	Originator string `json:"originator"`
 }
 
 type turnContextPayload struct {
@@ -177,6 +179,7 @@ type fileState struct {
 	sessionID   string
 	projectPath string
 	model       string
+	client      string
 }
 
 func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
@@ -200,6 +203,9 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		}
 		if strings.TrimSpace(payload.CWD) != "" {
 			state.projectPath = payload.CWD
+		}
+		if client := usage.NormalizeClient(usage.ProviderCodex, payload.Originator); client != "" {
+			state.client = client
 		}
 		return usage.Entry{}, false
 	case "turn_context":
@@ -235,6 +241,8 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 			ProjectPath: state.projectPath,
 			SessionID:   state.sessionID,
 			Model:       state.model,
+			OS:          usage.NormalizeOS(runtime.GOOS),
+			Client:      state.client,
 			Usage: usage.TokenUsage{
 				InputTokens:           tokens.InputTokens,
 				CachedInputTokens:     tokens.CachedInputTokens,

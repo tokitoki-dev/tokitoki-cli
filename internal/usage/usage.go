@@ -38,7 +38,61 @@ type Entry struct {
 	ProjectPath string     `json:"project_path,omitempty"`
 	SessionID   string     `json:"session_id,omitempty"`
 	Model       string     `json:"model,omitempty"`
-	Usage       TokenUsage `json:"usage"`
+	// OS is the operating system of the machine that produced this entry,
+	// e.g. "macOS", "Windows", "Linux".
+	OS string `json:"os,omitempty"`
+	// Client is the human-readable client the request came from, normalized
+	// across providers, e.g. "Claude Code (VS Code)", "Codex CLI".
+	Client string     `json:"client,omitempty"`
+	Usage  TokenUsage `json:"usage"`
+}
+
+// NormalizeOS maps a Go runtime.GOOS value to a human-readable name.
+func NormalizeOS(goos string) string {
+	switch goos {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	default:
+		return goos
+	}
+}
+
+// NormalizeClient maps a provider-specific source token (Claude's "entrypoint"
+// or Codex's "originator") to a human-readable client name that keeps the
+// provider distinguishable. Unknown tokens are returned as-is so we never lose
+// information; "" stays "".
+func NormalizeClient(provider Provider, raw string) string {
+	token := strings.ToLower(strings.TrimSpace(raw))
+	if token == "" {
+		return ""
+	}
+	switch provider {
+	case ProviderClaude:
+		switch token {
+		case "claude-vscode":
+			return "Claude Code (VS Code)"
+		case "claude-desktop":
+			return "Claude Desktop"
+		case "sdk-cli", "cli":
+			return "Claude CLI"
+		case "sdk-ts", "sdk-py", "sdk-python":
+			return "Claude SDK"
+		}
+	case ProviderCodex:
+		switch token {
+		case "codex_vscode":
+			return "Codex (VS Code)"
+		case "codex desktop", "codex-desktop":
+			return "Codex Desktop"
+		case "codex_cli_rs", "codex_cli", "cli":
+			return "Codex CLI"
+		}
+	}
+	return strings.TrimSpace(raw)
 }
 
 func StableID(parts ...string) string {
