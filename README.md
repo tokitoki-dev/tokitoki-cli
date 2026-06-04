@@ -36,7 +36,23 @@ GET  /settings
 PUT  /settings
 POST /heartbeat
 POST /sync
+GET  /usage/daily
+POST /usage/scan
+GET  /claude/usage/daily
 POST /quit
+```
+
+The agent scans Claude and Codex session files into a local SQLite database at:
+
+```text
+~/Library/Application Support/TrackLM/usage.bolt
+```
+
+`POST /usage/scan` scans changed local session files. `GET /usage/daily` summarizes indexed AI token usage. Query parameters:
+
+```text
+provider=all|claude|codex
+project=<project name or path>
 ```
 
 Example heartbeat:

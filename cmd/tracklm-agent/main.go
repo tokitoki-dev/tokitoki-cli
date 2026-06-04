@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/labx/tracklm-goagent/internal/agent"
 	"github.com/labx/tracklm-goagent/internal/httpapi"
 	"github.com/labx/tracklm-goagent/internal/store"
+	"github.com/labx/tracklm-goagent/internal/usagedb"
+	"github.com/labx/tracklm-goagent/internal/usagescan"
 )
 
 func main() {
@@ -30,8 +33,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	usageDB, err := usagedb.Open(filepath.Join(dataDir, "usage.bolt"))
+	if err != nil {
+		logger.Error("open usage db", "error", err)
+		os.Exit(1)
+	}
+	defer usageDB.Close()
+
 	service := agent.New(fileStore, logger)
-	server := httpapi.NewServer(service, logger)
+	server := httpapi.NewServer(service, usageDB, logger)
+
+	go func() {
+		result, err := usagescan.New(usageDB).ScanAll()
+		if err != nil {
+			logger.Warn("scan usage sessions", "error", err)
+			return
+		}
+		logger.Info("usage session scan complete",
+			"claude_files_seen", result.Claude.FilesSeen,
+			"claude_events_inserted", result.Claude.EventsInserted,
+			"codex_files_seen", result.Codex.FilesSeen,
+			"codex_events_inserted", result.Codex.EventsInserted,
+		)
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {

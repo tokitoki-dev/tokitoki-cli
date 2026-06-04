@@ -1,0 +1,134 @@
+package codexusage
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
+{"timestamp":"2026-06-03T01:02:04Z","type":"turn_context","payload":{"cwd":"/Users/me/workspace/tracklm","model":"gpt-5.2-codex"}}
+{"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":3,"total_tokens":110},"last_token_usage":{"input_tokens":40,"cached_input_tokens":8,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":45}}}}
+{"timestamp":"2026-06-03T01:02:06Z","type":"event_msg","payload":{"type":"agent_message","message":"ignored"}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+
+	entry := entries[0]
+	if entry.Project != "tracklm" {
+		t.Fatalf("project = %q, want tracklm", entry.Project)
+	}
+	if entry.ProjectPath != "/Users/me/workspace/tracklm" {
+		t.Fatalf("project path = %q, want cwd", entry.ProjectPath)
+	}
+	if entry.SessionID != "session-a" {
+		t.Fatalf("session id = %q, want session-a", entry.SessionID)
+	}
+	if entry.Model != "gpt-5.2-codex" {
+		t.Fatalf("model = %q, want gpt-5.2-codex", entry.Model)
+	}
+	if entry.Usage.InputTokens != 40 {
+		t.Fatalf("input tokens = %d, want last usage only", entry.Usage.InputTokens)
+	}
+	if entry.Usage.CachedInputTokens != 8 {
+		t.Fatalf("cached input tokens = %d, want 8", entry.Usage.CachedInputTokens)
+	}
+	if entry.Usage.ReasoningOutputTokens != 2 {
+		t.Fatalf("reasoning output tokens = %d, want 2", entry.Usage.ReasoningOutputTokens)
+	}
+	if entry.Usage.TotalTokens != 45 {
+		t.Fatalf("total tokens = %d, want 45", entry.Usage.TotalTokens)
+	}
+}
+
+func TestUsageFilesIncludesSessionsAndArchivedSessions(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "sessions", "2026", "06", "03", "active.jsonl")
+	archived := filepath.Join(dir, "archived_sessions", "archived.jsonl")
+	mkdirAll(t, filepath.Dir(active))
+	mkdirAll(t, filepath.Dir(archived))
+	writeFile(t, active, "{}")
+	writeFile(t, archived, "{}")
+
+	files := UsageFiles([]string{dir})
+
+	if len(files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(files))
+	}
+}
+
+func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
+{"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}}
+`)
+
+	entries, err := LoadEntriesFromPaths([]string{dir}, "tracklm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+
+	entries, err = LoadEntriesFromPaths([]string{dir}, "/Users/me/workspace/tracklm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries by path) = %d, want 1", len(entries))
+	}
+
+	entries, err = LoadEntriesFromPaths([]string{dir}, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("len(entries for other) = %d, want 0", len(entries))
+	}
+}
+
+func TestCodexPathsUsesConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "codex")
+	mkdirAll(t, filepath.Join(configDir, "sessions"))
+	t.Setenv("CODEX_CONFIG_DIR", configDir)
+
+	paths, err := CodexPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("len(paths) = %d, want 1", len(paths))
+	}
+	if paths[0] != configDir {
+		t.Fatalf("path = %q, want %q", paths[0], configDir)
+	}
+}
+
+func mkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

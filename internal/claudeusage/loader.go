@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/labx/tracklm-goagent/internal/usage"
 )
 
 var ErrNoDataDirs = errors.New("no valid Claude data directories found")
@@ -65,6 +67,11 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 
 type LoadedEntry struct {
 	Data                UsageEntry `json:"data"`
+	ID                  string     `json:"id,omitempty"`
+	SourceFile          string     `json:"source_file,omitempty"`
+	SourceLine          int        `json:"source_line,omitempty"`
+	SourceStart         int64      `json:"source_start,omitempty"`
+	SourceEnd           int64      `json:"source_end,omitempty"`
 	Timestamp           time.Time  `json:"timestamp"`
 	Date                string     `json:"date"`
 	Project             string     `json:"project"`
@@ -98,6 +105,51 @@ func DailyProjectSummaries(projectFilter string) ([]DailyProjectSummary, error) 
 		return nil, err
 	}
 	return SummarizeDailyProjects(entries), nil
+}
+
+func UsageEntries(projectFilter string) ([]usage.Entry, error) {
+	entries, err := LoadEntries(projectFilter)
+	if err != nil {
+		return nil, err
+	}
+	return ConvertEntries(entries), nil
+}
+
+func UsageEntriesFromFile(path string) ([]usage.Entry, error) {
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ConvertEntries(entries), nil
+}
+
+func ConvertEntries(entries []LoadedEntry) []usage.Entry {
+	converted := make([]usage.Entry, 0, len(entries))
+	for _, entry := range entries {
+		tokens := entry.Data.Message.Usage
+		converted = append(converted, usage.Entry{
+			Provider:    usage.ProviderClaude,
+			ID:          entry.ID,
+			SourceFile:  entry.SourceFile,
+			SourceLine:  entry.SourceLine,
+			SourceStart: entry.SourceStart,
+			SourceEnd:   entry.SourceEnd,
+			Timestamp:   entry.Timestamp,
+			Date:        entry.Date,
+			Project:     entry.Project,
+			ProjectPath: entry.ProjectPath,
+			SessionID:   entry.SessionID,
+			Model:       entry.Model,
+			Usage: usage.TokenUsage{
+				InputTokens:              tokens.InputTokens,
+				OutputTokens:             tokens.OutputTokens,
+				CacheCreationInputTokens: tokens.CacheCreationInputTokens,
+				CacheReadInputTokens:     tokens.CacheReadInputTokens,
+				TotalTokens:              tokenTotal(tokens),
+			},
+		})
+	}
+	return converted
 }
 
 func SummarizeDailyProjects(entries []LoadedEntry) []DailyProjectSummary {
@@ -240,12 +292,22 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 	sessionID, projectPath := ExtractSessionParts(path)
 	entries := make([]LoadedEntry, 0)
 	reader := bufio.NewReader(file)
+	lineNumber := 0
+	offset := int64(0)
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			lineNumber++
+			start := offset
+			offset += int64(len(line))
 			line = bytes.TrimRight(line, "\r\n")
 			entry, ok := parseUsageLine(line, project, sessionID, projectPath)
 			if ok {
+				entry.SourceFile = path
+				entry.SourceLine = lineNumber
+				entry.SourceStart = start
+				entry.SourceEnd = offset
+				entry.ID = stableEntryID(entry)
 				entries = append(entries, entry)
 			}
 		}
@@ -352,6 +414,43 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		Model:               model,
 		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
 	}, true
+}
+
+func stableEntryID(entry LoadedEntry) string {
+	tokens := entry.Data.Message.Usage
+	requestID := ""
+	if entry.Data.RequestID != nil {
+		requestID = *entry.Data.RequestID
+	}
+	messageID := ""
+	if entry.Data.Message.ID != nil {
+		messageID = *entry.Data.Message.ID
+	}
+	if requestID != "" || messageID != "" {
+		return usage.StableID(
+			string(usage.ProviderClaude),
+			entry.SessionID,
+			requestID,
+			messageID,
+			entry.Data.Timestamp,
+			entry.Model,
+			strconv.FormatUint(tokens.InputTokens, 10),
+			strconv.FormatUint(tokens.OutputTokens, 10),
+			strconv.FormatUint(tokens.CacheCreationInputTokens, 10),
+			strconv.FormatUint(tokens.CacheReadInputTokens, 10),
+		)
+	}
+	return usage.StableID(
+		string(usage.ProviderClaude),
+		entry.SourceFile,
+		strconv.Itoa(entry.SourceLine),
+		entry.Data.Timestamp,
+		entry.Model,
+		strconv.FormatUint(tokens.InputTokens, 10),
+		strconv.FormatUint(tokens.OutputTokens, 10),
+		strconv.FormatUint(tokens.CacheCreationInputTokens, 10),
+		strconv.FormatUint(tokens.CacheReadInputTokens, 10),
+	)
 }
 
 func isValidUsageEntry(data UsageEntry) bool {
