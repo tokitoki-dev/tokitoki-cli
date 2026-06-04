@@ -16,6 +16,7 @@ import (
 	"github.com/labx/tracklm-goagent/internal/store"
 	"github.com/labx/tracklm-goagent/internal/usagedb"
 	"github.com/labx/tracklm-goagent/internal/usagescan"
+	"github.com/labx/tracklm-goagent/internal/usageupload"
 )
 
 func main() {
@@ -55,6 +56,38 @@ func main() {
 			"codex_files_seen", result.Codex.FilesSeen,
 			"codex_events_inserted", result.Codex.EventsInserted,
 		)
+
+		events, err := usageDB.UsageEvents()
+		if err != nil {
+			logger.Warn("load usage events for upload", "error", err)
+			return
+		}
+
+		settings, err := service.Settings()
+		if err != nil {
+			logger.Warn("load settings for usage upload", "error", err)
+			return
+		}
+
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		response, err := usageupload.Upload(uploadCtx, settings, events)
+		if err != nil {
+			logger.Warn("upload usage events",
+				"error", err,
+				"events", len(events),
+				"server_url", uploadServerURL(settings.ServerURL),
+			)
+			return
+		}
+
+		logger.Info("usage events upload complete",
+			"events", len(events),
+			"accepted", len(response.Accepted),
+			"duplicate", len(response.Duplicate),
+			"server_url", uploadServerURL(settings.ServerURL),
+		)
 	}()
 
 	errCh := make(chan error, 1)
@@ -86,4 +119,11 @@ func main() {
 		logger.Error("shutdown server", "error", err)
 		os.Exit(1)
 	}
+}
+
+func uploadServerURL(serverURL string) string {
+	if serverURL != "" {
+		return serverURL
+	}
+	return usageupload.DefaultServerURL
 }

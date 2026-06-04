@@ -15,6 +15,7 @@ import (
 	"github.com/labx/tracklm-goagent/internal/usage"
 	"github.com/labx/tracklm-goagent/internal/usagedb"
 	"github.com/labx/tracklm-goagent/internal/usagescan"
+	"github.com/labx/tracklm-goagent/internal/usageupload"
 )
 
 const defaultAddr = "127.0.0.1:39391"
@@ -53,6 +54,7 @@ func NewServer(agent *agent.Agent, usageDB *usagedb.DB, logger *slog.Logger) *Se
 	authorized.POST("/sync", server.sync)
 	authorized.GET("/usage/daily", server.dailyUsage)
 	authorized.POST("/usage/scan", server.scanUsage)
+	authorized.POST("/usage/upload", server.uploadUsage)
 	authorized.GET("/claude/usage/daily", server.claudeDailyUsage)
 	authorized.POST("/quit", server.quit)
 
@@ -200,6 +202,35 @@ func (s *Server) scanUsage(c *gin.Context) {
 	})
 }
 
+func (s *Server) uploadUsage(c *gin.Context) {
+	settings, err := s.agent.Settings()
+	if err != nil {
+		errorJSON(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	events, err := s.usageDB.UsageEvents()
+	if err != nil {
+		errorJSON(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	response, err := usageupload.Upload(c.Request.Context(), settings, events)
+	if err != nil {
+		errorJSON(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         true,
+		"batch_id":   response.BatchID,
+		"events":     len(events),
+		"accepted":   len(response.Accepted),
+		"duplicate":  len(response.Duplicate),
+		"server_url": firstNonEmpty(settings.ServerURL, usageupload.DefaultServerURL),
+	})
+}
+
 func (s *Server) claudeDailyUsage(c *gin.Context) {
 	project := c.Query("project")
 	paths, err := claudeusage.ClaudePaths()
@@ -223,6 +254,15 @@ func (s *Server) quit(c *gin.Context) {
 		close(s.quitCh)
 	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func errorJSON(c *gin.Context, status int, err error) {
