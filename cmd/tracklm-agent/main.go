@@ -27,11 +27,12 @@ const (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	dataDir, err := store.DefaultDataDir()
+	dataDir, err := store.InitializeDataDir()
 	if err != nil {
-		logger.Error("resolve data dir", "error", err)
+		logger.Error("initialize data dir", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("tracklm agent data dir ready", "dir", dataDir)
 
 	fileStore, err := store.Open(dataDir)
 	if err != nil {
@@ -39,7 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	usageDB, err := usagedb.Open(filepath.Join(dataDir, "usage.bolt"))
+	usageDB, err := usagedb.Open(filepath.Join(dataDir, store.UsageDBFile))
 	if err != nil {
 		logger.Error("open usage db", "error", err)
 		os.Exit(1)

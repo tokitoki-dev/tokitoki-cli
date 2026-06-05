@@ -8,10 +8,28 @@ MVP daemon for TrackLM. It exposes a local HTTP API on `127.0.0.1:39391`, stores
 go run ./cmd/tracklm-agent
 ```
 
-The agent stores local data under the OS config directory:
+On startup, the agent creates a local data directory. By default it uses:
 
 ```text
-~/Library/Application Support/TrackLM/
+~/.goagent/
+```
+
+This directory name is configured in Go code at `internal/config/config.go`.
+Change `config.DataDirName` and rebuild the agent if the default needs to be
+different.
+
+At startup the agent also copies existing files from the old
+`~/Library/Application Support/TrackLM/` directory when the new directory does
+not already contain them.
+
+Important files in the data directory:
+
+```text
+api_key       shared server API key used for uploads
+agent.token   local loopback API token
+config.json   non-secret agent settings
+queue.jsonl   queued heartbeat data
+usage.bolt    indexed local usage database
 ```
 
 ## API
@@ -25,7 +43,7 @@ Authorization: Bearer <token>
 The token is generated at:
 
 ```text
-~/Library/Application Support/TrackLM/agent.token
+~/.goagent/agent.token
 ```
 
 Endpoints:
@@ -42,10 +60,10 @@ GET  /claude/usage/daily
 POST /quit
 ```
 
-The agent scans Claude and Codex session files into a local SQLite database at:
+The agent scans Claude and Codex session files into a local BoltDB database at:
 
 ```text
-~/Library/Application Support/TrackLM/usage.bolt
+~/.goagent/usage.bolt
 ```
 
 `POST /usage/scan` scans changed local session files. `GET /usage/daily` summarizes indexed AI token usage. Query parameters:
@@ -71,7 +89,7 @@ Example heartbeat:
 
 ```sh
 curl -X POST http://127.0.0.1:39391/heartbeat \
-  -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/TrackLM/agent.token")" \
+  -H "Authorization: Bearer $(cat "$HOME/.goagent/agent.token")" \
   -H "Content-Type: application/json" \
   -d '{"entity":"/Users/me/project/main.go","project":"tracklm","language":"Go","editor":"VSCode","type":"file"}'
 ```
