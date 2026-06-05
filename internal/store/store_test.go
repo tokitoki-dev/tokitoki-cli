@@ -33,7 +33,7 @@ func TestSaveSettingsStoresAPIKeySeparately(t *testing.T) {
 	}
 
 	settings := agent.Settings{
-		APIKey:    "tracklm_test_key",
+		APIKey:    "tokitoki_test_key",
 		ServerURL: "http://127.0.0.1:9093",
 	}
 	if err := fileStore.SaveSettings(settings); err != nil {
@@ -73,7 +73,7 @@ func TestLoadSettingsMigratesAPIKeyFromConfig(t *testing.T) {
 	}
 
 	settings := agent.Settings{
-		APIKey:    "tracklm_legacy_key",
+		APIKey:    "tokitoki_legacy_key",
 		ServerURL: "http://127.0.0.1:9093",
 	}
 	data, err := json.Marshal(settings)

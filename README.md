@@ -1,6 +1,6 @@
-# TrackLM Go Agent
+# TokiToki Go Agent
 
-MVP daemon for TrackLM. It exposes a local HTTP API on `127.0.0.1:39391`, stores heartbeats locally, and can batch-sync them to a configured server.
+MVP daemon for TokiToki. It exposes a local HTTP API on `127.0.0.1:39391`, stores heartbeats locally, and can batch-sync them to a configured server.
 
 ## Run
 
@@ -91,5 +91,5 @@ Example heartbeat:
 curl -X POST http://127.0.0.1:39391/heartbeat \
   -H "Authorization: Bearer $(cat "$HOME/.goagent/agent.token")" \
   -H "Content-Type: application/json" \
-  -d '{"entity":"/Users/me/project/main.go","project":"tracklm","language":"Go","editor":"VSCode","type":"file"}'
+  -d '{"entity":"/Users/me/project/main.go","project":"tokitoki","language":"Go","editor":"VSCode","type":"file"}'
 ```

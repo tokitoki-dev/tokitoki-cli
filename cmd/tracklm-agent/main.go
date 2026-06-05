@@ -32,7 +32,7 @@ func main() {
 		logger.Error("initialize data dir", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("tracklm agent data dir ready", "dir", dataDir)
+	logger.Info("tokitoki agent data dir ready", "dir", dataDir)
 
 	fileStore, err := store.Open(dataDir)
 	if err != nil {
@@ -60,7 +60,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("tracklm agent listening", "addr", server.Addr())
+		logger.Info("tokitoki agent listening", "addr", server.Addr())
 		errCh <- server.ListenAndServe()
 	}()
 
