@@ -6,15 +6,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/labx/tracklm-goagent/internal/agent"
+	"github.com/labx/tracklm-goagent/internal/config"
 )
 
 const (
-	dirName      = "TrackLM"
+	UsageDBFile  = "usage.bolt"
+	apiKeyFile   = "api_key"
 	configFile   = "config.json"
 	queueFile    = "queue.jsonl"
 	tokenFile    = "agent.token"
@@ -28,11 +32,25 @@ type FileStore struct {
 }
 
 func DefaultDataDir() (string, error) {
-	base, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, dirName), nil
+	return filepath.Join(home, config.DataDirName), nil
+}
+
+func InitializeDataDir() (string, error) {
+	dir, err := DefaultDataDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, directoryMod); err != nil {
+		return "", err
+	}
+	if err := migrateLegacyDataDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func Open(dir string) (*FileStore, error) {
@@ -74,25 +92,46 @@ func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	var settings agent.Settings
 	data, err := os.ReadFile(filepath.Join(s.dir, configFile))
 	if errors.Is(err, os.ErrNotExist) {
-		return settings, nil
-	}
-	if err != nil {
+		err = nil
+	} else if err != nil {
+		return settings, err
+	} else if err := json.Unmarshal(data, &settings); err != nil {
 		return settings, err
 	}
 
-	return settings, json.Unmarshal(data, &settings)
+	apiKey, err := s.apiKeyLocked()
+	if err != nil {
+		return settings, err
+	}
+	if apiKey != "" {
+		settings.APIKey = apiKey
+		return settings, nil
+	}
+
+	if settings.APIKey != "" {
+		if err := s.saveAPIKeyLocked(settings.APIKey); err != nil {
+			return settings, err
+		}
+		if err := s.saveConfigLocked(agent.Settings{
+			ServerURL: settings.ServerURL,
+		}); err != nil {
+			return settings, err
+		}
+	}
+	return settings, nil
 }
 
 func (s *FileStore) SaveSettings(settings agent.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
+	if err := s.saveAPIKeyLocked(settings.APIKey); err != nil {
 		return err
 	}
 
-	return writeFileAtomic(filepath.Join(s.dir, configFile), append(data, '\n'))
+	configSettings := settings
+	configSettings.APIKey = ""
+	return s.saveConfigLocked(configSettings)
 }
 
 func (s *FileStore) AppendHeartbeat(heartbeat agent.Heartbeat) error {
@@ -184,6 +223,38 @@ func (s *FileStore) readHeartbeatsLocked() ([]agent.Heartbeat, error) {
 	return heartbeats, scanner.Err()
 }
 
+func (s *FileStore) apiKeyLocked() (string, error) {
+	data, err := os.ReadFile(filepath.Join(s.dir, apiKeyFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func (s *FileStore) saveAPIKeyLocked(apiKey string) error {
+	path := filepath.Join(s.dir, apiKeyFile)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeFileAtomic(path, []byte(apiKey+"\n"))
+}
+
+func (s *FileStore) saveConfigLocked(settings agent.Settings) error {
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return writeFileAtomic(filepath.Join(s.dir, configFile), append(data, '\n'))
+}
+
 func randomToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -198,4 +269,80 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func migrateLegacyDataDir(newDir string) error {
+	legacyDir, err := legacyDataDir()
+	if err != nil {
+		return err
+	}
+
+	same, err := samePath(newDir, legacyDir)
+	if err != nil {
+		return err
+	}
+	if same {
+		return nil
+	}
+
+	if _, err := os.Stat(legacyDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	for _, name := range []string{configFile, queueFile, tokenFile, apiKeyFile, UsageDBFile} {
+		if err := copyIfMissing(filepath.Join(legacyDir, name), filepath.Join(newDir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func legacyDataDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "TrackLM"), nil
+}
+
+func samePath(a, b string) (bool, error) {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		return false, err
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		return false, err
+	}
+	return absA == absB, nil
+}
+
+func copyIfMissing(src, dst string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	srcFile, err := os.Open(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return dstFile.Sync()
 }
