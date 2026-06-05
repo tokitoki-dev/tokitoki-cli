@@ -70,7 +70,7 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
 			InstallationID: "local-go-agent",
-			Name:           "TrackLM Go Agent",
+			Name:           "TokiToki Go Agent",
 		},
 		Events: make([]Event, 0, len(events)),
 	}

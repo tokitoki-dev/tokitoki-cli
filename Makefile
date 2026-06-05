@@ -1,4 +1,4 @@
-APP := tracklm-agent
+APP := tokitoki-agent
 PKG := ./cmd/tracklm-agent
 
 .PHONY: run test race build tidy
