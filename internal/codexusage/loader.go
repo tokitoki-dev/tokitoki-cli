@@ -233,6 +233,18 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 			return usage.Entry{}, false
 		}
 		tokens := payload.Info.LastTokenUsage
+
+		// Codex reports input_tokens as the FULL prompt (cached + non-cached),
+		// with cached_input_tokens being the cached portion. Match ccusage:
+		// real input = input_tokens - cached, and the cached part is cache read.
+		// Otherwise the cached prompt gets double-counted into input.
+		nonCachedInput := tokens.InputTokens
+		if tokens.CachedInputTokens <= tokens.InputTokens {
+			nonCachedInput = tokens.InputTokens - tokens.CachedInputTokens
+		} else {
+			nonCachedInput = 0
+		}
+
 		return usage.Entry{
 			Provider:    usage.ProviderCodex,
 			Timestamp:   timestamp,
@@ -244,8 +256,8 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 			OS:          usage.NormalizeOS(runtime.GOOS),
 			Client:      state.client,
 			Usage: usage.TokenUsage{
-				InputTokens:           tokens.InputTokens,
-				CachedInputTokens:     tokens.CachedInputTokens,
+				InputTokens:           nonCachedInput,
+				CacheReadInputTokens:  tokens.CachedInputTokens,
 				OutputTokens:          tokens.OutputTokens,
 				ReasoningOutputTokens: tokens.ReasoningOutputTokens,
 				TotalTokens:           tokens.TotalTokens,

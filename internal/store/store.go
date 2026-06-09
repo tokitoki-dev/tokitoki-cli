@@ -2,8 +2,6 @@ package store
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,7 +19,6 @@ const (
 	apiKeyFile   = "api_key"
 	configFile   = "config.json"
 	queueFile    = "queue.jsonl"
-	tokenFile    = "agent.token"
 	fileMode     = 0o600
 	directoryMod = 0o700
 )
@@ -58,31 +55,6 @@ func Open(dir string) (*FileStore, error) {
 		return nil, err
 	}
 	return &FileStore{dir: dir}, nil
-}
-
-func (s *FileStore) Token() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	path := filepath.Join(s.dir, tokenFile)
-	token, err := os.ReadFile(path)
-	if err == nil {
-		return string(token), nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-
-	generated, err := randomToken()
-	if err != nil {
-		return "", err
-	}
-
-	if err := os.WriteFile(path, []byte(generated), fileMode); err != nil {
-		return "", err
-	}
-
-	return generated, nil
 }
 
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
@@ -255,14 +227,6 @@ func (s *FileStore) saveConfigLocked(settings agent.Settings) error {
 	return writeFileAtomic(filepath.Join(s.dir, configFile), append(data, '\n'))
 }
 
-func randomToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
 func writeFileAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, fileMode); err != nil {
@@ -291,7 +255,7 @@ func migrateLegacyDataDir(newDir string) error {
 		return err
 	}
 
-	for _, name := range []string{configFile, queueFile, tokenFile, apiKeyFile, UsageDBFile} {
+	for _, name := range []string{configFile, queueFile, apiKeyFile, UsageDBFile} {
 		if err := copyIfMissing(filepath.Join(legacyDir, name), filepath.Join(newDir, name)); err != nil {
 			return err
 		}

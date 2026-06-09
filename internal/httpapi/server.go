@@ -43,20 +43,21 @@ func NewServer(agent *agent.Agent, usageDB *usagedb.DB, logger *slog.Logger) *Se
 		quitCh:  make(chan struct{}),
 	}
 
+	// The agent's HTTP API binds to loopback (127.0.0.1) and only ever serves
+	// the local machine, so it carries no auth — anything running as this user
+	// is already trusted. (Cloud uploads are a separate concern and still
+	// require an API key.)
 	router.GET("/health", server.health)
-
-	authorized := router.Group("/")
-	authorized.Use(server.requireToken)
-	authorized.GET("/status", server.status)
-	authorized.GET("/settings", server.settings)
-	authorized.PUT("/settings", server.saveSettings)
-	authorized.POST("/heartbeat", server.heartbeat)
-	authorized.POST("/sync", server.sync)
-	authorized.GET("/usage/daily", server.dailyUsage)
-	authorized.POST("/usage/scan", server.scanUsage)
-	authorized.POST("/usage/upload", server.uploadUsage)
-	authorized.GET("/claude/usage/daily", server.claudeDailyUsage)
-	authorized.POST("/quit", server.quit)
+	router.GET("/status", server.status)
+	router.GET("/settings", server.settings)
+	router.PUT("/settings", server.saveSettings)
+	router.POST("/heartbeat", server.heartbeat)
+	router.POST("/sync", server.sync)
+	router.GET("/usage/daily", server.dailyUsage)
+	router.POST("/usage/scan", server.scanUsage)
+	router.POST("/usage/upload", server.uploadUsage)
+	router.GET("/claude/usage/daily", server.claudeDailyUsage)
+	router.POST("/quit", server.quit)
 
 	server.httpServer = &http.Server{
 		Addr:              defaultAddr,

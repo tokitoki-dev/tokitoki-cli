@@ -16,22 +16,8 @@ import (
 	"github.com/labx/tracklm-goagent/internal/usagedb"
 )
 
-func TestHeartbeatRequiresToken(t *testing.T) {
-	router, _ := testRouter(t)
-
-	body := bytes.NewBufferString(`{"entity":"/tmp/main.go","type":"file"}`)
-	req := httptest.NewRequest(http.MethodPost, "/heartbeat", body)
-	rec := httptest.NewRecorder()
-
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
-}
-
 func TestHeartbeatQueuesEvent(t *testing.T) {
-	router, token := testRouter(t)
+	router := testRouter(t)
 
 	payload := agent.Heartbeat{
 		Time:     time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC),
@@ -47,7 +33,6 @@ func TestHeartbeatQueuesEvent(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/heartbeat", bytes.NewReader(data))
-	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -57,7 +42,6 @@ func TestHeartbeatQueuesEvent(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
 	rec = httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -91,9 +75,8 @@ func TestClaudeDailyUsageReturnsProjectDateTokens(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
 
-	router, token := testRouter(t)
+	router := testRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/claude/usage/daily", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -157,9 +140,8 @@ func TestDailyUsageReturnsClaudeAndCodexSummaries(t *testing.T) {
 	}
 	t.Setenv("CODEX_CONFIG_DIR", codexDir)
 
-	router, token := testRouter(t)
+	router := testRouter(t)
 	req := httptest.NewRequest(http.MethodPost, "/usage/scan", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -169,7 +151,6 @@ func TestDailyUsageReturnsClaudeAndCodexSummaries(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/usage/daily?provider=all", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
 	rec = httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -210,15 +191,10 @@ func TestDailyUsageReturnsClaudeAndCodexSummaries(t *testing.T) {
 	}
 }
 
-func testRouter(t *testing.T) (http.Handler, string) {
+func testRouter(t *testing.T) http.Handler {
 	t.Helper()
 
 	fileStore, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	token, err := fileStore.Token()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,5 +210,5 @@ func testRouter(t *testing.T) (http.Handler, string) {
 
 	server := NewServer(agent.New(fileStore, logger), usageDB, logger)
 
-	return server.httpServer.Handler, token
+	return server.httpServer.Handler
 }

@@ -428,7 +428,6 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 }
 
 func stableEntryID(entry LoadedEntry) string {
-	tokens := entry.Data.Message.Usage
 	requestID := ""
 	if entry.Data.RequestID != nil {
 		requestID = *entry.Data.RequestID
@@ -437,20 +436,21 @@ func stableEntryID(entry LoadedEntry) string {
 	if entry.Data.Message.ID != nil {
 		messageID = *entry.Data.Message.ID
 	}
-	if requestID != "" || messageID != "" {
+
+	// Deduplicate on message.id + requestId only — matching ccusage. The same
+	// message is replayed across multiple session files (e.g. sidechains), so
+	// keying on anything file/session/timestamp-specific double-counts tokens.
+	if messageID != "" {
 		return usage.StableID(
 			string(usage.ProviderClaude),
-			entry.SessionID,
-			requestID,
 			messageID,
-			entry.Data.Timestamp,
-			entry.Model,
-			strconv.FormatUint(tokens.InputTokens, 10),
-			strconv.FormatUint(tokens.OutputTokens, 10),
-			strconv.FormatUint(tokens.CacheCreationInputTokens, 10),
-			strconv.FormatUint(tokens.CacheReadInputTokens, 10),
+			requestID,
 		)
 	}
+
+	// No message id: can't dedupe across files. Fall back to source position so
+	// the row at least stays stable for a given file.
+	tokens := entry.Data.Message.Usage
 	return usage.StableID(
 		string(usage.ProviderClaude),
 		entry.SourceFile,
