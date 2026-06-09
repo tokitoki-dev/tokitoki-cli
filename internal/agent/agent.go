@@ -36,7 +36,6 @@ type Status struct {
 }
 
 type Store interface {
-	Token() (string, error)
 	LoadSettings() (Settings, error)
 	SaveSettings(Settings) error
 	AppendHeartbeat(Heartbeat) error
@@ -57,10 +56,6 @@ type Agent struct {
 
 func New(store Store, logger *slog.Logger) *Agent {
 	return &Agent{store: store, logger: logger}
-}
-
-func (a *Agent) Token() (string, error) {
-	return a.store.Token()
 }
 
 func (a *Agent) Settings() (Settings, error) {

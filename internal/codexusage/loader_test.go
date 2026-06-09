@@ -37,11 +37,14 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	if entry.Model != "gpt-5.2-codex" {
 		t.Fatalf("model = %q, want gpt-5.2-codex", entry.Model)
 	}
-	if entry.Usage.InputTokens != 40 {
-		t.Fatalf("input tokens = %d, want last usage only", entry.Usage.InputTokens)
+	// input_tokens (40) is the full prompt incl. cache; we report non-cached
+	// input (40 - 8 = 32) and move the cached portion to cache read, matching
+	// ccusage's codex token accounting.
+	if entry.Usage.InputTokens != 32 {
+		t.Fatalf("input tokens = %d, want non-cached input (40-8)", entry.Usage.InputTokens)
 	}
-	if entry.Usage.CachedInputTokens != 8 {
-		t.Fatalf("cached input tokens = %d, want 8", entry.Usage.CachedInputTokens)
+	if entry.Usage.CacheReadInputTokens != 8 {
+		t.Fatalf("cache read tokens = %d, want 8 (cached portion)", entry.Usage.CacheReadInputTokens)
 	}
 	if entry.Usage.ReasoningOutputTokens != 2 {
 		t.Fatalf("reasoning output tokens = %d, want 2", entry.Usage.ReasoningOutputTokens)
