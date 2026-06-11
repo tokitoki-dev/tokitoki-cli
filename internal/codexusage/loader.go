@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labx/tracklm-goagent/internal/langdetect"
 	"github.com/labx/tracklm-goagent/internal/usage"
 )
 
@@ -179,6 +180,7 @@ type fileState struct {
 	sessionID   string
 	projectPath string
 	model       string
+	language    string
 	client      string
 }
 
@@ -190,6 +192,10 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 	var envelope codexLine
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		return usage.Entry{}, false
+	}
+
+	if language := languageFromPayload(envelope.Payload); language != langdetect.Unknown {
+		state.language = language
 	}
 
 	switch envelope.Type {
@@ -253,6 +259,7 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 			ProjectPath: state.projectPath,
 			SessionID:   state.sessionID,
 			Model:       state.model,
+			Language:    stateLanguage(state),
 			OS:          usage.NormalizeOS(runtime.GOOS),
 			Client:      state.client,
 			Usage: usage.TokenUsage{
@@ -266,6 +273,108 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 	default:
 		return usage.Entry{}, false
 	}
+}
+
+func stateLanguage(state *fileState) string {
+	return usage.NormalizeLanguage(state.language)
+}
+
+func languageFromPayload(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return langdetect.Unknown
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return langdetect.Unknown
+	}
+	candidates := candidatesFromGenericValue(payload, 1)
+
+	if arguments, ok := payload["arguments"].(string); ok {
+		var parsed any
+		if err := json.Unmarshal([]byte(arguments), &parsed); err == nil {
+			candidates = append(candidates, candidatesFromGenericValue(parsed, 3)...)
+		} else {
+			candidates = append(candidates, candidatesFromText(arguments, 1)...)
+		}
+	}
+
+	if input, ok := payload["input"].(string); ok {
+		var parsed any
+		if err := json.Unmarshal([]byte(input), &parsed); err == nil {
+			candidates = append(candidates, candidatesFromGenericValue(parsed, 3)...)
+		} else {
+			candidates = append(candidates, candidatesFromText(input, 1)...)
+		}
+	}
+
+	return langdetect.Dominant(candidates)
+}
+
+func candidatesFromGenericValue(value any, weight int) []langdetect.Candidate {
+	candidates := make([]langdetect.Candidate, 0)
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if langdetect.FromPath(key) != langdetect.Unknown {
+				candidates = append(candidates, langdetect.Candidate{Path: key, Weight: weight})
+			}
+
+			lowerKey := strings.ToLower(key)
+			switch {
+			case strings.Contains(lowerKey, "file") || strings.Contains(lowerKey, "path"):
+				candidates = append(candidates, candidatesFromPathValue(child, weight+2)...)
+			case strings.Contains(lowerKey, "command") || lowerKey == "cmd" || strings.Contains(lowerKey, "query") || strings.Contains(lowerKey, "content"):
+				candidates = append(candidates, candidatesFromTextValue(child, weight)...)
+			default:
+				candidates = append(candidates, candidatesFromGenericValue(child, weight)...)
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromGenericValue(child, weight)...)
+		}
+	case string:
+		if langdetect.FromPath(typed) != langdetect.Unknown {
+			candidates = append(candidates, langdetect.Candidate{Path: typed, Weight: weight})
+		}
+	}
+	return candidates
+}
+
+func candidatesFromPathValue(value any, weight int) []langdetect.Candidate {
+	switch typed := value.(type) {
+	case string:
+		if langdetect.FromPath(typed) != langdetect.Unknown {
+			return []langdetect.Candidate{{Path: typed, Weight: weight}}
+		}
+		return candidatesFromText(typed, 1)
+	case []any:
+		candidates := make([]langdetect.Candidate, 0, len(typed))
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromPathValue(child, weight)...)
+		}
+		return candidates
+	default:
+		return candidatesFromGenericValue(value, weight)
+	}
+}
+
+func candidatesFromTextValue(value any, weight int) []langdetect.Candidate {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	return candidatesFromText(text, weight)
+}
+
+func candidatesFromText(text string, weight int) []langdetect.Candidate {
+	paths := langdetect.PathsFromText(text)
+	candidates := make([]langdetect.Candidate, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, langdetect.Candidate{Path: path, Weight: weight})
+	}
+	return candidates
 }
 
 func stableEntryID(entry usage.Entry) string {

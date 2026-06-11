@@ -15,6 +15,8 @@ const (
 	ProviderCodex  Provider = "codex"
 )
 
+const UnknownLanguage = "Unknown"
+
 type TokenUsage struct {
 	InputTokens              uint64 `json:"input_tokens"`
 	OutputTokens             uint64 `json:"output_tokens"`
@@ -26,18 +28,19 @@ type TokenUsage struct {
 }
 
 type Entry struct {
-	Provider    Provider   `json:"provider"`
-	ID          string     `json:"id,omitempty"`
-	SourceFile  string     `json:"source_file,omitempty"`
-	SourceLine  int        `json:"source_line,omitempty"`
-	SourceStart int64      `json:"source_start,omitempty"`
-	SourceEnd   int64      `json:"source_end,omitempty"`
-	Timestamp   time.Time  `json:"timestamp"`
-	Date        string     `json:"date"`
-	Project     string     `json:"project"`
-	ProjectPath string     `json:"project_path,omitempty"`
-	SessionID   string     `json:"session_id,omitempty"`
-	Model       string     `json:"model,omitempty"`
+	Provider    Provider  `json:"provider"`
+	ID          string    `json:"id,omitempty"`
+	SourceFile  string    `json:"source_file,omitempty"`
+	SourceLine  int       `json:"source_line,omitempty"`
+	SourceStart int64     `json:"source_start,omitempty"`
+	SourceEnd   int64     `json:"source_end,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	Date        string    `json:"date"`
+	Project     string    `json:"project"`
+	ProjectPath string    `json:"project_path,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Language    string    `json:"language"`
 	// OS is the operating system of the machine that produced this entry,
 	// e.g. "macOS", "Windows", "Linux".
 	OS string `json:"os,omitempty"`
@@ -93,6 +96,14 @@ func NormalizeClient(provider Provider, raw string) string {
 		}
 	}
 	return strings.TrimSpace(raw)
+}
+
+func NormalizeLanguage(language string) string {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return UnknownLanguage
+	}
+	return language
 }
 
 func StableID(parts ...string) string {

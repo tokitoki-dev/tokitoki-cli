@@ -37,6 +37,9 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	if entry.Model != "gpt-5.2-codex" {
 		t.Fatalf("model = %q, want gpt-5.2-codex", entry.Model)
 	}
+	if entry.Language != "Unknown" {
+		t.Fatalf("language = %q, want Unknown", entry.Language)
+	}
 	// input_tokens (40) is the full prompt incl. cache; we report non-cached
 	// input (40 - 8 = 32) and move the cached portion to cache read, matching
 	// ccusage's codex token accounting.
@@ -51,6 +54,32 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	}
 	if entry.Usage.TotalTokens != 45 {
 		t.Fatalf("total tokens = %d, want 45", entry.Usage.TotalTokens)
+	}
+}
+
+func TestReadUsageFileInfersLanguageFromPriorToolPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
+{"timestamp":"2026-06-03T01:02:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"sed -n '1,20p' internal/httpapi/server.go\",\"workdir\":\"/Users/me/workspace/tracklm\"}"}}
+{"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}}
+{"timestamp":"2026-06-03T01:02:06Z","type":"event_msg","payload":{"type":"patch_apply_end","changes":{"/Users/me/workspace/app/page.tsx":{"status":"modified"}}}}
+{"timestamp":"2026-06-03T01:02:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	if entries[0].Language != "Go" {
+		t.Fatalf("first language = %q, want Go", entries[0].Language)
+	}
+	if entries[1].Language != "TypeScript" {
+		t.Fatalf("second language = %q, want TypeScript", entries[1].Language)
 	}
 }
 
