@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labx/tracklm-goagent/internal/langdetect"
 	"github.com/labx/tracklm-goagent/internal/usage"
 )
 
@@ -32,9 +33,10 @@ type UsageEntry struct {
 }
 
 type UsageMessage struct {
-	Usage TokenUsage `json:"usage"`
-	Model *string    `json:"model"`
-	ID    *string    `json:"id"`
+	Usage   TokenUsage      `json:"usage"`
+	Model   *string         `json:"model"`
+	ID      *string         `json:"id"`
+	Content json.RawMessage `json:"content"`
 }
 
 type TokenUsage struct {
@@ -80,6 +82,7 @@ type LoadedEntry struct {
 	SessionID           string     `json:"session_id"`
 	ProjectPath         string     `json:"project_path"`
 	Model               string     `json:"model,omitempty"`
+	Language            string     `json:"language"`
 	Client              string     `json:"client,omitempty"`
 	UsageLimitResetTime *time.Time `json:"usage_limit_reset_time,omitempty"`
 }
@@ -143,6 +146,7 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			ProjectPath: entry.ProjectPath,
 			SessionID:   entry.SessionID,
 			Model:       entry.Model,
+			Language:    usage.NormalizeLanguage(entry.Language),
 			OS:          usage.NormalizeOS(runtime.GOOS),
 			Client:      entry.Client,
 			Usage: usage.TokenUsage{
@@ -422,9 +426,123 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		SessionID:           sessionID,
 		ProjectPath:         projectPath,
 		Model:               model,
+		Language:            languageFromContent(data.Message.Content),
 		Client:              client,
 		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
 	}, true
+}
+
+type contentBlock struct {
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+	Text  string          `json:"text"`
+}
+
+func languageFromContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return langdetect.Unknown
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return languageFromPathsInText(text)
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return langdetect.Unknown
+	}
+
+	candidates := make([]langdetect.Candidate, 0)
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			candidates = append(candidates, candidatesFromToolInput(block.Input)...)
+		}
+		if block.Text != "" {
+			candidates = append(candidates, candidatesFromTextValue(block.Text, 1)...)
+		}
+	}
+
+	return langdetect.Dominant(candidates)
+}
+
+func candidatesFromToolInput(raw json.RawMessage) []langdetect.Candidate {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var input map[string]any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil
+	}
+	return candidatesFromValue(input, 3)
+}
+
+func candidatesFromValue(value any, weight int) []langdetect.Candidate {
+	candidates := make([]langdetect.Candidate, 0)
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			lowerKey := strings.ToLower(key)
+			if isPathKey(lowerKey) {
+				candidates = append(candidates, candidatesFromPathValue(child, weight)...)
+				continue
+			}
+			if isTextKey(lowerKey) {
+				candidates = append(candidates, candidatesFromTextValue(child, 1)...)
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromValue(child, weight)...)
+		}
+	}
+	return candidates
+}
+
+func candidatesFromPathValue(value any, weight int) []langdetect.Candidate {
+	switch typed := value.(type) {
+	case string:
+		if langdetect.FromPath(typed) != langdetect.Unknown {
+			return []langdetect.Candidate{{Path: typed, Weight: weight}}
+		}
+		return candidatesFromTextValue(typed, 1)
+	case []any:
+		candidates := make([]langdetect.Candidate, 0, len(typed))
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromPathValue(child, weight)...)
+		}
+		return candidates
+	default:
+		return candidatesFromValue(value, weight)
+	}
+}
+
+func candidatesFromTextValue(value any, weight int) []langdetect.Candidate {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	paths := langdetect.PathsFromText(text)
+	candidates := make([]langdetect.Candidate, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, langdetect.Candidate{Path: path, Weight: weight})
+	}
+	return candidates
+}
+
+func isPathKey(key string) bool {
+	return strings.Contains(key, "file") || strings.Contains(key, "path")
+}
+
+func isTextKey(key string) bool {
+	return strings.Contains(key, "command") || strings.Contains(key, "content") || strings.Contains(key, "query")
+}
+
+func languageFromPathsInText(text string) string {
+	paths := langdetect.PathsFromText(text)
+	return langdetect.DominantFromPaths(paths)
 }
 
 func stableEntryID(entry LoadedEntry) string {

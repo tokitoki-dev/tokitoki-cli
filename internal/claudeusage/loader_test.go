@@ -143,11 +143,48 @@ func TestReadUsageFileParsesUsageLines(t *testing.T) {
 	if entry.Model != "claude-sonnet-4-20250514-fast" {
 		t.Fatalf("model = %q, want fast suffix", entry.Model)
 	}
+	if entry.Language != "Unknown" {
+		t.Fatalf("language = %q, want Unknown", entry.Language)
+	}
 	if entry.Date != "2026-05-21" {
 		t.Fatalf("date = %q, want 2026-05-21", entry.Date)
 	}
 	if got := tokenTotal(entry.Data.Message.Usage); got != 20 {
 		t.Fatalf("tokenTotal = %d, want 20", got)
+	}
+}
+
+func TestReadUsageFileInfersLanguageFromToolUseFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/repo/internal/server/server.go"}}]}}`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Language != "Go" {
+		t.Fatalf("language = %q, want Go", entries[0].Language)
+	}
+}
+
+func TestReadUsageFileDoesNotInferLanguageFromCodeFenceWithoutFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, "{\"timestamp\":\"2026-05-21T01:02:03Z\",\"message\":{\"id\":\"msg-1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"content\":[{\"type\":\"text\",\"text\":\"```tsx\\nexport default function Page() {}\\n```\"}]}}\n")
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Language != "Unknown" {
+		t.Fatalf("language = %q, want Unknown", entries[0].Language)
 	}
 }
 

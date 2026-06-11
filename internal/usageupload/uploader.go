@@ -38,6 +38,7 @@ type Event struct {
 	Project                  string `json:"project"`
 	ProjectPathHash          string `json:"project_path_hash,omitempty"`
 	Model                    string `json:"model,omitempty"`
+	Language                 string `json:"language"`
 	OS                       string `json:"os,omitempty"`
 	Client                   string `json:"client,omitempty"`
 	InputTokens              uint64 `json:"input_tokens,omitempty"`
@@ -118,6 +119,7 @@ func convertEvent(entry usage.Entry) Event {
 		Project:                  entry.Project,
 		ProjectPathHash:          hashProjectPath(entry.ProjectPath),
 		Model:                    entry.Model,
+		Language:                 usage.NormalizeLanguage(entry.Language),
 		OS:                       entry.OS,
 		Client:                   entry.Client,
 		InputTokens:              entry.Usage.InputTokens,

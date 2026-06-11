@@ -120,6 +120,7 @@ func (s *DB) UsageEvents() ([]usage.Entry, error) {
 			if err := json.Unmarshal(data, &entry); err != nil {
 				return fmt.Errorf("decode usage event: %w", err)
 			}
+			entry.Language = usage.NormalizeLanguage(entry.Language)
 			entries = append(entries, entry)
 			return nil
 		})
@@ -138,6 +139,7 @@ func insertEvents(db *bolt.DB, entries []usage.Entry) (int, error) {
 			if entry.ID == "" {
 				return fmt.Errorf("usage event id is required")
 			}
+			entry.Language = usage.NormalizeLanguage(entry.Language)
 			key := []byte(entry.ID)
 			if bucket.Get(key) != nil {
 				continue
@@ -165,6 +167,7 @@ func (s *DB) DailyProjectSummaries(providerFilter, projectFilter string) ([]usag
 			if err := json.Unmarshal(data, &entry); err != nil {
 				return fmt.Errorf("decode usage event: %w", err)
 			}
+			entry.Language = usage.NormalizeLanguage(entry.Language)
 			if providerFilter != "" && providerFilter != "all" && string(entry.Provider) != providerFilter {
 				return nil
 			}

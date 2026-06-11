@@ -58,4 +58,12 @@ func TestInsertEventsIgnoresDuplicateIDs(t *testing.T) {
 	if summaries[0].TotalTokens != 3 {
 		t.Fatalf("total tokens = %d, want 3", summaries[0].TotalTokens)
 	}
+
+	events, err := db.UsageEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events[0].Language != usage.UnknownLanguage {
+		t.Fatalf("language = %q, want Unknown", events[0].Language)
+	}
 }
