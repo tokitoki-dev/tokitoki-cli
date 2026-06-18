@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tracklm-goagent/internal/langdetect"
-	"github.com/labx/tracklm-goagent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/langdetect"
+	"github.com/labx/tokitoki-agent/internal/usage"
 )
 
 var ErrNoDataDirs = errors.New("no valid Codex data directories found")

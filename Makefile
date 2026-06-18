@@ -1,10 +1,7 @@
-APP := tokitoki-agent
-PKG := ./cmd/tracklm-agent
+APP := tokitoki
+PKG := ./cmd/tokitoki
 
-.PHONY: run test race build tidy
-
-run:
-	go run $(PKG)
+.PHONY: test race build tidy cross
 
 test:
 	go test ./...
@@ -15,6 +12,17 @@ race:
 build:
 	mkdir -p bin
 	go build -o bin/$(APP) $(PKG)
+
+# Cross-compile the agent for every target platform. Pure Go (CGO disabled),
+# so a single host builds all of them; the native front-ends bundle the
+# matching binary.
+cross:
+	mkdir -p dist
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -o dist/$(APP)-darwin-amd64  $(PKG)
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o dist/$(APP)-darwin-arm64  $(PKG)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/$(APP)-windows-amd64.exe $(PKG)
+	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o dist/$(APP)-linux-amd64   $(PKG)
+	CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -o dist/$(APP)-linux-arm64   $(PKG)
 
 tidy:
 	go mod tidy

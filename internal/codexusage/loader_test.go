@@ -10,8 +10,8 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, `
-{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
-{"timestamp":"2026-06-03T01:02:04Z","type":"turn_context","payload":{"cwd":"/Users/me/workspace/tracklm","model":"gpt-5.2-codex"}}
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tokitoki"}}
+{"timestamp":"2026-06-03T01:02:04Z","type":"turn_context","payload":{"cwd":"/Users/me/workspace/tokitoki","model":"gpt-5.2-codex"}}
 {"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":3,"total_tokens":110},"last_token_usage":{"input_tokens":40,"cached_input_tokens":8,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":45}}}}
 {"timestamp":"2026-06-03T01:02:06Z","type":"event_msg","payload":{"type":"agent_message","message":"ignored"}}
 `)
@@ -25,10 +25,10 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	}
 
 	entry := entries[0]
-	if entry.Project != "tracklm" {
-		t.Fatalf("project = %q, want tracklm", entry.Project)
+	if entry.Project != "tokitoki" {
+		t.Fatalf("project = %q, want tokitoki", entry.Project)
 	}
-	if entry.ProjectPath != "/Users/me/workspace/tracklm" {
+	if entry.ProjectPath != "/Users/me/workspace/tokitoki" {
 		t.Fatalf("project path = %q, want cwd", entry.ProjectPath)
 	}
 	if entry.SessionID != "session-a" {
@@ -61,8 +61,8 @@ func TestReadUsageFileInfersLanguageFromPriorToolPayload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, `
-{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
-{"timestamp":"2026-06-03T01:02:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"sed -n '1,20p' internal/httpapi/server.go\",\"workdir\":\"/Users/me/workspace/tracklm\"}"}}
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tokitoki"}}
+{"timestamp":"2026-06-03T01:02:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"sed -n '1,20p' internal/httpapi/server.go\",\"workdir\":\"/Users/me/workspace/tokitoki\"}"}}
 {"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}}
 {"timestamp":"2026-06-03T01:02:06Z","type":"event_msg","payload":{"type":"patch_apply_end","changes":{"/Users/me/workspace/app/page.tsx":{"status":"modified"}}}}
 {"timestamp":"2026-06-03T01:02:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}}
@@ -104,11 +104,11 @@ func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
 	path := filepath.Join(dir, "sessions", "2026", "06", "03", "rollout-session-a.jsonl")
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, `
-{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}
+{"timestamp":"2026-06-03T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tokitoki"}}
 {"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}}
 `)
 
-	entries, err := LoadEntriesFromPaths([]string{dir}, "tracklm")
+	entries, err := LoadEntriesFromPaths([]string{dir}, "tokitoki")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
 		t.Fatalf("len(entries) = %d, want 1", len(entries))
 	}
 
-	entries, err = LoadEntriesFromPaths([]string{dir}, "/Users/me/workspace/tracklm")
+	entries, err = LoadEntriesFromPaths([]string{dir}, "/Users/me/workspace/tokitoki")
 	if err != nil {
 		t.Fatal(err)
 	}

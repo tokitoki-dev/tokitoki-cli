@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labx/tracklm-goagent/internal/agent"
-	"github.com/labx/tracklm-goagent/internal/config"
+	"github.com/labx/tokitoki-agent/internal/agent"
+	"github.com/labx/tokitoki-agent/internal/config"
 )
 
 func TestDefaultDataDir(t *testing.T) {
