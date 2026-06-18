@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tracklm-goagent/internal/agent"
-	"github.com/labx/tracklm-goagent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/agent"
+	"github.com/labx/tokitoki-agent/internal/usage"
 )
 
 const DefaultServerURL = "http://127.0.0.1:9093"

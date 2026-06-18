@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tracklm-goagent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/usage"
 )
 
 func TestInsertEventsIgnoresDuplicateIDs(t *testing.T) {
@@ -24,7 +24,7 @@ func TestInsertEventsIgnoresDuplicateIDs(t *testing.T) {
 		SourceLine: 1,
 		Timestamp:  time.Date(2026, 6, 4, 1, 2, 3, 0, time.UTC),
 		Date:       "2026-06-04",
-		Project:    "tracklm",
+		Project:    "tokitoki",
 		Usage: usage.TokenUsage{
 			InputTokens:  1,
 			OutputTokens: 2,

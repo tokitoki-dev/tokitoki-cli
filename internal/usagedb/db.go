@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/labx/tracklm-goagent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/usage"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -129,6 +129,19 @@ func (s *DB) UsageEvents() ([]usage.Entry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+// CountEvents returns the number of indexed usage events without decoding them.
+func (s *DB) CountEvents() (int, error) {
+	count := 0
+	err := s.db.View(func(tx *bolt.Tx) error {
+		count = tx.Bucket(usageEventsBucket).Stats().KeyN
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func insertEvents(db *bolt.DB, entries []usage.Entry) (int, error) {

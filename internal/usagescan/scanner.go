@@ -4,10 +4,10 @@ import (
 	"errors"
 	"os"
 
-	"github.com/labx/tracklm-goagent/internal/claudeusage"
-	"github.com/labx/tracklm-goagent/internal/codexusage"
-	"github.com/labx/tracklm-goagent/internal/usage"
-	"github.com/labx/tracklm-goagent/internal/usagedb"
+	"github.com/labx/tokitoki-agent/internal/claudeusage"
+	"github.com/labx/tokitoki-agent/internal/codexusage"
+	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/usagedb"
 )
 
 type Scanner struct {

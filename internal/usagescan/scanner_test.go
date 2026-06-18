@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/labx/tracklm-goagent/internal/usagedb"
+	"github.com/labx/tokitoki-agent/internal/usagedb"
 )
 
 func TestScanAllSkipsUnchangedFiles(t *testing.T) {
@@ -18,7 +18,7 @@ func TestScanAllSkipsUnchangedFiles(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(sessionDir, "rollout-session-a.jsonl"),
 		[]byte(
-			`{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tracklm"}}`+"\n"+
+			`{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tokitoki"}}`+"\n"+
 				`{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}}`+"\n",
 		),
 		0o600,

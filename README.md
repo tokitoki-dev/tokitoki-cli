@@ -1,95 +1,75 @@
-# TokiToki Go Agent
+# TokiToki Agent
 
-MVP daemon for TokiToki. It exposes a local HTTP API on `127.0.0.1:39391`, stores heartbeats locally, and can batch-sync them to a configured server.
+Cross-platform CLI that indexes local AI coding usage (Claude Code, Codex) and
+uploads it to a TokiToki server.
 
-## Run
+The agent is a **stateless command-line tool, not a daemon**. Each invocation
+runs one subcommand, writes a JSON result to stdout, and exits. There is no
+long-lived process and no local HTTP server. Native front-ends (macOS, Windows,
+Linux) are the same one shared agent driven by `exec` + stdout parsing; only the
+UI is rewritten per platform.
 
-```sh
-go run ./cmd/tracklm-agent
-```
+Durable state lives on disk and is shared across invocations, so missing a run
+loses nothing — the next scan catches up incrementally.
 
-On startup, the agent creates a local data directory. By default it uses:
-
-```text
-~/.goagent/
-```
-
-This directory name is configured in Go code at `internal/config/config.go`.
-Change `config.DataDirName` and rebuild the agent if the default needs to be
-different.
-
-At startup the agent also copies existing files from the old
-`~/Library/Application Support/TrackLM/` directory when the new directory does
-not already contain them.
-
-Important files in the data directory:
-
-```text
-api_key       shared server API key used for uploads
-agent.token   local loopback API token
-config.json   non-secret agent settings
-queue.jsonl   queued heartbeat data
-usage.bolt    indexed local usage database
-```
-
-## API
-
-`GET /health` is public. All other endpoints require:
-
-```text
-Authorization: Bearer <token>
-```
-
-The token is generated at:
-
-```text
-~/.goagent/agent.token
-```
-
-Endpoints:
-
-```text
-GET  /status
-GET  /settings
-PUT  /settings
-POST /heartbeat
-POST /sync
-GET  /usage/daily
-POST /usage/scan
-GET  /claude/usage/daily
-POST /quit
-```
-
-The agent scans Claude and Codex session files into a local BoltDB database at:
-
-```text
-~/.goagent/usage.bolt
-```
-
-`POST /usage/scan` scans changed local session files. `GET /usage/daily` summarizes indexed AI token usage. Query parameters:
-
-```text
-provider=all|claude|codex
-project=<project name or path>
-```
-
-`POST /usage/upload` uploads indexed usage events to:
-
-```text
-<server_url>/api/usage-events/batch
-```
-
-When `server_url` is empty, the agent defaults usage uploads to:
-
-```text
-http://127.0.0.1:9093
-```
-
-Example heartbeat:
+## Build
 
 ```sh
-curl -X POST http://127.0.0.1:39391/heartbeat \
-  -H "Authorization: Bearer $(cat "$HOME/.goagent/agent.token")" \
-  -H "Content-Type: application/json" \
-  -d '{"entity":"/Users/me/project/main.go","project":"tokitoki","language":"Go","editor":"VSCode","type":"file"}'
+make build        # host binary into bin/tokitoki
+make cross        # all platforms into dist/ (pure Go, no cgo)
+```
+
+## Data directory
+
+The same path is used on macOS, Windows, and Linux, so every front-end resolves
+it identically as `filepath.Join(os.UserHomeDir(), ".tokitoki")`:
+
+```text
+~/.tokitoki/
+  api_key       shared server API key used for uploads
+  config.json   non-secret agent settings
+  usage.bolt    indexed local usage database
+```
+
+The directory name is configured in `internal/config/config.go`.
+
+## Commands
+
+Every command prints JSON to stdout; logs and errors go to stderr; exit code is
+non-zero on failure.
+
+```text
+tokitoki scan                      Index changed Claude/Codex session files
+tokitoki upload                    Upload indexed usage events to the server
+tokitoki sync                      scan + upload (run this on a schedule)
+tokitoki daily   [--provider all|claude|codex] [--project <name|path>]
+                                   Summarize indexed usage by day/project
+tokitoki claude-daily [--project <name|path>]
+                                   Summarize Claude usage directly from files
+tokitoki config get                Print settings
+tokitoki config set [--api-key <k>] [--server-url <url>]
+                                   Update settings
+tokitoki status                    Print indexed event count, sources, config
+tokitoki help                      Show help
+```
+
+`upload` posts indexed events to `<server_url>/api/usage-events/batch`. When
+`server_url` is empty it defaults to `http://127.0.0.1:9093`.
+
+## How front-ends use it
+
+- **On demand (UI):** the tray/menu-bar app `exec`s e.g. `tokitoki daily
+  --provider all` and renders the JSON.
+- **Background cadence:** an OS scheduler runs `tokitoki sync` on an interval so
+  the server stays current even when no UI is open — register at install time:
+  - macOS: a `launchd` LaunchAgent
+  - Linux: a `systemd --user` timer
+  - Windows: a Task Scheduler task
+
+## Example
+
+```sh
+tokitoki config set --api-key "$KEY" --server-url https://api.example.com
+tokitoki sync
+tokitoki daily --provider all --project tokitoki
 ```
