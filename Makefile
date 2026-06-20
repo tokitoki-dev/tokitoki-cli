@@ -1,7 +1,21 @@
 APP := tokitoki
 PKG := ./cmd/tokitoki
 
-.PHONY: test race build tidy cross
+# Data directories to scan. Override on the command line to point at fixtures,
+# e.g. `make run CLAUDE_DIR=/tmp/claude CODEX_DIR=`. An empty value skips that
+# provider; there is no default location inside the CLI itself.
+CLAUDE_DIR ?= $(HOME)/.claude
+CODEX_DIR  ?= $(HOME)/.codex
+
+.DEFAULT_GOAL := run
+
+.PHONY: run test race build tidy cross
+
+# `make` is the quickest local integration check: build the CLI then run its
+# complete scan-and-upload operation against http://localhost:9093. Pass
+# CLAUDE_DIR / CODEX_DIR to choose which data directories to scan.
+run: build
+	./bin/$(APP) $(if $(CLAUDE_DIR),--claude-dir $(CLAUDE_DIR)) $(if $(CODEX_DIR),--codex-dir $(CODEX_DIR))
 
 test:
 	go test ./...

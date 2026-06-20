@@ -25,9 +25,6 @@ func TestScanAllSkipsUnchangedFiles(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CODEX_CONFIG_DIR", codexDir)
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "missing-claude"))
-
 	db, err := usagedb.Open(filepath.Join(dir, "usage.bolt"))
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +34,7 @@ func TestScanAllSkipsUnchangedFiles(t *testing.T) {
 	})
 
 	scanner := New(db)
-	result, err := scanner.ScanAll()
+	result, err := scanner.Scan("", codexDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +45,7 @@ func TestScanAllSkipsUnchangedFiles(t *testing.T) {
 		t.Fatalf("first events inserted = %d, want 1", result.Codex.EventsInserted)
 	}
 
-	result, err = scanner.ScanAll()
+	result, err = scanner.Scan("", codexDir)
 	if err != nil {
 		t.Fatal(err)
 	}

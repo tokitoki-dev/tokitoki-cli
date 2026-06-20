@@ -15,7 +15,7 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usage"
 )
 
-const DefaultServerURL = "http://127.0.0.1:9093"
+const DefaultServerURL = "http://localhost:9093"
 
 type Payload struct {
 	BatchID string        `json:"batch_id"`
@@ -62,11 +62,6 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 		return Response{OK: true}, nil
 	}
 
-	serverURL := strings.TrimRight(strings.TrimSpace(settings.ServerURL), "/")
-	if serverURL == "" {
-		serverURL = DefaultServerURL
-	}
-
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
@@ -84,7 +79,7 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 		return Response{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/usage-events/batch", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DefaultServerURL+"/api/usage-events/batch", bytes.NewReader(body))
 	if err != nil {
 		return Response{}, err
 	}

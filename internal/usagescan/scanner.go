@@ -23,26 +23,27 @@ func New(db *usagedb.DB) *Scanner {
 	return &Scanner{db: db}
 }
 
-func (s *Scanner) ScanAll() (Result, error) {
+// Scan reads usage files from the directories provided by the caller. An empty
+// directory means that provider is skipped entirely: there is no default
+// location and no fallback. The caller (native client) owns where the data is.
+func (s *Scanner) Scan(claudeDir, codexDir string) (Result, error) {
 	var result Result
 	var errs []error
 
-	claudePaths, err := claudeusage.ClaudePaths()
-	if err == nil {
-		result.Claude, err = s.scanProvider(usage.ProviderClaude, claudeusage.UsageFiles(claudePaths, ""), func(path string) ([]usage.Entry, error) {
-			return claudeusage.UsageEntriesFromFile(path)
-		})
-	}
-	if err != nil && !errors.Is(err, claudeusage.ErrNoDataDirs) {
-		errs = append(errs, err)
+	if claudeDir != "" {
+		var err error
+		result.Claude, err = s.scanProvider(usage.ProviderClaude, claudeusage.UsageFiles([]string{claudeDir}, ""), claudeusage.UsageEntriesFromFile)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	codexPaths, err := codexusage.CodexPaths()
-	if err == nil {
-		result.Codex, err = s.scanProvider(usage.ProviderCodex, codexusage.UsageFiles(codexPaths), codexusage.ReadUsageFile)
-	}
-	if err != nil && !errors.Is(err, codexusage.ErrNoDataDirs) {
-		errs = append(errs, err)
+	if codexDir != "" {
+		var err error
+		result.Codex, err = s.scanProvider(usage.ProviderCodex, codexusage.UsageFiles([]string{codexDir}), codexusage.ReadUsageFile)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	return result, errors.Join(errs...)

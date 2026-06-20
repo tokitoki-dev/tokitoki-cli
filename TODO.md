@@ -15,7 +15,7 @@ P0 — dead scaffolding after the daemon→CLI refactor:
 
 P1 — correctness/robustness:
 
-- [ ] Upload watermark: `upload`/`sync` resend the entire history every run
+- [ ] Upload watermark: every `tokitoki` invocation resends the entire history
   (server dedups). Track an "already uploaded" cursor locally and send only the
   delta. (Related: "summary-level upload state" below.)
 - [ ] Claude streaming token upsert (see legacy note below) — affects count
@@ -33,7 +33,7 @@ P2 — missing basics:
 
 P3 — cross-platform packaging:
 
-- [ ] OS scheduler files running `tokitoki sync`: launchd `.plist`, systemd
+- [ ] OS scheduler files running `tokitoki`: launchd `.plist`, systemd
   `--user` `.timer`/`.service`, Task Scheduler XML.
 - [ ] `AGENT_PROTOCOL.md` documenting each subcommand's stdout JSON contract for
   the native front-ends.

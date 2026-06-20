@@ -97,30 +97,6 @@ type DailyProjectSummary struct {
 	TotalTokens              uint64 `json:"total_tokens"`
 }
 
-func LoadEntries(projectFilter string) ([]LoadedEntry, error) {
-	paths, err := ClaudePaths()
-	if err != nil {
-		return nil, err
-	}
-	return LoadEntriesFromPaths(paths, projectFilter)
-}
-
-func DailyProjectSummaries(projectFilter string) ([]DailyProjectSummary, error) {
-	entries, err := LoadEntries(projectFilter)
-	if err != nil {
-		return nil, err
-	}
-	return SummarizeDailyProjects(entries), nil
-}
-
-func UsageEntries(projectFilter string) ([]usage.Entry, error) {
-	entries, err := LoadEntries(projectFilter)
-	if err != nil {
-		return nil, err
-	}
-	return ConvertEntries(entries), nil
-}
-
 func UsageEntriesFromFile(path string) ([]usage.Entry, error) {
 	entries, err := ReadUsageFile(path)
 	if err != nil {
@@ -212,65 +188,6 @@ func LoadEntriesFromPaths(paths []string, projectFilter string) ([]LoadedEntry, 
 		}
 	}
 	return entries, nil
-}
-
-func ClaudePaths() ([]string, error) {
-	if envPaths, ok := os.LookupEnv("CLAUDE_CONFIG_DIR"); ok {
-		paths := make([]string, 0)
-		seen := map[string]struct{}{}
-		for _, raw := range strings.Split(envPaths, ",") {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
-			path := normalizeClaudeConfigPath(raw)
-			if !dirExists(filepath.Join(path, "projects")) {
-				continue
-			}
-			clean := filepath.Clean(path)
-			if _, exists := seen[clean]; exists {
-				continue
-			}
-			seen[clean] = struct{}{}
-			paths = append(paths, clean)
-		}
-		if len(paths) > 0 {
-			return paths, nil
-		}
-		return nil, fmt.Errorf("%w in CLAUDE_CONFIG_DIR: expected Claude config directories containing projects/, or projects/ directories: %s", ErrNoDataDirs, envPaths)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil, errors.New("home directory is not set")
-	}
-
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg == "" {
-		xdg = filepath.Join(home, ".config")
-	}
-
-	candidates := []string{
-		filepath.Join(xdg, "claude"),
-		filepath.Join(home, ".claude"),
-	}
-	paths := make([]string, 0, len(candidates))
-	seen := map[string]struct{}{}
-	for _, path := range candidates {
-		clean := filepath.Clean(path)
-		if !dirExists(filepath.Join(clean, "projects")) {
-			continue
-		}
-		if _, exists := seen[clean]; exists {
-			continue
-		}
-		seen[clean] = struct{}{}
-		paths = append(paths, clean)
-	}
-	if len(paths) == 0 {
-		return nil, ErrNoDataDirs
-	}
-	return paths, nil
 }
 
 func UsageFiles(paths []string, projectFilter string) []string {
