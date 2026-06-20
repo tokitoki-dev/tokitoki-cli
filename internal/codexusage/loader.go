@@ -52,22 +52,6 @@ type tokenUsagePayload struct {
 	TotalTokens           uint64 `json:"total_tokens"`
 }
 
-func LoadEntries(projectFilter string) ([]usage.Entry, error) {
-	paths, err := CodexPaths()
-	if err != nil {
-		return nil, err
-	}
-	return LoadEntriesFromPaths(paths, projectFilter)
-}
-
-func DailyProjectSummaries(projectFilter string) ([]usage.DailyProjectSummary, error) {
-	entries, err := LoadEntries(projectFilter)
-	if err != nil {
-		return nil, err
-	}
-	return usage.SummarizeDailyProjects(entries), nil
-}
-
 func LoadEntriesFromPaths(paths []string, projectFilter string) ([]usage.Entry, error) {
 	files := UsageFiles(paths)
 	entries := make([]usage.Entry, 0)
@@ -84,42 +68,6 @@ func LoadEntriesFromPaths(paths []string, projectFilter string) ([]usage.Entry, 
 		}
 	}
 	return entries, nil
-}
-
-func CodexPaths() ([]string, error) {
-	if envPaths, ok := os.LookupEnv("CODEX_CONFIG_DIR"); ok {
-		return codexPathsFromCSV(envPaths)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil, errors.New("home directory is not set")
-	}
-	return codexPathsFromCSV(filepath.Join(home, ".codex"))
-}
-
-func codexPathsFromCSV(value string) ([]string, error) {
-	paths := make([]string, 0)
-	seen := map[string]struct{}{}
-	for _, raw := range strings.Split(value, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		path := filepath.Clean(expandHomePath(raw))
-		if !dirExists(filepath.Join(path, "sessions")) && !dirExists(filepath.Join(path, "archived_sessions")) {
-			continue
-		}
-		if _, exists := seen[path]; exists {
-			continue
-		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	if len(paths) == 0 {
-		return nil, ErrNoDataDirs
-	}
-	return paths, nil
 }
 
 func UsageFiles(paths []string) []string {

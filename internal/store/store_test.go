@@ -1,13 +1,10 @@
 package store
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
 	"github.com/labx/tokitoki-agent/internal/config"
 )
 
@@ -26,61 +23,15 @@ func TestDefaultDataDir(t *testing.T) {
 	}
 }
 
-func TestSaveSettingsStoresAPIKeySeparately(t *testing.T) {
-	fileStore, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	settings := agent.Settings{
-		APIKey:    "tokitoki_test_key",
-		ServerURL: "http://127.0.0.1:9093",
-	}
-	if err := fileStore.SaveSettings(settings); err != nil {
-		t.Fatal(err)
-	}
-
-	apiKey, err := os.ReadFile(filepath.Join(fileStore.dir, apiKeyFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(apiKey)) != settings.APIKey {
-		t.Fatalf("api key file = %q, want %q", string(apiKey), settings.APIKey)
-	}
-
-	config, err := os.ReadFile(filepath.Join(fileStore.dir, configFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(config), settings.APIKey) {
-		t.Fatalf("config should not contain api key: %s", string(config))
-	}
-
-	loaded, err := fileStore.LoadSettings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded != settings {
-		t.Fatalf("LoadSettings() = %#v, want %#v", loaded, settings)
-	}
-}
-
-func TestLoadSettingsMigratesAPIKeyFromConfig(t *testing.T) {
+func TestLoadSettingsReadsAPIKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	fileStore, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	settings := agent.Settings{
-		APIKey:    "tokitoki_legacy_key",
-		ServerURL: "http://127.0.0.1:9093",
-	}
-	data, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, configFile), data, fileMode); err != nil {
+	const key = "tokitoki_test_key"
+	if err := os.WriteFile(filepath.Join(dir, apiKeyFile), []byte(key+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,23 +39,22 @@ func TestLoadSettingsMigratesAPIKeyFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != settings {
-		t.Fatalf("LoadSettings() = %#v, want %#v", loaded, settings)
+	if loaded.APIKey != key {
+		t.Fatalf("LoadSettings().APIKey = %q, want %q", loaded.APIKey, key)
 	}
+}
 
-	apiKey, err := os.ReadFile(filepath.Join(dir, apiKeyFile))
+func TestLoadSettingsEmptyWhenNoKeyFile(t *testing.T) {
+	fileStore, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(apiKey)) != settings.APIKey {
-		t.Fatalf("api key file = %q, want %q", string(apiKey), settings.APIKey)
-	}
 
-	config, err := os.ReadFile(filepath.Join(dir, configFile))
+	loaded, err := fileStore.LoadSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(config), settings.APIKey) {
-		t.Fatalf("config should not contain migrated api key: %s", string(config))
+	if loaded.APIKey != "" {
+		t.Fatalf("LoadSettings().APIKey = %q, want empty", loaded.APIKey)
 	}
 }

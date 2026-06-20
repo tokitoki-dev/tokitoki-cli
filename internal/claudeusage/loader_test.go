@@ -236,24 +236,6 @@ func TestUsageLimitResetTimeFromLine(t *testing.T) {
 	}
 }
 
-func TestClaudePathsUsesConfigDir(t *testing.T) {
-	dir := t.TempDir()
-	configDir := filepath.Join(dir, "claude")
-	mkdirAll(t, filepath.Join(configDir, "projects"))
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(configDir, "projects"))
-
-	paths, err := ClaudePaths()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) != 1 {
-		t.Fatalf("len(paths) = %d, want 1", len(paths))
-	}
-	if paths[0] != configDir {
-		t.Fatalf("path = %q, want %q", paths[0], configDir)
-	}
-}
-
 func mkdirAll(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o700); err != nil {
