@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,11 @@ import (
 )
 
 const DefaultServerURL = "http://localhost:9093"
+
+// maxBatchEvents must stay at or below the server's per-batch limit
+// (lib/ingest.ts MAX_BATCH_EVENTS = 5000). Larger uploads are split into
+// several requests; one batch is one server-side transaction.
+const maxBatchEvents = 5000
 
 type Payload struct {
 	BatchID string        `json:"batch_id"`
@@ -62,6 +68,24 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 		return Response{OK: true}, nil
 	}
 
+	result := Response{OK: true}
+	for start := 0; start < len(events); start += maxBatchEvents {
+		end := start + maxBatchEvents
+		if end > len(events) {
+			end = len(events)
+		}
+		resp, err := uploadBatch(ctx, settings, events[start:end])
+		if err != nil {
+			return Response{}, err
+		}
+		result.BatchID = resp.BatchID
+		result.Accepted = append(result.Accepted, resp.Accepted...)
+		result.Duplicate = append(result.Duplicate, resp.Duplicate...)
+	}
+	return result, nil
+}
+
+func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.Entry) (Response, error) {
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
@@ -95,7 +119,8 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return Response{}, fmt.Errorf("usage upload failed: server returned %s", resp.Status)
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return Response{}, fmt.Errorf("usage upload failed: server returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
 
 	var decoded Response
