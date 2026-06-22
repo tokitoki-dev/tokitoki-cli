@@ -44,8 +44,9 @@ type Entry struct {
 	// OS is the operating system of the machine that produced this entry,
 	// e.g. "macOS", "Windows", "Linux".
 	OS string `json:"os,omitempty"`
-	// Client is the human-readable client the request came from, normalized
-	// across providers, e.g. "Claude Code (VS Code)", "Codex CLI".
+	// Client is the human-readable IDE or app source the request came from.
+	// VS Code plugins are normalized across providers, but standalone apps
+	// remain product-specific, e.g. "VS Code", "Codex Desktop", "Claude CLI".
 	Client string     `json:"client,omitempty"`
 	Usage  TokenUsage `json:"usage"`
 }
@@ -65,9 +66,10 @@ func NormalizeOS(goos string) string {
 }
 
 // NormalizeClient maps a provider-specific source token (Claude's "entrypoint"
-// or Codex's "originator") to a human-readable client name that keeps the
-// provider distinguishable. Unknown tokens are returned as-is so we never lose
-// information; "" stays "".
+// or Codex's "originator") to the real IDE/app source. VS Code plugins should
+// not split by agent; standalone CLI/Desktop/SDK sources should remain
+// product-specific.
+// Unknown tokens are returned as-is so we never lose information; "" stays "".
 func NormalizeClient(provider Provider, raw string) string {
 	token := strings.ToLower(strings.TrimSpace(raw))
 	if token == "" {
@@ -77,7 +79,7 @@ func NormalizeClient(provider Provider, raw string) string {
 	case ProviderClaude:
 		switch token {
 		case "claude-vscode":
-			return "Claude Code (VS Code)"
+			return "VS Code"
 		case "claude-desktop":
 			return "Claude Desktop"
 		case "sdk-cli", "cli":
@@ -88,7 +90,7 @@ func NormalizeClient(provider Provider, raw string) string {
 	case ProviderCodex:
 		switch token {
 		case "codex_vscode":
-			return "Codex (VS Code)"
+			return "VS Code"
 		case "codex desktop", "codex-desktop":
 			return "Codex Desktop"
 		case "codex_cli_rs", "codex_cli", "cli":
