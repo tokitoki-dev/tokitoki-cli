@@ -84,6 +84,12 @@ func TestExtractSessionParts(t *testing.T) {
 			wantSessionID:   "session-a",
 			wantProjectPath: "project-a",
 		},
+		{
+			name:            "encoded absolute project path",
+			path:            "/home/me/.claude/projects/-Users-eren-workspace-LABX-relink/session-a.jsonl",
+			wantSessionID:   "session-a",
+			wantProjectPath: filepath.Join(string(filepath.Separator), "Users", "eren", "workspace", "LABX", "relink"),
+		},
 	}
 
 	for _, tt := range tests {
@@ -96,6 +102,14 @@ func TestExtractSessionParts(t *testing.T) {
 				t.Fatalf("projectPath = %q, want %q", projectPath, tt.wantProjectPath)
 			}
 		})
+	}
+}
+
+func TestExtractProjectNormalizesEncodedClaudePath(t *testing.T) {
+	path := "/home/me/.claude/projects/-Users-eren-workspace-LABX-relink/session-a.jsonl"
+
+	if got := ExtractProject(path); got != "relink" {
+		t.Fatalf("ExtractProject() = %q, want relink", got)
 	}
 }
 
