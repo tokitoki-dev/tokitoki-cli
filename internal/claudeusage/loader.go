@@ -257,7 +257,12 @@ func ExtractProject(path string) string {
 		if i+1 >= len(parts) || strings.TrimSpace(parts[i+1]) == "" {
 			return "unknown"
 		}
-		return parts[i+1]
+		projectPath := normalizeClaudeProjectPathParts([]string{parts[i+1]})
+		project := filepath.Base(filepath.Clean(projectPath))
+		if strings.TrimSpace(project) == "" || project == "." || project == string(filepath.Separator) {
+			return "unknown"
+		}
+		return project
 	}
 	return "unknown"
 }
@@ -280,15 +285,11 @@ func ExtractSessionParts(path string) (string, string) {
 		}
 	}
 	if len(relative) == 2 && fileSessionID != "" {
-		return fileSessionID, relative[0]
+		return fileSessionID, normalizeClaudeProjectPathParts(relative[:1])
 	}
 	if len(relative) >= 4 && relative[len(relative)-2] == "subagents" {
 		sessionID := relative[len(relative)-3]
-		projectPath := strings.Join(relative[:len(relative)-3], string(filepath.Separator))
-		if projectPath == "" {
-			projectPath = "Unknown Project"
-		}
-		return sessionID, projectPath
+		return sessionID, normalizeClaudeProjectPathParts(relative[:len(relative)-3])
 	}
 
 	sessionID := "unknown"
@@ -297,9 +298,39 @@ func ExtractSessionParts(path string) (string, string) {
 	}
 	projectPath := "Unknown Project"
 	if len(relative) > 2 {
-		projectPath = strings.Join(relative[:len(relative)-2], string(filepath.Separator))
+		projectPath = normalizeClaudeProjectPathParts(relative[:len(relative)-2])
 	}
 	return sessionID, projectPath
+}
+
+func normalizeClaudeProjectPathParts(parts []string) string {
+	if len(parts) == 0 {
+		return "Unknown Project"
+	}
+	if decoded, ok := decodeClaudeProjectDir(parts[0]); ok {
+		if len(parts) == 1 {
+			return decoded
+		}
+		joined := append([]string{decoded}, parts[1:]...)
+		return filepath.Join(joined...)
+	}
+	projectPath := strings.Join(parts, string(filepath.Separator))
+	if strings.TrimSpace(projectPath) == "" {
+		return "Unknown Project"
+	}
+	return projectPath
+}
+
+func decodeClaudeProjectDir(segment string) (string, bool) {
+	segment = strings.TrimSpace(segment)
+	if !strings.HasPrefix(segment, "-") || len(segment) == 1 {
+		return "", false
+	}
+	decoded := string(filepath.Separator) + strings.ReplaceAll(strings.TrimPrefix(segment, "-"), "-", string(filepath.Separator))
+	if filepath.Clean(decoded) == string(filepath.Separator) {
+		return "", false
+	}
+	return filepath.Clean(decoded), true
 }
 
 func parseUsageLine(line []byte, project, sessionID, projectPath string) (LoadedEntry, bool) {
