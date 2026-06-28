@@ -10,6 +10,7 @@ type Settings struct {
 
 type Store interface {
 	LoadSettings() (Settings, error)
+	SaveAPIKey(apiKey string) error
 }
 
 type Agent struct {
@@ -23,4 +24,8 @@ func New(store Store, logger *slog.Logger) *Agent {
 
 func (a *Agent) Settings() (Settings, error) {
 	return a.store.LoadSettings()
+}
+
+func (a *Agent) SaveAPIKey(apiKey string) error {
+	return a.store.SaveAPIKey(apiKey)
 }

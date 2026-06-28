@@ -24,6 +24,25 @@ type App struct {
 	Out       io.Writer
 }
 
+func (a *App) SetAPIKey(apiKey string) error {
+	if err := a.Agent.SaveAPIKey(apiKey); err != nil {
+		return err
+	}
+	return a.writeJSON(map[string]bool{"ok": true})
+}
+
+func (a *App) GetAPIKey() error {
+	settings, err := a.Agent.Settings()
+	if err != nil {
+		return err
+	}
+	if settings.APIKey == "" {
+		return errors.New("API key is not configured in ~/.tokitoki/api_key")
+	}
+	_, err = fmt.Fprintf(a.Out, "%s\n", settings.APIKey)
+	return err
+}
+
 // Sync scans the selected providers then uploads their events. The CLI avoids
 // emitting counts or summaries: success only means the local files were
 // processed and the server accepted the request.
