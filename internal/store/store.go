@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	UsageDBFile  = "usage.bolt"
-	apiKeyFile   = "api_key"
-	directoryMod = 0o700
+	UsageDBFile   = "usage.bolt"
+	apiKeyFile    = "api_key"
+	directoryMod  = 0o700
+	apiKeyFileMod = 0o600
 )
 
 type FileStore struct {
@@ -48,8 +49,7 @@ func Open(dir string) (*FileStore, error) {
 	return &FileStore{dir: dir}, nil
 }
 
-// LoadSettings reads the API key from the api_key file. The native client owns
-// that file; this CLI only reads it and never writes credentials.
+// LoadSettings reads the API key from the api_key file.
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -62,4 +62,19 @@ func (s *FileStore) LoadSettings() (agent.Settings, error) {
 		return agent.Settings{}, err
 	}
 	return agent.Settings{APIKey: strings.TrimSpace(string(data))}, nil
+}
+
+func (s *FileStore) SaveAPIKey(apiKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return errors.New("API key cannot be empty")
+	}
+	path := filepath.Join(s.dir, apiKeyFile)
+	if err := os.WriteFile(path, []byte(apiKey+"\n"), apiKeyFileMod); err != nil {
+		return err
+	}
+	return os.Chmod(path, apiKeyFileMod)
 }
