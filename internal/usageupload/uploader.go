@@ -61,9 +61,32 @@ type Response struct {
 	BatchID   string   `json:"batch_id"`
 	Accepted  []string `json:"accepted"`
 	Duplicate []string `json:"duplicate"`
+	Rejected  []Reject `json:"rejected"`
+}
+
+type Reject struct {
+	ID     string `json:"id,omitempty"`
+	Reason string `json:"reason"`
+}
+
+type BatchError struct {
+	Events []usage.Entry
+	Err    error
+}
+
+func (e BatchError) Error() string {
+	return e.Err.Error()
+}
+
+func (e BatchError) Unwrap() error {
+	return e.Err
 }
 
 func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) (Response, error) {
+	return UploadEach(ctx, settings, events, nil)
+}
+
+func UploadEach(ctx context.Context, settings agent.Settings, events []usage.Entry, onBatch func([]usage.Entry, Response) error) (Response, error) {
 	if len(events) == 0 {
 		return Response{OK: true}, nil
 	}
@@ -74,13 +97,20 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 		if end > len(events) {
 			end = len(events)
 		}
-		resp, err := uploadBatch(ctx, settings, events[start:end])
+		batch := events[start:end]
+		resp, err := uploadBatch(ctx, settings, batch)
 		if err != nil {
-			return Response{}, err
+			return result, BatchError{Events: batch, Err: err}
+		}
+		if onBatch != nil {
+			if err := onBatch(batch, resp); err != nil {
+				return result, err
+			}
 		}
 		result.BatchID = resp.BatchID
 		result.Accepted = append(result.Accepted, resp.Accepted...)
 		result.Duplicate = append(result.Duplicate, resp.Duplicate...)
+		result.Rejected = append(result.Rejected, resp.Rejected...)
 	}
 	return result, nil
 }

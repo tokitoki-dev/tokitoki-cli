@@ -15,9 +15,9 @@ P0 — dead scaffolding after the daemon→CLI refactor:
 
 P1 — correctness/robustness:
 
-- [ ] Upload watermark: every `tokitoki` invocation resends the entire history
-  (server dedups). Track an "already uploaded" cursor locally and send only the
-  delta. (Related: "summary-level upload state" below.)
+- [x] Upload watermark: each event now has local upload state, so `tokitoki`
+  uploads only pending/failed events and marks accepted/duplicate server
+  responses as uploaded.
 - [ ] Claude streaming token upsert (see WakaTime note below) — affects count
   accuracy.
 - [ ] Open the DB read-only for `daily`/`claude-daily` so reads don't block on a
@@ -45,7 +45,7 @@ P3 — cross-platform packaging:
 - Add large transcript protection: bounded scanner buffers, max line size handling, and optional tail scanning for very large session files.
 - Fix Claude streaming-update semantics: use a logical event key based on `provider + session_id + request_id + message_id`, then upsert latest token values instead of inserting a new event when token counts grow.
 - Review Codex token handling against WakaTime's total-token/delta approach and decide whether TokiToki should store raw token-count events or normalized deltas.
-- Add upload queue behavior inspired by WakaTime offline sync: batch limits, retry, requeue on transient failures, discard/mark rejected records on permanent 400 responses.
+- Add upload queue behavior inspired by WakaTime offline sync: batch limits, retry, requeue on transient failures, discard/mark rejected records on permanent 400 responses. Initial event-level upload states are implemented; still review bounded retry/backoff policy.
 - Add summary-level upload state so server sync sends daily/project/model summaries instead of every local `usage_event`.
 - Add source status/debug endpoints for scan counts, last scan time, last error, indexed event count, and pending upload count.
 
