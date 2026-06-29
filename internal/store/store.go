@@ -73,7 +73,25 @@ func (s *FileStore) SaveAPIKey(apiKey string) error {
 		return errors.New("API key cannot be empty")
 	}
 	path := filepath.Join(s.dir, apiKeyFile)
-	if err := os.WriteFile(path, []byte(apiKey+"\n"), apiKeyFileMod); err != nil {
+	tmp, err := os.CreateTemp(s.dir, "."+apiKeyFile+".tmp.")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.WriteString(apiKey + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(apiKeyFileMod); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	return os.Chmod(path, apiKeyFileMod)

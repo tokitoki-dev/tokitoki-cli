@@ -20,7 +20,10 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usagescan"
 )
 
-const uploadTimeout = 2 * time.Minute
+const (
+	uploadTimeout      = 2 * time.Minute
+	commandLockTimeout = uploadTimeout + 10*time.Second
+)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -59,6 +62,12 @@ func run(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
+	lock, err := store.AcquireDataLock(dataDir, commandLockTimeout)
+	if err != nil {
+		return fail(logger, err)
+	}
+	defer lock.Close()
+
 	fileStore, err := store.Open(dataDir)
 	if err != nil {
 		return fail(logger, err)
@@ -99,6 +108,12 @@ func runSet(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
+	lock, err := store.AcquireDataLock(dataDir, commandLockTimeout)
+	if err != nil {
+		return fail(logger, err)
+	}
+	defer lock.Close()
+
 	fileStore, err := store.Open(dataDir)
 	if err != nil {
 		return fail(logger, err)
