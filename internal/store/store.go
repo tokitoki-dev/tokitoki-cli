@@ -56,12 +56,34 @@ func (s *FileStore) LoadSettings() (agent.Settings, error) {
 
 	data, err := os.ReadFile(filepath.Join(s.dir, apiKeyFile))
 	if errors.Is(err, os.ErrNotExist) {
+		if err := s.ensureAPIKeyFileLocked(); err != nil {
+			return agent.Settings{}, err
+		}
 		return agent.Settings{}, nil
 	}
 	if err != nil {
 		return agent.Settings{}, err
 	}
 	return agent.Settings{APIKey: strings.TrimSpace(string(data))}, nil
+}
+
+func (s *FileStore) EnsureAPIKeyFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.ensureAPIKeyFileLocked()
+}
+
+func (s *FileStore) ensureAPIKeyFileLocked() error {
+	path := filepath.Join(s.dir, apiKeyFile)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, apiKeyFileMod)
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(path, apiKeyFileMod)
 }
 
 func (s *FileStore) SaveAPIKey(apiKey string) error {

@@ -396,7 +396,8 @@ Each invocation scans the directories you pass and uploads their usage events
 to http://localhost:9093/api/usage-events/batch. By default, tokitoki scans
 ~/.claude and ~/.codex; pass --claude-dir or --codex-dir to override either
 path. The API key is read from ~/.tokitoki/api_key. Use tokitoki set key
-<API_KEY> to create or update that file.
+<API_KEY> to create or update that file. Set TOKITOKI_BASE_URL to override
+the default base URL.
 
 Examples:
   tokitoki set key tt_live_xxx

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usage"
 )
 
-const DefaultServerURL = "http://localhost:9093"
+const (
+	DefaultServerURL = "http://localhost:9093"
+	BaseURLEnv       = "TOKITOKI_BASE_URL"
+)
 
 // maxBatchEvents must stay at or below the server's per-batch limit
 // (lib/ingest.ts MAX_BATCH_EVENTS = 5000). Larger uploads are split into
@@ -133,7 +137,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DefaultServerURL+"/api/usage-events/batch", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return Response{}, err
 	}
@@ -158,6 +162,18 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 	return decoded, nil
+}
+
+func uploadEndpoint() string {
+	return baseURL() + "/api/usage-events/batch"
+}
+
+func baseURL() string {
+	value := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
+	if value == "" {
+		return DefaultServerURL
+	}
+	return value
 }
 
 func convertEvent(entry usage.Entry) Event {

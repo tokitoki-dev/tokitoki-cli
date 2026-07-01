@@ -36,6 +36,12 @@ Options:
 --codex-dir         Codex data directory to scan; defaults to ~/.codex.
 ```
 
+Environment:
+
+```text
+TOKITOKI_BASE_URL     Upload server base URL; defaults to http://localhost:9093.
+```
+
 Commands:
 
 ```text
@@ -60,10 +66,16 @@ service action to request a system service:
 tokitoki service install --system
 ```
 
-The upload target is fixed at:
+The default upload target is:
 
 ```text
 http://localhost:9093/api/usage-events/batch
+```
+
+Override the server for distribution or staging:
+
+```sh
+TOKITOKI_BASE_URL=https://tokitoki.example.com tokitoki
 ```
 
 The API key is stored under `~/.tokitoki/`. The local database in that directory

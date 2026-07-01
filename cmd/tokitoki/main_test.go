@@ -62,6 +62,14 @@ func TestRunGetKeyReturnsErrorWhenMissing(t *testing.T) {
 	if code := run([]string{"get", "key"}); code != 1 {
 		t.Fatalf("run(get key) = %d, want 1", code)
 	}
+	path := filepath.Join(home, config.DataDirName, "api_key")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "" {
+		t.Fatalf("api_key = %q, want empty file", string(data))
+	}
 }
 
 func TestRunGetKeyRejectsExtraArgs(t *testing.T) {

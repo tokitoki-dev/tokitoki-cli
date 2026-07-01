@@ -45,7 +45,8 @@ func TestLoadSettingsReadsAPIKeyFile(t *testing.T) {
 }
 
 func TestLoadSettingsEmptyWhenNoKeyFile(t *testing.T) {
-	fileStore, err := Open(t.TempDir())
+	dir := t.TempDir()
+	fileStore, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,32 @@ func TestLoadSettingsEmptyWhenNoKeyFile(t *testing.T) {
 	}
 	if loaded.APIKey != "" {
 		t.Fatalf("LoadSettings().APIKey = %q, want empty", loaded.APIKey)
+	}
+	info, err := os.Stat(filepath.Join(dir, apiKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != apiKeyFileMod {
+		t.Fatalf("api key file mode = %v, want %v", got, apiKeyFileMod)
+	}
+}
+
+func TestEnsureAPIKeyFileCreatesEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	fileStore, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fileStore.EnsureAPIKeyFile(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, apiKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "" {
+		t.Fatalf("api key file = %q, want empty", string(data))
 	}
 }
 
