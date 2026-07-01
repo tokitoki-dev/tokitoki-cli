@@ -2,14 +2,13 @@ APP := tokitoki
 PKG := ./cmd/tokitoki
 
 # Data directories to scan. Override on the command line to point at fixtures,
-# e.g. `make run CLAUDE_DIR=/tmp/claude CODEX_DIR=`. An empty value skips that
-# provider; there is no default location inside the CLI itself.
+# e.g. `make run CLAUDE_DIR=/tmp/claude CODEX_DIR=/tmp/codex`.
 CLAUDE_DIR ?= $(HOME)/.claude
 CODEX_DIR  ?= $(HOME)/.codex
 
 .DEFAULT_GOAL := run
 
-.PHONY: run test race build tidy cross
+.PHONY: run test race build linux-amd64 tidy cross
 
 # `make` is the quickest local integration check: build the CLI then run its
 # complete scan-and-upload operation against http://localhost:9093. Pass
@@ -26,6 +25,10 @@ race:
 build:
 	mkdir -p bin
 	go build -o bin/$(APP) $(PKG)
+
+linux-amd64:
+	mkdir -p dist
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/$(APP)-linux-amd64 $(PKG)
 
 # Cross-compile the agent for every target platform. Pure Go (CGO disabled),
 # so a single host builds all of them; the native front-ends bundle the
