@@ -50,19 +50,8 @@ func run(args []string) int {
 		return runService(args[1:])
 	}
 
-	flags := flag.NewFlagSet("tokitoki", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", "", "Claude data directory to scan (e.g. ~/.claude); omit to skip Claude")
-	codexDir := flags.String("codex-dir", "", "Codex data directory to scan (e.g. ~/.codex); omit to skip Codex")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "tokitoki does not use subcommands; run `tokitoki --help`")
-		return 2
-	}
-	if *claudeDir == "" && *codexDir == "" {
-		fmt.Fprintln(os.Stderr, "nothing to scan; pass --claude-dir and/or --codex-dir")
+	runFlags, ok := parseRunFlags(args)
+	if !ok {
 		return 2
 	}
 
@@ -70,10 +59,29 @@ func run(args []string) int {
 	defer stop()
 	syncCtx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()
-	if err := runSync(syncCtx, *claudeDir, *codexDir, os.Stdout); err != nil {
+	if err := runSync(syncCtx, runFlags.claudeDir, runFlags.codexDir, os.Stdout); err != nil {
 		return fail(defaultLogger(), err)
 	}
 	return 0
+}
+
+func parseRunFlags(args []string) (workerFlags, bool) {
+	flags := flag.NewFlagSet("tokitoki", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	claudeDir := flags.String("claude-dir", defaultClaudeDir(), "Claude data directory to scan")
+	codexDir := flags.String("codex-dir", defaultCodexDir(), "Codex data directory to scan")
+	if err := flags.Parse(args); err != nil {
+		return workerFlags{}, false
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki does not use subcommands; run `tokitoki --help`")
+		return workerFlags{}, false
+	}
+	if *claudeDir == "" && *codexDir == "" {
+		fmt.Fprintln(os.Stderr, "nothing to scan; pass --claude-dir and/or --codex-dir")
+		return workerFlags{}, false
+	}
+	return workerFlags{claudeDir: *claudeDir, codexDir: *codexDir}, true
 }
 
 func runSync(ctx context.Context, claudeDir, codexDir string, out io.Writer) error {
@@ -385,16 +393,16 @@ Usage:
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the directories you pass and uploads their usage events
-to http://localhost:9093/api/usage-events/batch. A provider is scanned only
-when its directory is given; there is no default location. The API key is read
-from ~/.tokitoki/api_key. Use tokitoki set key <API_KEY> to create or update
-that file. Service mode defaults to ~/.claude and ~/.codex.
+to http://localhost:9093/api/usage-events/batch. By default, tokitoki scans
+~/.claude and ~/.codex; pass --claude-dir or --codex-dir to override either
+path. The API key is read from ~/.tokitoki/api_key. Use tokitoki set key
+<API_KEY> to create or update that file.
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
+  tokitoki
   tokitoki --claude-dir ~/.claude --codex-dir ~/.codex
-  tokitoki --codex-dir ~/.codex
   tokitoki service install
   tokitoki service status
 `)

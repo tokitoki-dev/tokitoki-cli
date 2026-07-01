@@ -21,8 +21,8 @@ fastest way to test a local upload against `localhost:9093`.
 # First run: save an API key.
 tokitoki set key "$TOKITOKI_API_KEY"
 
-# Later runs: scan and upload using the saved configuration.
-tokitoki --claude-dir ~/.claude --codex-dir ~/.codex
+# Later runs: scan and upload from ~/.claude and ~/.codex.
+tokitoki
 
 # Install/start as a user service where supported.
 tokitoki service install
@@ -32,8 +32,8 @@ tokitoki service start
 Options:
 
 ```text
---claude-dir        Claude data directory to scan; omit to skip Claude.
---codex-dir         Codex data directory to scan; omit to skip Codex.
+--claude-dir        Claude data directory to scan; defaults to ~/.claude.
+--codex-dir         Codex data directory to scan; defaults to ~/.codex.
 ```
 
 Commands:
@@ -49,8 +49,8 @@ service restart         Restart the installed service.
 service status          Print service status.
 ```
 
-`service install` defaults to `~/.claude` and `~/.codex`; pass
-`--claude-dir`, `--codex-dir`, or `--interval` after the subcommand to override.
+Normal runs and `service install` default to `~/.claude` and `~/.codex`; pass
+`--claude-dir`, `--codex-dir`, or `--interval` after the service subcommand to override.
 The service integration uses `github.com/kardianos/service`, so Linux systemd,
 OpenRC, SysV, Upstart, macOS launchd, and Windows services use the same CLI
 surface. Service installs default to a user service; pass `--system` after the

@@ -9,9 +9,25 @@ import (
 	"github.com/labx/tokitoki-agent/internal/config"
 )
 
-func TestRunRejectsMissingDirs(t *testing.T) {
-	if code := run([]string{}); code != 2 {
-		t.Fatalf("run() with no dirs = %d, want 2", code)
+func TestParseRunFlagsDefaultsToUserAgentDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	flags, ok := parseRunFlags(nil)
+	if !ok {
+		t.Fatal("parseRunFlags() ok = false, want true")
+	}
+	if flags.claudeDir != filepath.Join(home, ".claude") {
+		t.Fatalf("claude dir = %q, want default home dir", flags.claudeDir)
+	}
+	if flags.codexDir != filepath.Join(home, ".codex") {
+		t.Fatalf("codex dir = %q, want default home dir", flags.codexDir)
+	}
+}
+
+func TestParseRunFlagsRejectsEmptyDirs(t *testing.T) {
+	if _, ok := parseRunFlags([]string{"--claude-dir", "", "--codex-dir", ""}); ok {
+		t.Fatal("parseRunFlags() ok = true, want false")
 	}
 }
 
