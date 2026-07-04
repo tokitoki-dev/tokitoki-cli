@@ -70,14 +70,6 @@ type SyncOptions struct {
 	// ProviderDirs selects data directories by provider. This is the extension
 	// point for new local AI agents.
 	ProviderDirs map[Provider][]string
-
-	// ClaudeDir selects a Claude data directory. Prefer ProviderDirs for new
-	// code; this field remains for compatibility.
-	ClaudeDir string
-
-	// CodexDir selects a Codex data directory. Prefer ProviderDirs for new code;
-	// this field remains for compatibility.
-	CodexDir string
 }
 
 // Client provides local settings and usage sync operations for native clients.
@@ -151,7 +143,7 @@ func (c *Client) GetAPIKey() (string, error) {
 
 // Sync scans selected provider directories and uploads newly discovered events.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
-	providerDirs := syncProviderDirs(options)
+	providerDirs := normalizeProviderDirs(options.ProviderDirs)
 	if len(providerDirs) == 0 {
 		return ErrNoScanDirectories
 	}
@@ -182,20 +174,14 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	})
 }
 
-func syncProviderDirs(options SyncOptions) map[usage.Provider][]string {
-	providerDirs := make(map[usage.Provider][]string, len(options.ProviderDirs)+2)
-	for provider, dirs := range options.ProviderDirs {
+func normalizeProviderDirs(raw map[Provider][]string) map[usage.Provider][]string {
+	providerDirs := make(map[usage.Provider][]string, len(raw))
+	for provider, dirs := range raw {
 		for _, dir := range dirs {
 			if dir != "" {
 				providerDirs[usage.Provider(provider)] = append(providerDirs[usage.Provider(provider)], dir)
 			}
 		}
-	}
-	if options.ClaudeDir != "" {
-		providerDirs[usage.ProviderClaude] = append(providerDirs[usage.ProviderClaude], options.ClaudeDir)
-	}
-	if options.CodexDir != "" {
-		providerDirs[usage.ProviderCodex] = append(providerDirs[usage.ProviderCodex], options.CodexDir)
 	}
 	return providerDirs
 }
@@ -218,20 +204,14 @@ func DefaultDataDir() (string, error) {
 	return filepath.Join(home, config.DataDirName), nil
 }
 
-// DefaultClaudeDir returns the default Claude Code data directory.
-func DefaultClaudeDir() string {
+// DefaultProviderDirs returns the built-in provider data directories.
+func DefaultProviderDirs() map[Provider][]string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return nil
 	}
-	return filepath.Join(home, ".claude")
-}
-
-// DefaultCodexDir returns the default Codex data directory.
-func DefaultCodexDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	return map[Provider][]string{
+		ProviderClaude: {filepath.Join(home, ".claude")},
+		ProviderCodex:  {filepath.Join(home, ".codex")},
 	}
-	return filepath.Join(home, ".codex")
 }

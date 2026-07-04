@@ -21,8 +21,6 @@ type App struct {
 	UsageDB      *usagedb.DB
 	Scanner      *usagescan.Scanner
 	ProviderDirs map[usage.Provider][]string
-	ClaudeDir    string
-	CodexDir     string
 	Out          io.Writer
 }
 
@@ -56,7 +54,7 @@ func (a *App) Sync(ctx context.Context) error {
 	if settings.APIKey == "" {
 		return errors.New("API key is required in ~/.tokitoki/api_key")
 	}
-	if _, err := a.Scanner.ScanProviders(a.scanProviderDirs()); err != nil {
+	if _, err := a.Scanner.Scan(a.ProviderDirs); err != nil {
 		return err
 	}
 	events, err := a.UsageDB.PendingUsageEvents(0)
@@ -93,20 +91,6 @@ func (a *App) writeJSON(v any) error {
 		return err
 	}
 	return nil
-}
-
-func (a *App) scanProviderDirs() map[usage.Provider][]string {
-	providerDirs := make(map[usage.Provider][]string, len(a.ProviderDirs)+2)
-	for provider, dirs := range a.ProviderDirs {
-		providerDirs[provider] = append([]string{}, dirs...)
-	}
-	if a.ClaudeDir != "" {
-		providerDirs[usage.ProviderClaude] = append(providerDirs[usage.ProviderClaude], a.ClaudeDir)
-	}
-	if a.CodexDir != "" {
-		providerDirs[usage.ProviderCodex] = append(providerDirs[usage.ProviderCodex], a.CodexDir)
-	}
-	return providerDirs
 }
 
 func eventIDs(events []usage.Entry) []string {

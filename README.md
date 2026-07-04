@@ -32,8 +32,8 @@ tokitoki service start
 Options:
 
 ```text
---claude-dir        Claude data directory to scan; defaults to ~/.claude.
---codex-dir         Codex data directory to scan; defaults to ~/.codex.
+--provider-dir      Provider data directory to scan as provider=dir; repeatable.
+                    Defaults to claude=~/.claude and codex=~/.codex.
 ```
 
 Environment:
@@ -55,12 +55,13 @@ service restart         Restart the installed service.
 service status          Print service status.
 ```
 
-Normal runs and `service install` default to `~/.claude` and `~/.codex`; pass
-`--claude-dir`, `--codex-dir`, or `--interval` after the service subcommand to override.
-The service integration uses `github.com/kardianos/service`, so Linux systemd,
-OpenRC, SysV, Upstart, macOS launchd, and Windows services use the same CLI
-surface. Service installs default to a user service; pass `--system` after the
-service action to request a system service:
+Normal runs and `service install` default to `claude=~/.claude` and
+`codex=~/.codex`; pass one or more `--provider-dir provider=dir` values or
+`--interval` after the service subcommand to override. The service integration
+uses `github.com/kardianos/service`, so Linux systemd, OpenRC, SysV, Upstart,
+macOS launchd, and Windows services use the same CLI surface. Service installs
+default to a user service; pass `--system` after the service action to request a
+system service:
 
 ```sh
 tokitoki service install --system

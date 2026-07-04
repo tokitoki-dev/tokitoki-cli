@@ -63,24 +63,17 @@ func TestSyncRejectsEmptyDirectories(t *testing.T) {
 	}
 }
 
-func TestSyncProviderDirsMergesLegacyFields(t *testing.T) {
-	dirs := syncProviderDirs(SyncOptions{
-		ProviderDirs: map[Provider][]string{
-			Provider("fixture"): []string{"fixture-dir"},
-			ProviderCodex:       []string{""},
-		},
-		ClaudeDir: "claude-dir",
-		CodexDir:  "codex-dir",
+func TestNormalizeProviderDirsDropsEmptyDirectories(t *testing.T) {
+	dirs := normalizeProviderDirs(map[Provider][]string{
+		Provider("fixture"): []string{"fixture-dir"},
+		ProviderCodex:       []string{""},
 	})
 
 	if got := dirs["fixture"]; len(got) != 1 || got[0] != "fixture-dir" {
 		t.Fatalf("fixture dirs = %#v, want fixture-dir", got)
 	}
-	if got := dirs["claude"]; len(got) != 1 || got[0] != "claude-dir" {
-		t.Fatalf("claude dirs = %#v, want legacy claude dir", got)
-	}
-	if got := dirs["codex"]; len(got) != 1 || got[0] != "codex-dir" {
-		t.Fatalf("codex dirs = %#v, want legacy codex dir", got)
+	if got := dirs["codex"]; len(got) != 0 {
+		t.Fatalf("codex dirs = %#v, want empty dirs dropped", got)
 	}
 }
 
@@ -88,7 +81,9 @@ func TestSyncRequiresAPIKey(t *testing.T) {
 	client := newTestClient(t)
 	claudeDir := t.TempDir()
 
-	err := client.Sync(context.Background(), SyncOptions{ClaudeDir: claudeDir})
+	err := client.Sync(context.Background(), SyncOptions{
+		ProviderDirs: map[Provider][]string{ProviderClaude: []string{claudeDir}},
+	})
 	if err == nil || !strings.Contains(err.Error(), "API key is required") {
 		t.Fatalf("Sync() error = %v, want API key requirement", err)
 	}
