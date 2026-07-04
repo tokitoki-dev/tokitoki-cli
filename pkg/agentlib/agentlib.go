@@ -15,6 +15,7 @@ import (
 	"github.com/labx/tokitoki-agent/internal/cli"
 	"github.com/labx/tokitoki-agent/internal/config"
 	"github.com/labx/tokitoki-agent/internal/store"
+	"github.com/labx/tokitoki-agent/internal/usage"
 	"github.com/labx/tokitoki-agent/internal/usagedb"
 	"github.com/labx/tokitoki-agent/internal/usagescan"
 )
@@ -26,6 +27,17 @@ const (
 	// DefaultLockTimeout is the maximum duration to wait for another TokiToki
 	// command to release the shared local data lock.
 	DefaultLockTimeout = DefaultUploadTimeout + 10*time.Second
+)
+
+// Provider identifies a local AI usage source.
+type Provider string
+
+const (
+	// ProviderClaude identifies Claude usage files.
+	ProviderClaude Provider = "claude"
+
+	// ProviderCodex identifies Codex usage files.
+	ProviderCodex Provider = "codex"
 )
 
 var (
@@ -55,8 +67,17 @@ type Options struct {
 
 // SyncOptions selects provider data directories for one sync run.
 type SyncOptions struct {
+	// ProviderDirs selects data directories by provider. This is the extension
+	// point for new local AI agents.
+	ProviderDirs map[Provider][]string
+
+	// ClaudeDir selects a Claude data directory. Prefer ProviderDirs for new
+	// code; this field remains for compatibility.
 	ClaudeDir string
-	CodexDir  string
+
+	// CodexDir selects a Codex data directory. Prefer ProviderDirs for new code;
+	// this field remains for compatibility.
+	CodexDir string
 }
 
 // Client provides local settings and usage sync operations for native clients.
@@ -130,7 +151,8 @@ func (c *Client) GetAPIKey() (string, error) {
 
 // Sync scans selected provider directories and uploads newly discovered events.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
-	if options.ClaudeDir == "" && options.CodexDir == "" {
+	providerDirs := syncProviderDirs(options)
+	if len(providerDirs) == 0 {
 		return ErrNoScanDirectories
 	}
 	if ctx == nil {
@@ -150,15 +172,32 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 		defer usageDB.Close()
 
 		app := &cli.App{
-			Agent:     agent.New(fileStore, c.logger),
-			UsageDB:   usageDB,
-			Scanner:   usagescan.New(usageDB),
-			ClaudeDir: options.ClaudeDir,
-			CodexDir:  options.CodexDir,
-			Out:       io.Discard,
+			Agent:        agent.New(fileStore, c.logger),
+			UsageDB:      usageDB,
+			Scanner:      usagescan.New(usageDB),
+			ProviderDirs: providerDirs,
+			Out:          io.Discard,
 		}
 		return app.Sync(ctx)
 	})
+}
+
+func syncProviderDirs(options SyncOptions) map[usage.Provider][]string {
+	providerDirs := make(map[usage.Provider][]string, len(options.ProviderDirs)+2)
+	for provider, dirs := range options.ProviderDirs {
+		for _, dir := range dirs {
+			if dir != "" {
+				providerDirs[usage.Provider(provider)] = append(providerDirs[usage.Provider(provider)], dir)
+			}
+		}
+	}
+	if options.ClaudeDir != "" {
+		providerDirs[usage.ProviderClaude] = append(providerDirs[usage.ProviderClaude], options.ClaudeDir)
+	}
+	if options.CodexDir != "" {
+		providerDirs[usage.ProviderCodex] = append(providerDirs[usage.ProviderCodex], options.CodexDir)
+	}
+	return providerDirs
 }
 
 func (c *Client) withDataLock(fn func() error) error {

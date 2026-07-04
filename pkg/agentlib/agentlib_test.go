@@ -63,6 +63,27 @@ func TestSyncRejectsEmptyDirectories(t *testing.T) {
 	}
 }
 
+func TestSyncProviderDirsMergesLegacyFields(t *testing.T) {
+	dirs := syncProviderDirs(SyncOptions{
+		ProviderDirs: map[Provider][]string{
+			Provider("fixture"): []string{"fixture-dir"},
+			ProviderCodex:       []string{""},
+		},
+		ClaudeDir: "claude-dir",
+		CodexDir:  "codex-dir",
+	})
+
+	if got := dirs["fixture"]; len(got) != 1 || got[0] != "fixture-dir" {
+		t.Fatalf("fixture dirs = %#v, want fixture-dir", got)
+	}
+	if got := dirs["claude"]; len(got) != 1 || got[0] != "claude-dir" {
+		t.Fatalf("claude dirs = %#v, want legacy claude dir", got)
+	}
+	if got := dirs["codex"]; len(got) != 1 || got[0] != "codex-dir" {
+		t.Fatalf("codex dirs = %#v, want legacy codex dir", got)
+	}
+}
+
 func TestSyncRequiresAPIKey(t *testing.T) {
 	client := newTestClient(t)
 	claudeDir := t.TempDir()
