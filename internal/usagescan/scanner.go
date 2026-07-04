@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/labx/tokitoki-agent/internal/agentusage"
 	"github.com/labx/tokitoki-agent/internal/claudeusage"
 	"github.com/labx/tokitoki-agent/internal/codexusage"
 	"github.com/labx/tokitoki-agent/internal/usage"
@@ -34,6 +35,13 @@ func DefaultProviders() []usageprovider.Provider {
 	return []usageprovider.Provider{
 		claudeusage.Provider{},
 		codexusage.Provider{},
+		agentusage.CopilotProvider{},
+		agentusage.GeminiProvider{},
+		agentusage.KimiProvider{},
+		agentusage.QwenProvider{},
+		agentusage.OpenClawProvider{},
+		agentusage.PiProvider{},
+		agentusage.AmpProvider{},
 	}
 }
 

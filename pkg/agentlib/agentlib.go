@@ -38,6 +38,27 @@ const (
 
 	// ProviderCodex identifies Codex usage files.
 	ProviderCodex Provider = "codex"
+
+	// ProviderCopilot identifies GitHub Copilot CLI usage files.
+	ProviderCopilot Provider = "copilot"
+
+	// ProviderGemini identifies Gemini CLI usage files.
+	ProviderGemini Provider = "gemini"
+
+	// ProviderKimi identifies Kimi usage files.
+	ProviderKimi Provider = "kimi"
+
+	// ProviderQwen identifies Qwen usage files.
+	ProviderQwen Provider = "qwen"
+
+	// ProviderOpenClaw identifies OpenClaw usage files.
+	ProviderOpenClaw Provider = "openclaw"
+
+	// ProviderPi identifies pi-agent usage files.
+	ProviderPi Provider = "pi"
+
+	// ProviderAmp identifies Amp usage files.
+	ProviderAmp Provider = "amp"
 )
 
 var (
@@ -211,7 +232,14 @@ func DefaultProviderDirs() map[Provider][]string {
 		return nil
 	}
 	return map[Provider][]string{
-		ProviderClaude: {filepath.Join(home, ".claude")},
-		ProviderCodex:  {filepath.Join(home, ".codex")},
+		ProviderClaude:   {filepath.Join(home, ".claude")},
+		ProviderCodex:    {filepath.Join(home, ".codex")},
+		ProviderCopilot:  {filepath.Join(home, ".copilot", "otel")},
+		ProviderGemini:   {filepath.Join(home, ".gemini", "tmp")},
+		ProviderKimi:     {filepath.Join(home, ".kimi")},
+		ProviderQwen:     {filepath.Join(home, ".qwen")},
+		ProviderOpenClaw: {filepath.Join(home, ".openclaw"), filepath.Join(home, ".clawdbot"), filepath.Join(home, ".moltbot"), filepath.Join(home, ".moldbot")},
+		ProviderPi:       {filepath.Join(home, ".pi", "agent", "sessions")},
+		ProviderAmp:      {filepath.Join(home, ".local", "share", "amp")},
 	}
 }
