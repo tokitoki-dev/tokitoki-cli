@@ -5,7 +5,7 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usageprovider"
 )
 
-// Provider parses Claude usage files.
+// Provider loads Claude usage entries.
 type Provider struct{}
 
 var _ usageprovider.Provider = Provider{}
@@ -15,12 +15,11 @@ func (Provider) Provider() usage.Provider {
 	return usage.ProviderClaude
 }
 
-// UsageFiles discovers Claude usage files below data directories.
-func (Provider) UsageFiles(paths []string) []string {
-	return UsageFiles(paths, "")
-}
-
-// ReadUsageFile parses a Claude usage file into normalized usage entries.
-func (Provider) ReadUsageFile(path string) ([]usage.Entry, error) {
-	return UsageEntriesFromFile(path)
+// Entries loads normalized Claude usage entries below data roots.
+func (Provider) Entries(paths []string) ([]usage.Entry, error) {
+	entries, err := LoadEntriesFromPaths(paths, "")
+	if err != nil {
+		return nil, err
+	}
+	return ConvertEntries(entries), nil
 }

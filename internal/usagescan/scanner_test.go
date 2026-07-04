@@ -10,7 +10,7 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usagedb"
 )
 
-func TestScanAllSkipsUnchangedFiles(t *testing.T) {
+func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
 	dir := t.TempDir()
 	codexDir := filepath.Join(dir, "codex")
 	sessionDir := filepath.Join(codexDir, "sessions", "2026", "06", "04")
@@ -36,35 +36,31 @@ func TestScanAllSkipsUnchangedFiles(t *testing.T) {
 	})
 
 	scanner := New(db)
-	result, err := scanner.Scan("", codexDir)
+	result, err := scanner.Scan(map[usage.Provider][]string{
+		usage.ProviderCodex: []string{codexDir},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Codex.FilesScanned != 1 {
-		t.Fatalf("first files scanned = %d, want 1", result.Codex.FilesScanned)
-	}
-	if result.Codex.EventsInserted != 1 {
-		t.Fatalf("first events inserted = %d, want 1", result.Codex.EventsInserted)
+	codexResult := result.Providers[usage.ProviderCodex]
+	if codexResult.EventsInserted != 1 {
+		t.Fatalf("first events inserted = %d, want 1", codexResult.EventsInserted)
 	}
 
-	result, err = scanner.Scan("", codexDir)
+	result, err = scanner.Scan(map[usage.Provider][]string{
+		usage.ProviderCodex: []string{codexDir},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Codex.FilesSkipped != 1 {
-		t.Fatalf("second files skipped = %d, want 1", result.Codex.FilesSkipped)
-	}
-	if result.Codex.EventsInserted != 0 {
-		t.Fatalf("second events inserted = %d, want 0", result.Codex.EventsInserted)
+	codexResult = result.Providers[usage.ProviderCodex]
+	if codexResult.EventsInserted != 0 {
+		t.Fatalf("second events inserted = %d, want 0", codexResult.EventsInserted)
 	}
 }
 
-func TestScanProvidersUsesRegisteredProvider(t *testing.T) {
+func TestScanUsesRegisteredProvider(t *testing.T) {
 	dir := t.TempDir()
-	usageFile := filepath.Join(dir, "usage.jsonl")
-	if err := os.WriteFile(usageFile, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	db, err := usagedb.Open(filepath.Join(dir, "usage.bolt"))
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +71,6 @@ func TestScanProvidersUsesRegisteredProvider(t *testing.T) {
 
 	provider := fakeProvider{
 		provider: usage.Provider("fixture"),
-		files:    []string{usageFile},
 		entries: []usage.Entry{{
 			Provider:  usage.Provider("fixture"),
 			ID:        "fixture-event",
@@ -91,17 +86,17 @@ func TestScanProvidersUsesRegisteredProvider(t *testing.T) {
 		}},
 	}
 
-	scanner := New(db, provider)
-	result, err := scanner.ScanProviders(map[usage.Provider][]string{
+	scanner := New(db, &provider)
+	result, err := scanner.Scan(map[usage.Provider][]string{
 		provider.provider: []string{dir},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	providerResult := result.Providers[provider.provider]
-	if providerResult.FilesScanned != 1 {
-		t.Fatalf("files scanned = %d, want 1", providerResult.FilesScanned)
+	if len(provider.paths) != 1 || provider.paths[0] != dir {
+		t.Fatalf("provider paths = %#v, want scan dir", provider.paths)
 	}
+	providerResult := result.Providers[provider.provider]
 	if providerResult.EventsInserted != 1 {
 		t.Fatalf("events inserted = %d, want 1", providerResult.EventsInserted)
 	}
@@ -109,18 +104,15 @@ func TestScanProvidersUsesRegisteredProvider(t *testing.T) {
 
 type fakeProvider struct {
 	provider usage.Provider
-	files    []string
 	entries  []usage.Entry
+	paths    []string
 }
 
 func (p fakeProvider) Provider() usage.Provider {
 	return p.provider
 }
 
-func (p fakeProvider) UsageFiles(_ []string) []string {
-	return p.files
-}
-
-func (p fakeProvider) ReadUsageFile(_ string) ([]usage.Entry, error) {
+func (p *fakeProvider) Entries(paths []string) ([]usage.Entry, error) {
+	p.paths = append([]string{}, paths...)
 	return p.entries, nil
 }

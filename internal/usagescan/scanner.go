@@ -3,7 +3,6 @@ package usagescan
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/labx/tokitoki-agent/internal/claudeusage"
@@ -19,11 +18,15 @@ type Scanner struct {
 	providerOrder []usage.Provider
 }
 
-// Result describes how many files and events were processed for each provider.
+// Result describes how many usage events were processed for each provider.
 type Result struct {
-	Providers map[usage.Provider]usagedb.ScanResult `json:"providers,omitempty"`
-	Claude    usagedb.ScanResult                    `json:"claude"`
-	Codex     usagedb.ScanResult                    `json:"codex"`
+	Providers map[usage.Provider]ProviderResult `json:"providers,omitempty"`
+}
+
+// ProviderResult describes the entries loaded and inserted for one provider.
+type ProviderResult struct {
+	EventsParsed   int `json:"events_parsed"`
+	EventsInserted int `json:"events_inserted"`
 }
 
 // DefaultProviders returns the built-in usage providers.
@@ -50,18 +53,8 @@ func New(db *usagedb.DB, providers ...usageprovider.Provider) *Scanner {
 	return scanner
 }
 
-// Scan reads usage files from the directories provided by the caller. An empty
-// directory means that provider is skipped entirely: there is no default
-// location and no fallback. The caller (native client) owns where the data is.
-func (s *Scanner) Scan(claudeDir, codexDir string) (Result, error) {
-	return s.ScanProviders(map[usage.Provider][]string{
-		usage.ProviderClaude: nonEmptyPaths(claudeDir),
-		usage.ProviderCodex:  nonEmptyPaths(codexDir),
-	})
-}
-
-// ScanProviders reads usage files from the selected provider directories.
-func (s *Scanner) ScanProviders(providerDirs map[usage.Provider][]string) (Result, error) {
+// Scan loads entries from the selected provider data roots.
+func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error) {
 	var result Result
 	var errs []error
 
@@ -75,7 +68,7 @@ func (s *Scanner) ScanProviders(providerDirs map[usage.Provider][]string) (Resul
 			errs = append(errs, fmt.Errorf("no usage provider registered for %q", providerID))
 			continue
 		}
-		providerResult, err := s.scanProvider(provider, provider.UsageFiles(dirs))
+		providerResult, err := s.scanProvider(provider, dirs)
 		result.setProviderResult(providerID, providerResult)
 		if err != nil {
 			errs = append(errs, err)
@@ -85,51 +78,19 @@ func (s *Scanner) ScanProviders(providerDirs map[usage.Provider][]string) (Resul
 	return result, errors.Join(errs...)
 }
 
-func (s *Scanner) scanProvider(provider usageprovider.Provider, files []string) (usagedb.ScanResult, error) {
-	var result usagedb.ScanResult
-	var errs []error
-	providerID := provider.Provider()
-	for _, file := range files {
-		result.FilesSeen++
-		info, err := os.Stat(file)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		existing, ok, err := s.db.SourceFile(providerID, file)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if ok && existing.Size == info.Size() && existing.ModTimeUnixNS == info.ModTime().UnixNano() {
-			result.FilesSkipped++
-			continue
-		}
-
-		entries, err := provider.ReadUsageFile(file)
-		source := usagedb.FileSource(providerID, file, info)
-		if err != nil {
-			source.LastError = err.Error()
-			_ = s.db.SaveSourceFile(source)
-			errs = append(errs, err)
-			continue
-		}
-		inserted, err := s.db.InsertEvents(entries)
-		if err != nil {
-			source.LastError = err.Error()
-			_ = s.db.SaveSourceFile(source)
-			errs = append(errs, err)
-			continue
-		}
-		if err := s.db.SaveSourceFile(source); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		result.FilesScanned++
-		result.EventsParsed += len(entries)
-		result.EventsInserted += inserted
+func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) (ProviderResult, error) {
+	var result ProviderResult
+	entries, err := provider.Entries(paths)
+	if err != nil {
+		return result, err
 	}
-	return result, errors.Join(errs...)
+	inserted, err := s.db.InsertEvents(entries)
+	if err != nil {
+		return result, err
+	}
+	result.EventsParsed = len(entries)
+	result.EventsInserted = inserted
+	return result, nil
 }
 
 func (s *Scanner) registerProvider(provider usageprovider.Provider) {
@@ -167,25 +128,11 @@ func (s *Scanner) scanOrder(providerDirs map[usage.Provider][]string) []usage.Pr
 	return append(order, unknown...)
 }
 
-func (r *Result) setProviderResult(provider usage.Provider, result usagedb.ScanResult) {
+func (r *Result) setProviderResult(provider usage.Provider, result ProviderResult) {
 	if r.Providers == nil {
-		r.Providers = make(map[usage.Provider]usagedb.ScanResult)
+		r.Providers = make(map[usage.Provider]ProviderResult)
 	}
 	r.Providers[provider] = result
-
-	switch provider {
-	case usage.ProviderClaude:
-		r.Claude = result
-	case usage.ProviderCodex:
-		r.Codex = result
-	}
-}
-
-func nonEmptyPaths(path string) []string {
-	if path == "" {
-		return nil
-	}
-	return []string{path}
 }
 
 func filterPaths(paths []string) []string {

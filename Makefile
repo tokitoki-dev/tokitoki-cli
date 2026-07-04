@@ -1,10 +1,9 @@
 APP := tokitoki
 PKG := ./cmd/tokitoki
 
-# Data directories to scan. Override on the command line to point at fixtures,
-# e.g. `make run CLAUDE_DIR=/tmp/claude CODEX_DIR=/tmp/codex`.
-CLAUDE_DIR ?= $(HOME)/.claude
-CODEX_DIR  ?= $(HOME)/.codex
+# Provider data directories to scan. Override on the command line to point at
+# fixtures, e.g. `make run PROVIDER_DIRS='claude=/tmp/claude codex=/tmp/codex'`.
+PROVIDER_DIRS ?= claude=$(HOME)/.claude codex=$(HOME)/.codex
 
 .DEFAULT_GOAL := run
 
@@ -12,9 +11,9 @@ CODEX_DIR  ?= $(HOME)/.codex
 
 # `make` is the quickest local integration check: build the CLI then run its
 # complete scan-and-upload operation against http://localhost:9093. Pass
-# CLAUDE_DIR / CODEX_DIR to choose which data directories to scan.
+# PROVIDER_DIRS to choose which data directories to scan.
 run: build
-	./bin/$(APP) $(if $(CLAUDE_DIR),--claude-dir $(CLAUDE_DIR)) $(if $(CODEX_DIR),--codex-dir $(CODEX_DIR))
+	./bin/$(APP) $(foreach dir,$(PROVIDER_DIRS),--provider-dir $(dir))
 
 test:
 	go test ./...

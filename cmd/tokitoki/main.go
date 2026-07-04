@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,7 +55,7 @@ func run(args []string) int {
 	defer stop()
 	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 	defer cancel()
-	if err := runSync(syncCtx, runFlags.claudeDir, runFlags.codexDir, os.Stdout); err != nil {
+	if err := runSync(syncCtx, runFlags.providerDirs, os.Stdout); err != nil {
 		return fail(defaultLogger(), err)
 	}
 	return 0
@@ -62,8 +64,8 @@ func run(args []string) int {
 func parseRunFlags(args []string) (workerFlags, bool) {
 	flags := flag.NewFlagSet("tokitoki", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
+	providerDirs := newProviderDirFlags(agentlib.DefaultProviderDirs())
+	flags.Var(providerDirs, "provider-dir", "provider data directory to scan (provider=dir; repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
 	}
@@ -71,19 +73,20 @@ func parseRunFlags(args []string) (workerFlags, bool) {
 		fmt.Fprintln(os.Stderr, "tokitoki does not use subcommands; run `tokitoki --help`")
 		return workerFlags{}, false
 	}
-	if *claudeDir == "" && *codexDir == "" {
-		fmt.Fprintln(os.Stderr, "nothing to scan; pass --claude-dir and/or --codex-dir")
+	dirs := providerDirs.ProviderDirs()
+	if len(dirs) == 0 {
+		fmt.Fprintln(os.Stderr, "nothing to scan; pass --provider-dir provider=dir")
 		return workerFlags{}, false
 	}
-	return workerFlags{claudeDir: *claudeDir, codexDir: *codexDir}, true
+	return workerFlags{providerDirs: dirs}, true
 }
 
-func runSync(ctx context.Context, claudeDir, codexDir string, out io.Writer) error {
+func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, out io.Writer) error {
 	client, err := agentlib.New(agentlib.Options{Logger: defaultLogger()})
 	if err != nil {
 		return err
 	}
-	if err := client.Sync(ctx, agentlib.SyncOptions{ClaudeDir: claudeDir, CodexDir: codexDir}); err != nil {
+	if err := client.Sync(ctx, agentlib.SyncOptions{ProviderDirs: providerDirs}); err != nil {
 		return err
 	}
 	return writeJSON(out, map[string]bool{"ok": true})
@@ -129,9 +132,8 @@ func runGet(args []string) int {
 }
 
 type workerFlags struct {
-	claudeDir string
-	codexDir  string
-	interval  time.Duration
+	providerDirs map[agentlib.Provider][]string
+	interval     time.Duration
 }
 
 func runServiceWorker(args []string) int {
@@ -151,7 +153,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 
 	for {
 		syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
-		if err := runSync(syncCtx, flags.claudeDir, flags.codexDir, os.Stdout); err != nil {
+		if err := runSync(syncCtx, flags.providerDirs, os.Stdout); err != nil {
 			logger.Error("tokitoki sync failed", "error", err)
 		}
 		cancel()
@@ -240,8 +242,8 @@ func runService(args []string) int {
 func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
+	providerDirs := newProviderDirFlags(agentlib.DefaultProviderDirs())
+	flags.Var(providerDirs, "provider-dir", "provider data directory to scan (provider=dir; repeatable)")
 	interval := flags.Duration("interval", defaultSyncInterval, "sync interval")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
@@ -254,18 +256,22 @@ func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 		fmt.Fprintln(os.Stderr, "interval must be greater than zero")
 		return workerFlags{}, false
 	}
+	dirs := providerDirs.ProviderDirs()
+	if len(dirs) == 0 {
+		fmt.Fprintln(os.Stderr, "nothing to scan; pass --provider-dir provider=dir")
+		return workerFlags{}, false
+	}
 	return workerFlags{
-		claudeDir: *claudeDir,
-		codexDir:  *codexDir,
-		interval:  *interval,
+		providerDirs: dirs,
+		interval:     *interval,
 	}, true
 }
 
 func parseServiceFlags(args []string) (workerFlags, bool, bool) {
 	flags := flag.NewFlagSet("tokitoki service", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
+	providerDirs := newProviderDirFlags(agentlib.DefaultProviderDirs())
+	flags.Var(providerDirs, "provider-dir", "provider data directory to scan (provider=dir; repeatable)")
 	interval := flags.Duration("interval", defaultSyncInterval, "sync interval")
 	system := flags.Bool("system", false, "install as a system service instead of a user service")
 	if err := flags.Parse(args); err != nil {
@@ -279,10 +285,14 @@ func parseServiceFlags(args []string) (workerFlags, bool, bool) {
 		fmt.Fprintln(os.Stderr, "interval must be greater than zero")
 		return workerFlags{}, false, false
 	}
+	dirs := providerDirs.ProviderDirs()
+	if len(dirs) == 0 {
+		fmt.Fprintln(os.Stderr, "nothing to scan; pass --provider-dir provider=dir")
+		return workerFlags{}, false, false
+	}
 	return workerFlags{
-		claudeDir: *claudeDir,
-		codexDir:  *codexDir,
-		interval:  *interval,
+		providerDirs: dirs,
+		interval:     *interval,
 	}, !*system, true
 }
 
@@ -296,18 +306,92 @@ func newService(flags workerFlags, userService bool) (daemonservice.Service, err
 		DisplayName: "TokiToki",
 		Description: "Sync local AI usage to TokiToki.",
 		Executable:  executable,
-		Arguments: []string{
-			"__service-run",
-			"--claude-dir", flags.claudeDir,
-			"--codex-dir", flags.codexDir,
-			"--interval", flags.interval.String(),
-		},
+		Arguments:   serviceArguments(flags),
 		Option: daemonservice.KeyValue{
 			"UserService": userService,
 			"Restart":     "always",
 		},
 	}
 	return daemonservice.New(&serviceProgram{flags: flags}, config)
+}
+
+type providerDirFlags struct {
+	dirs map[agentlib.Provider][]string
+	set  bool
+}
+
+func newProviderDirFlags(defaults map[agentlib.Provider][]string) *providerDirFlags {
+	return &providerDirFlags{dirs: copyProviderDirs(defaults)}
+}
+
+func (f *providerDirFlags) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(providerDirArgs(f.dirs), ",")
+}
+
+func (f *providerDirFlags) Set(value string) error {
+	provider, dir, ok := strings.Cut(value, "=")
+	provider = strings.TrimSpace(provider)
+	dir = strings.TrimSpace(dir)
+	if !ok || provider == "" || dir == "" {
+		return fmt.Errorf("provider directory must use provider=dir")
+	}
+	if !f.set {
+		f.dirs = make(map[agentlib.Provider][]string)
+		f.set = true
+	}
+	f.dirs[agentlib.Provider(provider)] = append(f.dirs[agentlib.Provider(provider)], dir)
+	return nil
+}
+
+func (f *providerDirFlags) ProviderDirs() map[agentlib.Provider][]string {
+	if f == nil {
+		return nil
+	}
+	return copyProviderDirs(f.dirs)
+}
+
+func serviceArguments(flags workerFlags) []string {
+	args := []string{"__service-run"}
+	for _, value := range providerDirArgs(flags.providerDirs) {
+		args = append(args, "--provider-dir", value)
+	}
+	return append(args, "--interval", flags.interval.String())
+}
+
+func providerDirArgs(providerDirs map[agentlib.Provider][]string) []string {
+	values := make([]string, 0)
+	providers := make([]agentlib.Provider, 0, len(providerDirs))
+	for provider := range providerDirs {
+		providers = append(providers, provider)
+	}
+	sort.Slice(providers, func(i, j int) bool {
+		return providers[i] < providers[j]
+	})
+	for _, provider := range providers {
+		dirs := append([]string{}, providerDirs[provider]...)
+		sort.Strings(dirs)
+		for _, dir := range dirs {
+			if dir != "" {
+				values = append(values, fmt.Sprintf("%s=%s", provider, dir))
+			}
+		}
+	}
+	return values
+}
+
+func copyProviderDirs(providerDirs map[agentlib.Provider][]string) map[agentlib.Provider][]string {
+	copied := make(map[agentlib.Provider][]string, len(providerDirs))
+	for provider, dirs := range providerDirs {
+		for _, dir := range dirs {
+			if dir != "" {
+				copied[provider] = append(copied[provider], dir)
+			}
+		}
+	}
+	return copied
 }
 
 func serviceStatusString(status daemonservice.Status) string {
@@ -325,23 +409,23 @@ func usage() {
 	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to http://localhost:9093
 
 Usage:
-  tokitoki [--claude-dir DIR] [--codex-dir DIR]
+  tokitoki [--provider-dir PROVIDER=DIR ...]
   tokitoki set key <API_KEY>
   tokitoki get key
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the directories you pass and uploads their usage events
 to http://localhost:9093/api/usage-events/batch. By default, tokitoki scans
-~/.claude and ~/.codex; pass --claude-dir or --codex-dir to override either
-path. The API key is read from ~/.tokitoki/api_key. Use tokitoki set key
-<API_KEY> to create or update that file. Set TOKITOKI_BASE_URL to override
-the default base URL.
+~/.claude and ~/.codex; pass one or more --provider-dir provider=dir values to
+scan an explicit provider set. The API key is read from ~/.tokitoki/api_key.
+Use tokitoki set key <API_KEY> to create or update that file. Set
+TOKITOKI_BASE_URL to override the default base URL.
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki
-  tokitoki --claude-dir ~/.claude --codex-dir ~/.codex
+  tokitoki --provider-dir claude=~/.claude --provider-dir codex=~/.codex
   tokitoki service install
   tokitoki service status
 `)

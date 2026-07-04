@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/labx/tokitoki-agent/pkg/agentlib"
 )
 
-func TestParseRunFlagsDefaultsToUserAgentDirs(t *testing.T) {
+func TestParseRunFlagsDefaultsToProviderDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -17,17 +18,33 @@ func TestParseRunFlagsDefaultsToUserAgentDirs(t *testing.T) {
 	if !ok {
 		t.Fatal("parseRunFlags() ok = false, want true")
 	}
-	if flags.claudeDir != filepath.Join(home, ".claude") {
-		t.Fatalf("claude dir = %q, want default home dir", flags.claudeDir)
+	if got := flags.providerDirs[agentlib.ProviderClaude]; len(got) != 1 || got[0] != filepath.Join(home, ".claude") {
+		t.Fatalf("claude dirs = %#v, want default home dir", got)
 	}
-	if flags.codexDir != filepath.Join(home, ".codex") {
-		t.Fatalf("codex dir = %q, want default home dir", flags.codexDir)
+	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != filepath.Join(home, ".codex") {
+		t.Fatalf("codex dirs = %#v, want default home dir", got)
 	}
 }
 
-func TestParseRunFlagsRejectsEmptyDirs(t *testing.T) {
-	if _, ok := parseRunFlags([]string{"--claude-dir", "", "--codex-dir", ""}); ok {
+func TestParseRunFlagsRejectsEmptyProviderDir(t *testing.T) {
+	if _, ok := parseRunFlags([]string{"--provider-dir", "claude="}); ok {
 		t.Fatal("parseRunFlags() ok = true, want false")
+	}
+}
+
+func TestParseRunFlagsUsesExplicitProviderDirs(t *testing.T) {
+	flags, ok := parseRunFlags([]string{
+		"--provider-dir", "claude=/tmp/claude",
+		"--provider-dir", "codex=/tmp/codex",
+	})
+	if !ok {
+		t.Fatal("parseRunFlags() ok = false, want true")
+	}
+	if got := flags.providerDirs[agentlib.ProviderClaude]; len(got) != 1 || got[0] != "/tmp/claude" {
+		t.Fatalf("claude dirs = %#v, want explicit dir", got)
+	}
+	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != "/tmp/codex" {
+		t.Fatalf("codex dirs = %#v, want explicit dir", got)
 	}
 }
 
@@ -84,7 +101,7 @@ func TestRunRejectsDaemonCommand(t *testing.T) {
 	}
 }
 
-func TestParseWorkerFlagsDefaultsToUserAgentDirs(t *testing.T) {
+func TestParseWorkerFlagsDefaultsToProviderDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -95,19 +112,19 @@ func TestParseWorkerFlagsDefaultsToUserAgentDirs(t *testing.T) {
 	if flags.interval != 30*time.Second {
 		t.Fatalf("interval = %s, want 30s", flags.interval)
 	}
-	if flags.claudeDir != filepath.Join(home, ".claude") {
-		t.Fatalf("claude dir = %q, want default home dir", flags.claudeDir)
+	if got := flags.providerDirs[agentlib.ProviderClaude]; len(got) != 1 || got[0] != filepath.Join(home, ".claude") {
+		t.Fatalf("claude dirs = %#v, want default home dir", got)
 	}
-	if flags.codexDir != filepath.Join(home, ".codex") {
-		t.Fatalf("codex dir = %q, want default home dir", flags.codexDir)
+	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != filepath.Join(home, ".codex") {
+		t.Fatalf("codex dirs = %#v, want default home dir", got)
 	}
 }
 
 func TestParseServiceFlagsSupportsSystemInstall(t *testing.T) {
 	flags, userService, ok := parseServiceFlags([]string{
 		"--system",
-		"--claude-dir", "/tmp/claude",
-		"--codex-dir", "/tmp/codex",
+		"--provider-dir", "claude=/tmp/claude",
+		"--provider-dir", "codex=/tmp/codex",
 		"--interval", "1m",
 	})
 	if !ok {
@@ -116,8 +133,11 @@ func TestParseServiceFlagsSupportsSystemInstall(t *testing.T) {
 	if userService {
 		t.Fatal("userService = true, want false with --system")
 	}
-	if flags.claudeDir != "/tmp/claude" || flags.codexDir != "/tmp/codex" {
-		t.Fatalf("dirs = %q %q, want explicit dirs", flags.claudeDir, flags.codexDir)
+	if got := flags.providerDirs[agentlib.ProviderClaude]; len(got) != 1 || got[0] != "/tmp/claude" {
+		t.Fatalf("claude dirs = %#v, want explicit dir", got)
+	}
+	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != "/tmp/codex" {
+		t.Fatalf("codex dirs = %#v, want explicit dir", got)
 	}
 	if flags.interval != time.Minute {
 		t.Fatalf("interval = %s, want 1m", flags.interval)

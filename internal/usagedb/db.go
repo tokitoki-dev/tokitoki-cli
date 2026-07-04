@@ -48,14 +48,6 @@ type SourceFile struct {
 	LastError     string         `json:"last_error,omitempty"`
 }
 
-type ScanResult struct {
-	FilesSeen      int `json:"files_seen"`
-	FilesScanned   int `json:"files_scanned"`
-	FilesSkipped   int `json:"files_skipped"`
-	EventsParsed   int `json:"events_parsed"`
-	EventsInserted int `json:"events_inserted"`
-}
-
 func Open(path string) (*DB, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
 	if err != nil {

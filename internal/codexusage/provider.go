@@ -5,7 +5,7 @@ import (
 	"github.com/labx/tokitoki-agent/internal/usageprovider"
 )
 
-// Provider parses Codex usage files.
+// Provider loads Codex usage entries.
 type Provider struct{}
 
 var _ usageprovider.Provider = Provider{}
@@ -15,12 +15,7 @@ func (Provider) Provider() usage.Provider {
 	return usage.ProviderCodex
 }
 
-// UsageFiles discovers Codex usage files below data directories.
-func (Provider) UsageFiles(paths []string) []string {
-	return UsageFiles(paths)
-}
-
-// ReadUsageFile parses a Codex usage file into normalized usage entries.
-func (Provider) ReadUsageFile(path string) ([]usage.Entry, error) {
-	return ReadUsageFile(path)
+// Entries loads normalized Codex usage entries below data roots.
+func (Provider) Entries(paths []string) ([]usage.Entry, error) {
+	return LoadEntriesFromPaths(paths, "")
 }
