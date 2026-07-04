@@ -91,6 +91,12 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 		ProviderQwen:    filepath.Join(home, ".qwen"),
 		ProviderPi:      filepath.Join(home, ".pi", "agent", "sessions"),
 		ProviderAmp:     filepath.Join(home, ".local", "share", "amp"),
+		ProviderDroid:   filepath.Join(home, ".factory", "sessions"),
+		ProviderKilo:    filepath.Join(home, ".local", "share", "kilo"),
+		ProviderHermes:  filepath.Join(home, ".hermes"),
+		ProviderOpenCode: filepath.Join(home,
+			".local", "share", "opencode",
+		),
 	}
 
 	for provider, dir := range want {
@@ -100,6 +106,12 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 	}
 	if got := dirs[ProviderOpenClaw]; len(got) != 4 {
 		t.Fatalf("openclaw dirs = %#v, want four defaults", got)
+	}
+	if got := dirs[ProviderCodebuff]; len(got) != 3 {
+		t.Fatalf("codebuff dirs = %#v, want three channel defaults", got)
+	}
+	if got := dirs[ProviderGoose]; len(got) != 3 {
+		t.Fatalf("goose dirs = %#v, want three db path defaults", got)
 	}
 }
 

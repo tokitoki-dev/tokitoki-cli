@@ -70,6 +70,16 @@ openclaw=~/.moltbot
 openclaw=~/.moldbot
 pi=~/.pi/agent/sessions
 amp=~/.local/share/amp
+droid=~/.factory/sessions
+kilo=~/.local/share/kilo
+hermes=~/.hermes
+codebuff=~/.config/manicode
+codebuff=~/.config/manicode-dev
+codebuff=~/.config/manicode-staging
+opencode=~/.local/share/opencode
+goose=~/.local/share/goose/sessions/sessions.db
+goose=~/Library/Application Support/goose/sessions/sessions.db
+goose=~/.local/share/Block/goose/sessions/sessions.db
 ```
 
 Pass one or more `--provider-dir provider=dir` values or `--interval` after the

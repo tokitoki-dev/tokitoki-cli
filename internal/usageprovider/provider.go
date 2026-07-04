@@ -8,6 +8,6 @@ type Provider interface {
 	// provider scan results.
 	Provider() usage.Provider
 
-	// Entries loads normalized usage entries below the provided data roots.
-	Entries(paths []string) ([]usage.Entry, error)
+	// Entries loads normalized usage entries from the provider's own source.
+	Entries() ([]usage.Entry, error)
 }

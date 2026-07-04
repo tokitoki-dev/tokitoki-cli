@@ -59,6 +59,24 @@ const (
 
 	// ProviderAmp identifies Amp usage files.
 	ProviderAmp Provider = "amp"
+
+	// ProviderDroid identifies Droid usage files.
+	ProviderDroid Provider = "droid"
+
+	// ProviderKilo identifies Kilo usage files.
+	ProviderKilo Provider = "kilo"
+
+	// ProviderHermes identifies Hermes Agent usage files.
+	ProviderHermes Provider = "hermes"
+
+	// ProviderCodebuff identifies Codebuff usage files.
+	ProviderCodebuff Provider = "codebuff"
+
+	// ProviderOpenCode identifies OpenCode usage files.
+	ProviderOpenCode Provider = "opencode"
+
+	// ProviderGoose identifies Goose usage files.
+	ProviderGoose Provider = "goose"
 )
 
 var (
@@ -241,5 +259,15 @@ func DefaultProviderDirs() map[Provider][]string {
 		ProviderOpenClaw: {filepath.Join(home, ".openclaw"), filepath.Join(home, ".clawdbot"), filepath.Join(home, ".moltbot"), filepath.Join(home, ".moldbot")},
 		ProviderPi:       {filepath.Join(home, ".pi", "agent", "sessions")},
 		ProviderAmp:      {filepath.Join(home, ".local", "share", "amp")},
+		ProviderDroid:    {filepath.Join(home, ".factory", "sessions")},
+		ProviderKilo:     {filepath.Join(home, ".local", "share", "kilo")},
+		ProviderHermes:   {filepath.Join(home, ".hermes")},
+		ProviderCodebuff: {filepath.Join(home, ".config", "manicode"), filepath.Join(home, ".config", "manicode-dev"), filepath.Join(home, ".config", "manicode-staging")},
+		ProviderOpenCode: {filepath.Join(home, ".local", "share", "opencode")},
+		ProviderGoose: {
+			filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"),
+			filepath.Join(home, "Library", "Application Support", "goose", "sessions", "sessions.db"),
+			filepath.Join(home, ".local", "share", "Block", "goose", "sessions", "sessions.db"),
+		},
 	}
 }
