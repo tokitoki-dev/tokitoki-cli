@@ -42,6 +42,12 @@ func DefaultProviders() []usageprovider.Provider {
 		agentusage.OpenClawProvider{},
 		agentusage.PiProvider{},
 		agentusage.AmpProvider{},
+		agentusage.DroidProvider{},
+		agentusage.KiloProvider{},
+		agentusage.HermesProvider{},
+		agentusage.CodebuffProvider{},
+		agentusage.OpenCodeProvider{},
+		agentusage.GooseProvider{},
 	}
 }
 
@@ -88,7 +94,7 @@ func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error)
 
 func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) (ProviderResult, error) {
 	var result ProviderResult
-	entries, err := provider.Entries(paths)
+	entries, err := providerWithPaths(provider, paths).Entries()
 	if err != nil {
 		return result, err
 	}
@@ -99,6 +105,18 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) 
 	result.EventsParsed = len(entries)
 	result.EventsInserted = inserted
 	return result, nil
+}
+
+type pathConfiguredProvider interface {
+	WithPaths(paths []string) usageprovider.Provider
+}
+
+func providerWithPaths(provider usageprovider.Provider, paths []string) usageprovider.Provider {
+	configured, ok := provider.(pathConfiguredProvider)
+	if !ok {
+		return provider
+	}
+	return configured.WithPaths(paths)
 }
 
 func (s *Scanner) registerProvider(provider usageprovider.Provider) {

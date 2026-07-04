@@ -178,6 +178,15 @@ func firstStringField(object map[string]any, keys ...string) string {
 	return ""
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func uintValue(value any) uint64 {
 	switch typed := value.(type) {
 	case json.Number:

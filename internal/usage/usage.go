@@ -20,6 +20,12 @@ const (
 	ProviderOpenClaw Provider = "openclaw"
 	ProviderPi       Provider = "pi"
 	ProviderAmp      Provider = "amp"
+	ProviderDroid    Provider = "droid"
+	ProviderKilo     Provider = "kilo"
+	ProviderHermes   Provider = "hermes"
+	ProviderCodebuff Provider = "codebuff"
+	ProviderOpenCode Provider = "opencode"
+	ProviderGoose    Provider = "goose"
 )
 
 const UnknownLanguage = "Unknown"

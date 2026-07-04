@@ -3,7 +3,7 @@ PKG := ./cmd/tokitoki
 
 # Provider data roots to scan. Override on the command line to point at
 # fixtures, e.g. `make run PROVIDER_DIRS='claude=/tmp/claude codex=/tmp/codex'`.
-PROVIDER_DIRS ?= claude=$(HOME)/.claude codex=$(HOME)/.codex copilot=$(HOME)/.copilot/otel gemini=$(HOME)/.gemini/tmp kimi=$(HOME)/.kimi qwen=$(HOME)/.qwen openclaw=$(HOME)/.openclaw openclaw=$(HOME)/.clawdbot openclaw=$(HOME)/.moltbot openclaw=$(HOME)/.moldbot pi=$(HOME)/.pi/agent/sessions amp=$(HOME)/.local/share/amp
+PROVIDER_DIRS ?= claude=$(HOME)/.claude codex=$(HOME)/.codex copilot=$(HOME)/.copilot/otel gemini=$(HOME)/.gemini/tmp kimi=$(HOME)/.kimi qwen=$(HOME)/.qwen openclaw=$(HOME)/.openclaw openclaw=$(HOME)/.clawdbot openclaw=$(HOME)/.moltbot openclaw=$(HOME)/.moldbot pi=$(HOME)/.pi/agent/sessions amp=$(HOME)/.local/share/amp droid=$(HOME)/.factory/sessions kilo=$(HOME)/.local/share/kilo hermes=$(HOME)/.hermes codebuff=$(HOME)/.config/manicode codebuff=$(HOME)/.config/manicode-dev codebuff=$(HOME)/.config/manicode-staging opencode=$(HOME)/.local/share/opencode goose=$(HOME)/.local/share/goose/sessions/sessions.db goose=$(HOME)/.local/share/Block/goose/sessions/sessions.db
 
 .DEFAULT_GOAL := run
 

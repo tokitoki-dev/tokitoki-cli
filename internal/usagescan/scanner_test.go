@@ -8,6 +8,7 @@ import (
 
 	"github.com/labx/tokitoki-agent/internal/usage"
 	"github.com/labx/tokitoki-agent/internal/usagedb"
+	"github.com/labx/tokitoki-agent/internal/usageprovider"
 )
 
 func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
@@ -112,7 +113,11 @@ func (p fakeProvider) Provider() usage.Provider {
 	return p.provider
 }
 
-func (p *fakeProvider) Entries(paths []string) ([]usage.Entry, error) {
+func (p *fakeProvider) WithPaths(paths []string) usageprovider.Provider {
 	p.paths = append([]string{}, paths...)
+	return p
+}
+
+func (p *fakeProvider) Entries() ([]usage.Entry, error) {
 	return p.entries, nil
 }
