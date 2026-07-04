@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -24,7 +23,7 @@ func AcquireDataLock(dir string, timeout time.Duration) (*DataLock, error) {
 
 	deadline := time.Now().Add(timeout)
 	for {
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = lockFile(file)
 		if err == nil {
 			return &DataLock{file: file}, nil
 		}
@@ -44,12 +43,8 @@ func (l *DataLock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockFile(l.file)
 	closeErr := l.file.Close()
 	l.file = nil
 	return errors.Join(unlockErr, closeErr)
-}
-
-func isLockBusy(err error) bool {
-	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }

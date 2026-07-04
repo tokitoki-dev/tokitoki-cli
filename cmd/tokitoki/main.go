@@ -4,27 +4,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	daemonservice "github.com/kardianos/service"
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/cli"
-	"github.com/labx/tokitoki-agent/internal/store"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
-	"github.com/labx/tokitoki-agent/internal/usagescan"
+	"github.com/labx/tokitoki-agent/pkg/agentlib"
 )
 
 const (
-	uploadTimeout       = 2 * time.Minute
-	commandLockTimeout  = uploadTimeout + 10*time.Second
 	defaultSyncInterval = 5 * time.Minute
 )
 
@@ -57,7 +51,7 @@ func run(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	syncCtx, cancel := context.WithTimeout(ctx, uploadTimeout)
+	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 	defer cancel()
 	if err := runSync(syncCtx, runFlags.claudeDir, runFlags.codexDir, os.Stdout); err != nil {
 		return fail(defaultLogger(), err)
@@ -68,8 +62,8 @@ func run(args []string) int {
 func parseRunFlags(args []string) (workerFlags, bool) {
 	flags := flag.NewFlagSet("tokitoki", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", defaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", defaultCodexDir(), "Codex data directory to scan")
+	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
+	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
 	}
@@ -85,37 +79,14 @@ func parseRunFlags(args []string) (workerFlags, bool) {
 }
 
 func runSync(ctx context.Context, claudeDir, codexDir string, out io.Writer) error {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	dataDir, err := store.InitializeDataDir()
+	client, err := agentlib.New(agentlib.Options{Logger: defaultLogger()})
 	if err != nil {
 		return err
 	}
-	lock, err := store.AcquireDataLock(dataDir, commandLockTimeout)
-	if err != nil {
+	if err := client.Sync(ctx, agentlib.SyncOptions{ClaudeDir: claudeDir, CodexDir: codexDir}); err != nil {
 		return err
 	}
-	defer lock.Close()
-
-	fileStore, err := store.Open(dataDir)
-	if err != nil {
-		return err
-	}
-	usageDB, err := usagedb.Open(filepath.Join(dataDir, store.UsageDBFile))
-	if err != nil {
-		return err
-	}
-	defer usageDB.Close()
-
-	app := &cli.App{
-		Agent:     agent.New(fileStore, logger),
-		UsageDB:   usageDB,
-		Scanner:   usagescan.New(usageDB),
-		ClaudeDir: claudeDir,
-		CodexDir:  codexDir,
-		Out:       out,
-	}
-
-	return app.Sync(ctx)
+	return writeJSON(out, map[string]bool{"ok": true})
 }
 
 func runSet(args []string) int {
@@ -124,26 +95,15 @@ func runSet(args []string) int {
 		return 2
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	dataDir, err := store.InitializeDataDir()
+	logger := defaultLogger()
+	client, err := agentlib.New(agentlib.Options{Logger: logger})
 	if err != nil {
 		return fail(logger, err)
 	}
-	lock, err := store.AcquireDataLock(dataDir, commandLockTimeout)
-	if err != nil {
+	if err := client.SetAPIKey(args[1]); err != nil {
 		return fail(logger, err)
 	}
-	defer lock.Close()
-
-	fileStore, err := store.Open(dataDir)
-	if err != nil {
-		return fail(logger, err)
-	}
-	app := &cli.App{
-		Agent: agent.New(fileStore, logger),
-		Out:   os.Stdout,
-	}
-	if err := app.SetAPIKey(args[1]); err != nil {
+	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(logger, err)
 	}
 	return 0
@@ -155,22 +115,16 @@ func runGet(args []string) int {
 		return 2
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	dataDir, err := store.InitializeDataDir()
+	logger := defaultLogger()
+	client, err := agentlib.New(agentlib.Options{Logger: logger})
 	if err != nil {
 		return fail(logger, err)
 	}
-	fileStore, err := store.Open(dataDir)
+	apiKey, err := client.GetAPIKey()
 	if err != nil {
 		return fail(logger, err)
 	}
-	app := &cli.App{
-		Agent: agent.New(fileStore, logger),
-		Out:   os.Stdout,
-	}
-	if err := app.GetAPIKey(); err != nil {
-		return fail(logger, err)
-	}
+	fmt.Fprintln(os.Stdout, apiKey)
 	return 0
 }
 
@@ -196,7 +150,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	defer ticker.Stop()
 
 	for {
-		syncCtx, cancel := context.WithTimeout(ctx, uploadTimeout)
+		syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 		if err := runSync(syncCtx, flags.claudeDir, flags.codexDir, os.Stdout); err != nil {
 			logger.Error("tokitoki sync failed", "error", err)
 		}
@@ -286,8 +240,8 @@ func runService(args []string) int {
 func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", defaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", defaultCodexDir(), "Codex data directory to scan")
+	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
+	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
 	interval := flags.Duration("interval", defaultSyncInterval, "sync interval")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
@@ -310,8 +264,8 @@ func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 func parseServiceFlags(args []string) (workerFlags, bool, bool) {
 	flags := flag.NewFlagSet("tokitoki service", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	claudeDir := flags.String("claude-dir", defaultClaudeDir(), "Claude data directory to scan")
-	codexDir := flags.String("codex-dir", defaultCodexDir(), "Codex data directory to scan")
+	claudeDir := flags.String("claude-dir", agentlib.DefaultClaudeDir(), "Claude data directory to scan")
+	codexDir := flags.String("codex-dir", agentlib.DefaultCodexDir(), "Codex data directory to scan")
 	interval := flags.Duration("interval", defaultSyncInterval, "sync interval")
 	system := flags.Bool("system", false, "install as a system service instead of a user service")
 	if err := flags.Parse(args); err != nil {
@@ -367,22 +321,6 @@ func serviceStatusString(status daemonservice.Status) string {
 	}
 }
 
-func defaultClaudeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
-}
-
-func defaultCodexDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".codex")
-}
-
 func usage() {
 	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to http://localhost:9093
 
@@ -416,4 +354,13 @@ func defaultLogger() *slog.Logger {
 func fail(logger *slog.Logger, err error) int {
 	logger.Error("tokitoki failed", "error", err)
 	return 1
+}
+
+func writeJSON(out io.Writer, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s\n", data)
+	return err
 }
