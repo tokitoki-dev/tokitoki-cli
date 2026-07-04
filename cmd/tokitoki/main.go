@@ -414,18 +414,19 @@ Usage:
   tokitoki get key
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
-Each invocation scans the directories you pass and uploads their usage events
-to http://localhost:9093/api/usage-events/batch. By default, tokitoki scans
-~/.claude and ~/.codex; pass one or more --provider-dir provider=dir values to
-scan an explicit provider set. The API key is read from ~/.tokitoki/api_key.
-Use tokitoki set key <API_KEY> to create or update that file. Set
-TOKITOKI_BASE_URL to override the default base URL.
+Each invocation scans the provider roots you pass and uploads their usage
+events to http://localhost:9093/api/usage-events/batch. By default, tokitoki
+scans the built-in roots for claude, codex, copilot, gemini, kimi, qwen,
+openclaw, pi, and amp. Pass one or more --provider-dir provider=dir values to
+scan an explicit provider set. The API key is read from ~/.tokitoki/api_key. Use
+tokitoki set key <API_KEY> to create or update that file. Set TOKITOKI_BASE_URL
+to override the default base URL.
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki
-  tokitoki --provider-dir claude=~/.claude --provider-dir codex=~/.codex
+  tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
   tokitoki service install
   tokitoki service status
 `)

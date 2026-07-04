@@ -65,8 +65,8 @@ func TestSyncRejectsEmptyDirectories(t *testing.T) {
 
 func TestNormalizeProviderDirsDropsEmptyDirectories(t *testing.T) {
 	dirs := normalizeProviderDirs(map[Provider][]string{
-		Provider("fixture"): []string{"fixture-dir"},
-		ProviderCodex:       []string{""},
+		Provider("fixture"): {"fixture-dir"},
+		ProviderCodex:       {""},
 	})
 
 	if got := dirs["fixture"]; len(got) != 1 || got[0] != "fixture-dir" {
@@ -77,12 +77,38 @@ func TestNormalizeProviderDirsDropsEmptyDirectories(t *testing.T) {
 	}
 }
 
+func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dirs := DefaultProviderDirs()
+	want := map[Provider]string{
+		ProviderClaude:  filepath.Join(home, ".claude"),
+		ProviderCodex:   filepath.Join(home, ".codex"),
+		ProviderCopilot: filepath.Join(home, ".copilot", "otel"),
+		ProviderGemini:  filepath.Join(home, ".gemini", "tmp"),
+		ProviderKimi:    filepath.Join(home, ".kimi"),
+		ProviderQwen:    filepath.Join(home, ".qwen"),
+		ProviderPi:      filepath.Join(home, ".pi", "agent", "sessions"),
+		ProviderAmp:     filepath.Join(home, ".local", "share", "amp"),
+	}
+
+	for provider, dir := range want {
+		if got := dirs[provider]; len(got) == 0 || got[0] != dir {
+			t.Fatalf("%s dirs = %#v, want first dir %q", provider, got, dir)
+		}
+	}
+	if got := dirs[ProviderOpenClaw]; len(got) != 4 {
+		t.Fatalf("openclaw dirs = %#v, want four defaults", got)
+	}
+}
+
 func TestSyncRequiresAPIKey(t *testing.T) {
 	client := newTestClient(t)
 	claudeDir := t.TempDir()
 
 	err := client.Sync(context.Background(), SyncOptions{
-		ProviderDirs: map[Provider][]string{ProviderClaude: []string{claudeDir}},
+		ProviderDirs: map[Provider][]string{ProviderClaude: {claudeDir}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "API key is required") {
 		t.Fatalf("Sync() error = %v, want API key requirement", err)

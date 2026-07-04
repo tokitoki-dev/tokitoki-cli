@@ -11,8 +11,15 @@ import (
 type Provider string
 
 const (
-	ProviderClaude Provider = "claude"
-	ProviderCodex  Provider = "codex"
+	ProviderClaude   Provider = "claude"
+	ProviderCodex    Provider = "codex"
+	ProviderCopilot  Provider = "copilot"
+	ProviderGemini   Provider = "gemini"
+	ProviderKimi     Provider = "kimi"
+	ProviderQwen     Provider = "qwen"
+	ProviderOpenClaw Provider = "openclaw"
+	ProviderPi       Provider = "pi"
+	ProviderAmp      Provider = "amp"
 )
 
 const UnknownLanguage = "Unknown"

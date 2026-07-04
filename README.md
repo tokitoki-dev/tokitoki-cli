@@ -1,8 +1,8 @@
 # TokiToki Agent
 
 TokiToki is a small cross-platform uploader for local AI coding usage. Each
-run reads the configured Claude Code and/or Codex session folders, then uploads
-the discovered events to the local TokiToki server.
+run reads the configured local agent usage folders, then uploads the discovered
+events to the local TokiToki server.
 
 The CLI can run once or install itself as an OS service.
 
@@ -21,7 +21,7 @@ fastest way to test a local upload against `localhost:9093`.
 # First run: save an API key.
 tokitoki set key "$TOKITOKI_API_KEY"
 
-# Later runs: scan and upload from ~/.claude and ~/.codex.
+# Later runs: scan and upload from the default provider directories.
 tokitoki
 
 # Install/start as a user service where supported.
@@ -33,7 +33,7 @@ Options:
 
 ```text
 --provider-dir      Provider data directory to scan as provider=dir; repeatable.
-                    Defaults to claude=~/.claude and codex=~/.codex.
+                    Defaults to the built-in provider directories below.
 ```
 
 Environment:
@@ -55,13 +55,29 @@ service restart         Restart the installed service.
 service status          Print service status.
 ```
 
-Normal runs and `service install` default to `claude=~/.claude` and
-`codex=~/.codex`; pass one or more `--provider-dir provider=dir` values or
-`--interval` after the service subcommand to override. The service integration
-uses `github.com/kardianos/service`, so Linux systemd, OpenRC, SysV, Upstart,
-macOS launchd, and Windows services use the same CLI surface. Service installs
-default to a user service; pass `--system` after the service action to request a
-system service:
+Normal runs and `service install` default to these provider roots:
+
+```text
+claude=~/.claude
+codex=~/.codex
+copilot=~/.copilot/otel
+gemini=~/.gemini/tmp
+kimi=~/.kimi
+qwen=~/.qwen
+openclaw=~/.openclaw
+openclaw=~/.clawdbot
+openclaw=~/.moltbot
+openclaw=~/.moldbot
+pi=~/.pi/agent/sessions
+amp=~/.local/share/amp
+```
+
+Pass one or more `--provider-dir provider=dir` values or `--interval` after the
+service subcommand to override. The service integration uses
+`github.com/kardianos/service`, so Linux systemd, OpenRC, SysV, Upstart, macOS
+launchd, and Windows services use the same CLI surface. Service installs default
+to a user service; pass `--system` after the service action to request a system
+service:
 
 ```sh
 tokitoki service install --system

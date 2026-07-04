@@ -24,6 +24,9 @@ func TestParseRunFlagsDefaultsToProviderDirs(t *testing.T) {
 	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != filepath.Join(home, ".codex") {
 		t.Fatalf("codex dirs = %#v, want default home dir", got)
 	}
+	if got := flags.providerDirs[agentlib.ProviderAmp]; len(got) != 1 || got[0] != filepath.Join(home, ".local", "share", "amp") {
+		t.Fatalf("amp dirs = %#v, want default home dir", got)
+	}
 }
 
 func TestParseRunFlagsRejectsEmptyProviderDir(t *testing.T) {
@@ -117,6 +120,9 @@ func TestParseWorkerFlagsDefaultsToProviderDirs(t *testing.T) {
 	}
 	if got := flags.providerDirs[agentlib.ProviderCodex]; len(got) != 1 || got[0] != filepath.Join(home, ".codex") {
 		t.Fatalf("codex dirs = %#v, want default home dir", got)
+	}
+	if got := flags.providerDirs[agentlib.ProviderAmp]; len(got) != 1 || got[0] != filepath.Join(home, ".local", "share", "amp") {
+		t.Fatalf("amp dirs = %#v, want default home dir", got)
 	}
 }
 
