@@ -165,10 +165,12 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 }
 
 func uploadEndpoint() string {
-	return baseURL() + "/api/usage-events/batch"
+	return BaseURL() + "/api/usage-events/batch"
 }
 
-func baseURL() string {
+// BaseURL is the TokiToki server every subsystem talks to — usage uploads and
+// update checks alike. TOKITOKI_BASE_URL overrides the default.
+func BaseURL() string {
 	value := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
 	if value == "" {
 		return DefaultServerURL

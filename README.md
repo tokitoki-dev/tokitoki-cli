@@ -47,6 +47,8 @@ Commands:
 ```text
 set key <API_KEY>       Create or update ~/.tokitoki/api_key.
 get key                 Print the API key from ~/.tokitoki/api_key.
+version                 Print the CLI version ("dev" for local builds).
+upgrade                 Replace this binary with the newest published release.
 service install         Install tokitoki as a service.
 service uninstall       Remove the installed service.
 service start           Start the installed service.
@@ -92,6 +94,46 @@ service:
 ```sh
 tokitoki service install --system
 ```
+
+## The shared CLI
+
+Every TokiToki front-end — the macOS and Windows apps and every editor
+plugin — invokes one shared copy of this CLI. Its location is a contract, not
+a suggestion; a plugin that resolves a different path forks the fleet and
+stops receiving updates:
+
+```text
+~/.tokitoki/bin/tokitoki            macOS, Linux
+%USERPROFILE%\.tokitoki\bin\tokitoki.exe   Windows
+```
+
+The `bin/` segment keeps executables apart from the data files that live in
+`~/.tokitoki` itself (`api_key`, the local database, lock files).
+
+Rules every front-end and plugin must follow:
+
+1. **Resolve the shared binary first**; fall back to your bundled copy only
+   when the shared one is missing or not executable.
+2. **Seed, never download.** When the shared binary is missing, or reports an
+   older version than your bundled copy, copy the bundled binary into the
+   shared path — staged next to the destination and renamed into place, so
+   the swap is atomic. Never overwrite a newer shared binary, and never
+   fetch the CLI from the network yourself.
+3. **Delegate freshness to the CLI.** Invoke `tokitoki upgrade` (silent, safe
+   to fire and forget) at launch and on a slow timer. The CLI owns the whole
+   check–download–verify–swap sequence.
+
+The reference implementation of all three rules is
+`tracklm-macos/tracklm-macos/AgentProcess.swift`.
+
+## Self-update
+
+`tokitoki upgrade` checks the server's `cli` release channel, downloads the
+new binary, verifies it reports the offered version, and renames it over the
+running executable — atomically, so concurrent invocations see either the old
+binary or the new one. The service worker runs the same check every 12 hours
+and exits after a successful update so the service manager relaunches the new
+binary. Local builds (version `dev`) never self-update.
 
 The default upload target is:
 
