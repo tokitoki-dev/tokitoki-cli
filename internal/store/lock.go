@@ -10,15 +10,30 @@ import (
 
 const LockFile = "tokitoki.lock"
 
+// ErrLockBusy reports that another process held the lock for the whole
+// timeout. Callers that treat "someone else is already doing this work" as
+// success test for it with errors.Is.
+var ErrLockBusy = errors.New("another TokiToki command is still running")
+
 type DataLock struct {
 	file *os.File
 }
 
 func AcquireDataLock(dir string, timeout time.Duration) (*DataLock, error) {
-	path := filepath.Join(dir, LockFile)
+	lock, err := AcquireLock(dir, LockFile, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("lock data dir: %w", err)
+	}
+	return lock, nil
+}
+
+// AcquireLock takes an exclusive advisory lock on dir/name, waiting up to
+// timeout before giving up with ErrLockBusy.
+func AcquireLock(dir, name string, timeout time.Duration) (*DataLock, error) {
+	path := filepath.Join(dir, name)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open data lock: %w", err)
+		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -29,11 +44,11 @@ func AcquireDataLock(dir string, timeout time.Duration) (*DataLock, error) {
 		}
 		if !isLockBusy(err) {
 			_ = file.Close()
-			return nil, fmt.Errorf("lock data dir: %w", err)
+			return nil, err
 		}
 		if time.Now().After(deadline) {
 			_ = file.Close()
-			return nil, fmt.Errorf("lock data dir: another TokiToki command is still running")
+			return nil, ErrLockBusy
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

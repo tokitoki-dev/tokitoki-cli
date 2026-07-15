@@ -21,16 +21,16 @@ func TestDefaultServerURLIsLocalhost(t *testing.T) {
 func TestBaseURLDefaultsToLocalhost(t *testing.T) {
 	t.Setenv(BaseURLEnv, "")
 
-	if got := baseURL(); got != DefaultServerURL {
-		t.Fatalf("baseURL() = %q, want %q", got, DefaultServerURL)
+	if got := BaseURL(); got != DefaultServerURL {
+		t.Fatalf("BaseURL() = %q, want %q", got, DefaultServerURL)
 	}
 }
 
 func TestBaseURLUsesEnvironment(t *testing.T) {
 	t.Setenv(BaseURLEnv, " https://tokitoki.example.com/ ")
 
-	if got := baseURL(); got != "https://tokitoki.example.com" {
-		t.Fatalf("baseURL() = %q, want environment URL without trailing slash", got)
+	if got := BaseURL(); got != "https://tokitoki.example.com" {
+		t.Fatalf("BaseURL() = %q, want environment URL without trailing slash", got)
 	}
 }
 

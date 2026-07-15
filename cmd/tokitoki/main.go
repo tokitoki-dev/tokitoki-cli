@@ -17,12 +17,23 @@ import (
 	"time"
 
 	daemonservice "github.com/kardianos/service"
+	"github.com/labx/tokitoki-agent/internal/selfupdate"
+	"github.com/labx/tokitoki-agent/internal/usageupload"
 	"github.com/labx/tokitoki-agent/pkg/agentlib"
 )
 
 const (
 	defaultSyncInterval = 5 * time.Minute
+	// upgradeInterval paces the service worker's self-update checks. The
+	// first check runs immediately after start, so a freshly installed or
+	// relaunched service is current within one loop iteration.
+	upgradeInterval = 12 * time.Hour
+	upgradeTimeout  = 5 * time.Minute
 )
+
+// version is stamped by the release build (-ldflags "-X main.version=…").
+// "dev" marks a local build, which never self-updates.
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -32,6 +43,13 @@ func run(args []string) int {
 	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
 		usage()
 		return 0
+	}
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+		fmt.Fprintln(os.Stdout, version)
+		return 0
+	}
+	if len(args) > 0 && args[0] == "upgrade" {
+		return runUpgrade(args[1:])
 	}
 	if len(args) > 0 && args[0] == "set" {
 		return runSet(args[1:])
@@ -131,6 +149,32 @@ func runGet(args []string) int {
 	return 0
 }
 
+func runUpgrade(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki upgrade")
+		return 2
+	}
+
+	logger := defaultLogger()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, upgradeTimeout)
+	defer cancel()
+
+	result, err := selfupdate.Upgrade(ctx, logger, usageupload.BaseURL(), version)
+	if err != nil {
+		return fail(logger, err)
+	}
+	if err := writeJSON(os.Stdout, map[string]any{
+		"ok":      true,
+		"updated": result.Updated,
+		"version": result.Version,
+	}); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
 type workerFlags struct {
 	providerDirs map[agentlib.Provider][]string
 	interval     time.Duration
@@ -151,12 +195,30 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	ticker := time.NewTicker(flags.interval)
 	defer ticker.Stop()
 
+	// Zero means "never checked", so the first iteration checks right away.
+	var lastUpgradeCheck time.Time
+
 	for {
 		syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 		if err := runSync(syncCtx, flags.providerDirs, os.Stdout); err != nil {
 			logger.Error("tokitoki sync failed", "error", err)
 		}
 		cancel()
+
+		if time.Since(lastUpgradeCheck) >= upgradeInterval {
+			lastUpgradeCheck = time.Now()
+			upgradeCtx, cancel := context.WithTimeout(ctx, upgradeTimeout)
+			result, err := selfupdate.Upgrade(upgradeCtx, logger, usageupload.BaseURL(), version)
+			cancel()
+			if err != nil {
+				logger.Warn("tokitoki self-update failed", "error", err)
+			} else if result.Updated {
+				// The binary on disk is new but this process is still the
+				// old code. Exit; the service manager restarts us as the
+				// new version.
+				return 0
+			}
+		}
 
 		select {
 		case <-ctx.Done():
@@ -412,6 +474,8 @@ Usage:
   tokitoki [--provider-dir PROVIDER=DIR ...]
   tokitoki set key <API_KEY>
   tokitoki get key
+  tokitoki version
+  tokitoki upgrade
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the provider roots you pass and uploads their usage
@@ -422,6 +486,10 @@ or more --provider-dir provider=dir values to scan an explicit provider set.
 The API key is read from ~/.tokitoki/api_key. Use tokitoki set key <API_KEY> to
 create or update that file. Set TOKITOKI_BASE_URL to override the default base
 URL.
+
+tokitoki upgrade replaces this binary with the newest published release from
+the same server; the service worker does the same check every 12 hours on its
+own. Local builds (version "dev") never self-update.
 
 Examples:
   tokitoki set key tt_live_xxx
