@@ -131,8 +131,8 @@ func runSet(args []string) int {
 }
 
 func runGet(args []string) int {
-	if len(args) != 1 || args[0] != "key" {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki get key")
+	if len(args) != 1 || (args[0] != "key" && args[0] != "dashboard-url") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki get <key|dashboard-url>")
 		return 2
 	}
 
@@ -141,11 +141,22 @@ func runGet(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
-	apiKey, err := client.GetAPIKey()
+
+	var value string
+	switch args[0] {
+	case "key":
+		value, err = client.GetAPIKey()
+	case "dashboard-url":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		value, err = client.DashboardURL(ctx)
+	}
 	if err != nil {
 		return fail(logger, err)
 	}
-	fmt.Fprintln(os.Stdout, apiKey)
+	fmt.Fprintln(os.Stdout, value)
 	return 0
 }
 
@@ -474,6 +485,7 @@ Usage:
   tokitoki [--provider-dir PROVIDER=DIR ...]
   tokitoki set key <API_KEY>
   tokitoki get key
+  tokitoki get dashboard-url
   tokitoki version
   tokitoki upgrade
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
@@ -494,6 +506,7 @@ own. Local builds (version "dev") never self-update.
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
+  tokitoki get dashboard-url
   tokitoki
   tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
   tokitoki service install

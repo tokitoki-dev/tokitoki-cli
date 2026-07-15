@@ -14,7 +14,9 @@ import (
 	"github.com/labx/tokitoki-agent/internal/agent"
 	"github.com/labx/tokitoki-agent/internal/cli"
 	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/labx/tokitoki-agent/internal/deviceauth"
 	"github.com/labx/tokitoki-agent/internal/store"
+	"github.com/labx/tokitoki-agent/internal/usageupload"
 	"github.com/labx/tokitoki-agent/internal/usage"
 	"github.com/labx/tokitoki-agent/internal/usagedb"
 	"github.com/labx/tokitoki-agent/internal/usagescan"
@@ -178,6 +180,19 @@ func (c *Client) GetAPIKey() (string, error) {
 		return "", ErrMissingAPIKey
 	}
 	return settings.APIKey, nil
+}
+
+// DashboardURL exchanges the stored API key for a one-time browser login URL.
+// Opening it signs the user straight into their web dashboard — no password.
+func (c *Client) DashboardURL(ctx context.Context) (string, error) {
+	apiKey, err := c.GetAPIKey()
+	if err != nil {
+		return "", err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return deviceauth.DashboardURL(ctx, usageupload.BaseURL(), apiKey)
 }
 
 // Sync scans selected provider directories and uploads newly discovered events.
