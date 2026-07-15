@@ -47,6 +47,7 @@ Commands:
 ```text
 set key <API_KEY>       Create or update ~/.tokitoki/api_key.
 get key                 Print the API key from ~/.tokitoki/api_key.
+get dashboard-url       Print a one-time URL that opens the web dashboard signed in.
 version                 Print the CLI version ("dev" for local builds).
 upgrade                 Replace this binary with the newest published release.
 service install         Install tokitoki as a service.
