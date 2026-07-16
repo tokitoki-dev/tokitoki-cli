@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/labx/tokitoki-agent/internal/agent"
 	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/labx/tokitoki-agent/internal/usagedb"
 )
 
 const (
@@ -22,10 +24,19 @@ const (
 	BaseURLEnv       = "TOKITOKI_BASE_URL"
 )
 
-// maxBatchEvents must stay at or below the server's per-batch limit
-// (lib/ingest.ts MAX_BATCH_EVENTS = 5000). Larger uploads are split into
-// several requests; one batch is one server-side transaction.
-const maxBatchEvents = 5000
+const (
+	// queueBatchSize is the number of events per upload request. It must stay
+	// at or below the server's per-batch limit (lib/ingest.ts
+	// MAX_BATCH_EVENTS = 5000); one batch is one server-side transaction.
+	queueBatchSize = 1000
+
+	// maxEventsPerRun bounds one sync run so it finishes inside the caller's
+	// upload timeout. Whatever is left stays queued for the next run.
+	maxEventsPerRun = 5000
+
+	// uploadedRetention is how long uploaded events are kept before pruning.
+	uploadedRetention = 30 * 24 * time.Hour
+)
 
 type Payload struct {
 	BatchID string        `json:"batch_id"`
@@ -83,50 +94,72 @@ type Reject struct {
 	Reason string `json:"reason"`
 }
 
-type BatchError struct {
-	Events []usage.Entry
-	Err    error
-}
-
-func (e BatchError) Error() string {
-	return e.Err.Error()
-}
-
-func (e BatchError) Unwrap() error {
-	return e.Err
-}
-
+// Upload sends one batch of events to the server. Callers are expected to
+// keep batches at or below queueBatchSize.
 func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) (Response, error) {
-	return UploadEach(ctx, settings, events, nil)
-}
-
-func UploadEach(ctx context.Context, settings agent.Settings, events []usage.Entry, onBatch func([]usage.Entry, Response) error) (Response, error) {
 	if len(events) == 0 {
 		return Response{OK: true}, nil
 	}
+	return uploadBatch(ctx, settings, events)
+}
 
-	result := Response{OK: true}
-	for start := 0; start < len(events); start += maxBatchEvents {
-		end := start + maxBatchEvents
-		if end > len(events) {
-			end = len(events)
-		}
-		batch := events[start:end]
-		resp, err := uploadBatch(ctx, settings, batch)
+// SyncPending uploads events queued in db, oldest first, in batches. The
+// first failed request stops the run: offline means every later batch fails
+// the same way, and the failed events back off in the queue instead of being
+// retried immediately. Uploaded events older than uploadedRetention are
+// pruned before sending.
+func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) error {
+	if _, err := db.PruneUploaded(time.Now().Add(-uploadedRetention)); err != nil {
+		return err
+	}
+
+	sent := 0
+	for sent < maxEventsPerRun {
+		events, err := db.PendingEvents(time.Now(), queueBatchSize)
 		if err != nil {
-			return result, BatchError{Events: batch, Err: err}
+			return err
 		}
-		if onBatch != nil {
-			if err := onBatch(batch, resp); err != nil {
-				return result, err
+		if len(events) == 0 {
+			return nil
+		}
+
+		response, err := uploadBatch(ctx, settings, events)
+		if err != nil {
+			if markErr := db.MarkEventsUploadFailed(eventIDs(events), err.Error()); markErr != nil {
+				return errors.Join(err, markErr)
+			}
+			return err
+		}
+
+		uploaded := append(append([]string{}, response.Accepted...), response.Duplicate...)
+		if err := db.MarkEventsUploaded(uploaded); err != nil {
+			return err
+		}
+		rejected := make(map[string]string, len(response.Rejected))
+		for _, item := range response.Rejected {
+			if item.ID != "" {
+				rejected[item.ID] = item.Reason
 			}
 		}
-		result.BatchID = resp.BatchID
-		result.Accepted = append(result.Accepted, resp.Accepted...)
-		result.Duplicate = append(result.Duplicate, resp.Duplicate...)
-		result.Rejected = append(result.Rejected, resp.Rejected...)
+		if err := db.MarkEventsRejected(rejected); err != nil {
+			return err
+		}
+		if len(uploaded)+len(rejected) == 0 {
+			return fmt.Errorf("usage upload made no progress: server acknowledged none of %d events", len(events))
+		}
+		sent += len(events)
 	}
-	return result, nil
+	return nil
+}
+
+func eventIDs(events []usage.Entry) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		if event.ID != "" {
+			ids = append(ids, event.ID)
+		}
+	}
+	return ids
 }
 
 func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.Entry) (Response, error) {

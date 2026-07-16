@@ -57,26 +57,7 @@ func (a *App) Sync(ctx context.Context) error {
 	if _, err := a.Scanner.Scan(a.ProviderDirs); err != nil {
 		return err
 	}
-	events, err := a.UsageDB.PendingUsageEvents(0)
-	if err != nil {
-		return err
-	}
-	_, err = usageupload.UploadEach(ctx, settings, events, func(_ []usage.Entry, response usageupload.Response) error {
-		uploaded := append([]string{}, response.Accepted...)
-		uploaded = append(uploaded, response.Duplicate...)
-		if err := a.UsageDB.MarkEventsUploaded(uploaded); err != nil {
-			return err
-		}
-		if err := a.UsageDB.MarkEventsRejected(rejectedReasons(response.Rejected)); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		var batchError usageupload.BatchError
-		if errors.As(err, &batchError) {
-			_ = a.UsageDB.MarkEventsUploadFailed(eventIDs(batchError.Events), err.Error())
-		}
+	if err := usageupload.SyncPending(ctx, settings, a.UsageDB); err != nil {
 		return err
 	}
 	return a.writeJSON(map[string]bool{"ok": true})
@@ -91,24 +72,4 @@ func (a *App) writeJSON(v any) error {
 		return err
 	}
 	return nil
-}
-
-func eventIDs(events []usage.Entry) []string {
-	ids := make([]string, 0, len(events))
-	for _, event := range events {
-		if event.ID != "" {
-			ids = append(ids, event.ID)
-		}
-	}
-	return ids
-}
-
-func rejectedReasons(rejected []usageupload.Reject) map[string]string {
-	reasons := make(map[string]string, len(rejected))
-	for _, item := range rejected {
-		if item.ID != "" {
-			reasons[item.ID] = item.Reason
-		}
-	}
-	return reasons
 }

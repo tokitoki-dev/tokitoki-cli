@@ -28,7 +28,7 @@ func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	db, err := usagedb.Open(filepath.Join(dir, "usage.bolt"))
+	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
 
 func TestScanUsesRegisteredProvider(t *testing.T) {
 	dir := t.TempDir()
-	db, err := usagedb.Open(filepath.Join(dir, "usage.bolt"))
+	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

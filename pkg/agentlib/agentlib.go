@@ -250,8 +250,8 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 }
 
 // SendHeartbeat persists an IDE activity event before attempting upload. If
-// the network is unavailable the event stays pending in the shared Bolt store
-// and a later heartbeat or normal sync retries it.
+// the network is unavailable the event stays queued in the shared local
+// database and a later heartbeat or normal sync retries it with backoff.
 func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	if strings.TrimSpace(heartbeat.Entity) == "" {
 		return errors.New("heartbeat entity is required")
@@ -332,36 +332,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		if _, err := usageDB.InsertEvents([]usage.Entry{entry}); err != nil {
 			return err
 		}
-
-		pending, err := usageDB.PendingUsageEvents(0)
-		if err != nil {
-			return err
-		}
-		_, err = usageupload.UploadEach(ctx, settings, pending, func(_ []usage.Entry, response usageupload.Response) error {
-			uploaded := append([]string{}, response.Accepted...)
-			uploaded = append(uploaded, response.Duplicate...)
-			if err := usageDB.MarkEventsUploaded(uploaded); err != nil {
-				return err
-			}
-			rejected := make(map[string]string, len(response.Rejected))
-			for _, item := range response.Rejected {
-				if item.ID != "" {
-					rejected[item.ID] = item.Reason
-				}
-			}
-			return usageDB.MarkEventsRejected(rejected)
-		})
-		if err != nil {
-			var batchError usageupload.BatchError
-			if errors.As(err, &batchError) {
-				ids := make([]string, 0, len(batchError.Events))
-				for _, event := range batchError.Events {
-					ids = append(ids, event.ID)
-				}
-				_ = usageDB.MarkEventsUploadFailed(ids, err.Error())
-			}
-		}
-		return err
+		return usageupload.SyncPending(ctx, settings, usageDB)
 	})
 }
 
