@@ -5,21 +5,25 @@ package agentlib
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/labx/tokitoki-agent/internal/agent"
 	"github.com/labx/tokitoki-agent/internal/cli"
 	"github.com/labx/tokitoki-agent/internal/config"
 	"github.com/labx/tokitoki-agent/internal/deviceauth"
+	"github.com/labx/tokitoki-agent/internal/langdetect"
 	"github.com/labx/tokitoki-agent/internal/store"
-	"github.com/labx/tokitoki-agent/internal/usageupload"
 	"github.com/labx/tokitoki-agent/internal/usage"
 	"github.com/labx/tokitoki-agent/internal/usagedb"
 	"github.com/labx/tokitoki-agent/internal/usagescan"
+	"github.com/labx/tokitoki-agent/internal/usageupload"
 )
 
 const (
@@ -111,6 +115,23 @@ type SyncOptions struct {
 	// ProviderDirs selects data directories by provider. This is the extension
 	// point for new local AI agents.
 	ProviderDirs map[Provider][]string
+}
+
+// Heartbeat describes one WakaTime-style IDE activity sample.
+type Heartbeat struct {
+	Entity         string
+	Timestamp      time.Time
+	Project        string
+	ProjectPath    string
+	Language       string
+	Branch         string
+	Editor         string
+	Plugin         string
+	Category       string
+	IsWrite        bool
+	LineNumber     int
+	CursorPosition int
+	LinesInFile    int
 }
 
 // Client provides local settings and usage sync operations for native clients.
@@ -225,6 +246,122 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 			Out:          io.Discard,
 		}
 		return app.Sync(ctx)
+	})
+}
+
+// SendHeartbeat persists an IDE activity event before attempting upload. If
+// the network is unavailable the event stays pending in the shared Bolt store
+// and a later heartbeat or normal sync retries it.
+func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
+	if strings.TrimSpace(heartbeat.Entity) == "" {
+		return errors.New("heartbeat entity is required")
+	}
+	if strings.TrimSpace(heartbeat.Editor) == "" {
+		return errors.New("heartbeat editor is required")
+	}
+	if heartbeat.Timestamp.IsZero() {
+		heartbeat.Timestamp = time.Now().UTC()
+	}
+	if strings.TrimSpace(heartbeat.Project) == "" {
+		heartbeat.Project = filepath.Base(strings.TrimSpace(heartbeat.ProjectPath))
+	}
+	if strings.TrimSpace(heartbeat.Project) == "" {
+		heartbeat.Project = "unknown"
+	}
+	if strings.TrimSpace(heartbeat.Language) == "" {
+		heartbeat.Language = langdetect.FromPath(heartbeat.Entity)
+	}
+	if strings.TrimSpace(heartbeat.Category) == "" {
+		heartbeat.Category = "coding"
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	isWrite := heartbeat.IsWrite
+	entry := usage.Entry{
+		Provider:    usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
+		SourceType:  "ide",
+		EventKind:   "heartbeat",
+		Timestamp:   heartbeat.Timestamp.UTC(),
+		Date:        heartbeat.Timestamp.UTC().Format("2006-01-02"),
+		Project:     strings.TrimSpace(heartbeat.Project),
+		ProjectPath: strings.TrimSpace(heartbeat.ProjectPath),
+		Language:    usage.NormalizeLanguage(heartbeat.Language),
+		OS:          usage.NormalizeOS(runtime.GOOS),
+		Client:      strings.TrimSpace(heartbeat.Editor),
+		Entity:      strings.TrimSpace(heartbeat.Entity),
+		EntityType:  "file",
+		Branch:      strings.TrimSpace(heartbeat.Branch),
+		Editor:      strings.TrimSpace(heartbeat.Editor),
+		Category:    strings.TrimSpace(heartbeat.Category),
+		IsWrite:     &isWrite,
+		Raw: map[string]any{
+			"plugin":          strings.TrimSpace(heartbeat.Plugin),
+			"line_number":     heartbeat.LineNumber,
+			"cursor_position": heartbeat.CursorPosition,
+			"lines_in_file":   heartbeat.LinesInFile,
+		},
+	}
+	entry.ID = usage.StableID(
+		entry.SourceType,
+		string(entry.Provider),
+		entry.Entity,
+		entry.Timestamp.Format(time.RFC3339Nano),
+		fmt.Sprintf("%t", heartbeat.IsWrite),
+	)
+
+	return c.withDataLock(func() error {
+		fileStore, err := store.Open(c.dataDir)
+		if err != nil {
+			return err
+		}
+		settings, err := agent.New(fileStore, c.logger).Settings()
+		if err != nil {
+			return err
+		}
+		if settings.APIKey == "" {
+			return ErrMissingAPIKey
+		}
+
+		usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
+		if err != nil {
+			return err
+		}
+		defer usageDB.Close()
+		if _, err := usageDB.InsertEvents([]usage.Entry{entry}); err != nil {
+			return err
+		}
+
+		pending, err := usageDB.PendingUsageEvents(0)
+		if err != nil {
+			return err
+		}
+		_, err = usageupload.UploadEach(ctx, settings, pending, func(_ []usage.Entry, response usageupload.Response) error {
+			uploaded := append([]string{}, response.Accepted...)
+			uploaded = append(uploaded, response.Duplicate...)
+			if err := usageDB.MarkEventsUploaded(uploaded); err != nil {
+				return err
+			}
+			rejected := make(map[string]string, len(response.Rejected))
+			for _, item := range response.Rejected {
+				if item.ID != "" {
+					rejected[item.ID] = item.Reason
+				}
+			}
+			return usageDB.MarkEventsRejected(rejected)
+		})
+		if err != nil {
+			var batchError usageupload.BatchError
+			if errors.As(err, &batchError) {
+				ids := make([]string, 0, len(batchError.Events))
+				for _, event := range batchError.Events {
+					ids = append(ids, event.ID)
+				}
+				_ = usageDB.MarkEventsUploadFailed(ids, err.Error())
+			}
+		}
+		return err
 	})
 }
 

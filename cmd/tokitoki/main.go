@@ -51,6 +51,9 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "upgrade" {
 		return runUpgrade(args[1:])
 	}
+	if len(args) > 0 && args[0] == "heartbeat" {
+		return runHeartbeat(args[1:])
+	}
 	if len(args) > 0 && args[0] == "set" {
 		return runSet(args[1:])
 	}
@@ -74,6 +77,75 @@ func run(args []string) int {
 	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 	defer cancel()
 	if err := runSync(syncCtx, runFlags.providerDirs, os.Stdout); err != nil {
+		return fail(defaultLogger(), err)
+	}
+	return 0
+}
+
+func runHeartbeat(args []string) int {
+	flags := flag.NewFlagSet("tokitoki heartbeat", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	entity := flags.String("entity", "", "absolute path of the active file")
+	timestamp := flags.Float64("time", 0, "heartbeat time as Unix seconds")
+	project := flags.String("project", "", "project name")
+	projectFolder := flags.String("project-folder", "", "absolute project root")
+	language := flags.String("language", "", "file language")
+	branch := flags.String("branch", "", "source-control branch")
+	editor := flags.String("editor", "eclipse", "editor identifier")
+	plugin := flags.String("plugin", "", "editor and plugin version")
+	category := flags.String("category", "coding", "activity category")
+	write := flags.Bool("write", false, "mark this heartbeat as a file write")
+	lineNumber := flags.Int("lineno", 0, "one-based cursor line")
+	cursorPosition := flags.Int("cursorpos", 0, "one-based cursor column")
+	linesInFile := flags.Int("lines-in-file", 0, "number of lines in the file")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki heartbeat does not accept positional arguments")
+		return 2
+	}
+	if strings.TrimSpace(*entity) == "" {
+		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --entity")
+		return 2
+	}
+	if strings.TrimSpace(*editor) == "" {
+		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --editor")
+		return 2
+	}
+
+	heartbeatTime := time.Now().UTC()
+	if *timestamp != 0 {
+		seconds := int64(*timestamp)
+		nanoseconds := int64((*timestamp - float64(seconds)) * float64(time.Second))
+		heartbeatTime = time.Unix(seconds, nanoseconds).UTC()
+	}
+
+	client, err := agentlib.New(agentlib.Options{Logger: defaultLogger()})
+	if err != nil {
+		return fail(defaultLogger(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), agentlib.DefaultUploadTimeout)
+	defer cancel()
+	err = client.SendHeartbeat(ctx, agentlib.Heartbeat{
+		Entity:         *entity,
+		Timestamp:      heartbeatTime,
+		Project:        *project,
+		ProjectPath:    *projectFolder,
+		Language:       *language,
+		Branch:         *branch,
+		Editor:         *editor,
+		Plugin:         *plugin,
+		Category:       *category,
+		IsWrite:        *write,
+		LineNumber:     *lineNumber,
+		CursorPosition: *cursorPosition,
+		LinesInFile:    *linesInFile,
+	})
+	if err != nil {
+		return fail(defaultLogger(), err)
+	}
+	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(defaultLogger(), err)
 	}
 	return 0
@@ -486,6 +558,7 @@ Usage:
   tokitoki set key <API_KEY>
   tokitoki get key
   tokitoki get dashboard-url
+	  tokitoki heartbeat --entity FILE [options]
   tokitoki version
   tokitoki upgrade
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
@@ -507,6 +580,7 @@ Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki get dashboard-url
+	  tokitoki heartbeat --entity /repo/main.go --project repo --project-folder /repo --editor eclipse
   tokitoki
   tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
   tokitoki service install

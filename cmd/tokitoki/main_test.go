@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/labx/tokitoki-agent/internal/usageupload"
 	"github.com/labx/tokitoki-agent/pkg/agentlib"
 )
 
@@ -95,6 +99,62 @@ func TestRunGetKeyReturnsErrorWhenMissing(t *testing.T) {
 func TestRunGetKeyRejectsExtraArgs(t *testing.T) {
 	if code := run([]string{"get", "key", "extra"}); code != 2 {
 		t.Fatalf("run(get key extra) = %d, want 2", code)
+	}
+}
+
+func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if code := run([]string{"set", "key", "tokitoki_test_key"}); code != 0 {
+		t.Fatalf("run(set key) = %d, want 0", code)
+	}
+
+	var payload usageupload.Payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/usage-events/batch" {
+			t.Errorf("path = %q, want usage batch endpoint", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		accepted := []string{}
+		if len(payload.Events) == 1 {
+			accepted = append(accepted, payload.Events[0].ID)
+		}
+		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted})
+	}))
+	defer server.Close()
+	t.Setenv(usageupload.BaseURLEnv, server.URL)
+
+	code := run([]string{
+		"heartbeat",
+		"--entity", "/repo/src/App.java",
+		"--time", "1784188800.25",
+		"--project", "repo",
+		"--project-folder", "/repo",
+		"--editor", "eclipse",
+		"--plugin", "eclipse/4.40 tokitoki-eclipse/0.1.0",
+		"--write",
+		"--lineno", "7",
+	})
+	if code != 0 {
+		t.Fatalf("run(heartbeat) = %d, want 0", code)
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(payload.Events))
+	}
+	event := payload.Events[0]
+	if event.SourceType != "ide" || event.SourceProvider != "eclipse" || event.EventKind != "heartbeat" {
+		t.Fatalf("source fields = %+v, want Eclipse IDE heartbeat", event)
+	}
+	if event.Entity != "/repo/src/App.java" || event.Language != "Java" {
+		t.Fatalf("entity/language = %q/%q, want Java file", event.Entity, event.Language)
+	}
+	if event.IsWrite == nil || !*event.IsWrite {
+		t.Fatalf("is_write = %v, want true", event.IsWrite)
+	}
+	if got := event.Raw["line_number"]; got != float64(7) && got != 7 {
+		t.Fatalf("line_number = %#v, want 7", got)
 	}
 }
 

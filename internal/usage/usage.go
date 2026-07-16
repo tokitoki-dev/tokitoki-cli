@@ -43,6 +43,8 @@ type TokenUsage struct {
 type Entry struct {
 	Provider    Provider  `json:"provider"`
 	ID          string    `json:"id,omitempty"`
+	SourceType  string    `json:"source_type,omitempty"`
+	EventKind   string    `json:"event_kind,omitempty"`
 	SourceFile  string    `json:"source_file,omitempty"`
 	SourceLine  int       `json:"source_line,omitempty"`
 	SourceStart int64     `json:"source_start,omitempty"`
@@ -60,8 +62,15 @@ type Entry struct {
 	// Client is the human-readable IDE or app source the request came from.
 	// VS Code plugins are normalized across providers, but standalone apps
 	// remain product-specific, e.g. "VS Code", "Codex Desktop", "Claude CLI".
-	Client string     `json:"client,omitempty"`
-	Usage  TokenUsage `json:"usage"`
+	Client     string         `json:"client,omitempty"`
+	Entity     string         `json:"entity,omitempty"`
+	EntityType string         `json:"entity_type,omitempty"`
+	Branch     string         `json:"branch,omitempty"`
+	Editor     string         `json:"editor,omitempty"`
+	Category   string         `json:"category,omitempty"`
+	IsWrite    *bool          `json:"is_write,omitempty"`
+	Raw        map[string]any `json:"raw,omitempty"`
+	Usage      TokenUsage     `json:"usage"`
 }
 
 // NormalizeOS maps a Go runtime.GOOS value to a human-readable name.
