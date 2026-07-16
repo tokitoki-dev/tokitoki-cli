@@ -1,383 +1,209 @@
+// Package usagedb persists usage events and their upload queue state in a
+// local SQLite database. Events are written first with status "pending" and
+// uploaded afterwards; failed uploads back off exponentially so an offline
+// machine retries calmly instead of hammering the network on every heartbeat.
 package usagedb
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
-	"sort"
+	"path/filepath"
 	"time"
 
 	"github.com/labx/tokitoki-agent/internal/usage"
-	bolt "go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 )
-
-var (
-	usageEventsBucket  = []byte("usage_events")
-	uploadStatesBucket = []byte("upload_states")
-	sourceFilesBucket  = []byte("source_files")
-)
-
-type DB struct {
-	db *bolt.DB
-}
-
-type UploadStatus string
 
 const (
-	UploadPending  UploadStatus = "pending"
-	UploadFailed   UploadStatus = "failed"
-	UploadUploaded UploadStatus = "uploaded"
-	UploadRejected UploadStatus = "rejected"
+	// backoffBaseSeconds is the delay after the first failed upload attempt.
+	// Each further failure doubles it, capped at backoffMaxSeconds.
+	backoffBaseSeconds = 30
+	backoffMaxSeconds  = 3600
 )
 
-type UploadState struct {
-	EventID       string       `json:"event_id"`
-	Status        UploadStatus `json:"status"`
-	AttemptCount  int          `json:"attempt_count"`
-	LastAttemptAt *time.Time   `json:"last_attempt_at,omitempty"`
-	UploadedAt    *time.Time   `json:"uploaded_at,omitempty"`
-	LastError     string       `json:"last_error,omitempty"`
-}
+const schema = `
+CREATE TABLE IF NOT EXISTS usage_events (
+	id              TEXT PRIMARY KEY,
+	ts              INTEGER NOT NULL,
+	payload         TEXT NOT NULL,
+	status          TEXT NOT NULL DEFAULT 'pending',
+	attempt_count   INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at INTEGER NOT NULL DEFAULT 0,
+	uploaded_at     INTEGER,
+	last_error      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_queue ON usage_events(status, next_attempt_at);
+`
 
-type SourceFile struct {
-	Provider      usage.Provider `json:"provider"`
-	Path          string         `json:"path"`
-	Size          int64          `json:"size"`
-	ModTimeUnixNS int64          `json:"mtime_unix_ns"`
-	ScannedAt     time.Time      `json:"scanned_at"`
-	LastError     string         `json:"last_error,omitempty"`
+type DB struct {
+	db *sql.DB
 }
 
 func Open(path string) (*DB, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	// The DSN is a "file:" URI, so Windows paths must use forward slashes.
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", filepath.ToSlash(path))
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open usage db: %w", err)
 	}
-	store := &DB{db: db}
-	if err := store.migrate(); err != nil {
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("migrate usage db: %w", err)
 	}
-	return store, nil
+	return &DB{db: db}, nil
 }
 
 func (s *DB) Close() error {
 	return s.db.Close()
 }
 
-func (s *DB) migrate() error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(usageEventsBucket); err != nil {
-			return fmt.Errorf("create usage events bucket: %w", err)
-		}
-		if _, err := tx.CreateBucketIfNotExists(uploadStatesBucket); err != nil {
-			return fmt.Errorf("create upload states bucket: %w", err)
-		}
-		if _, err := tx.CreateBucketIfNotExists(sourceFilesBucket); err != nil {
-			return fmt.Errorf("create source files bucket: %w", err)
-		}
-		return nil
-	})
-}
-
-func (s *DB) SourceFile(provider usage.Provider, path string) (SourceFile, bool, error) {
-	var source SourceFile
-	key := sourceFileKey(provider, path)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(sourceFilesBucket)
-		data := bucket.Get([]byte(key))
-		if data == nil {
-			return nil
-		}
-		if err := json.Unmarshal(data, &source); err != nil {
-			return fmt.Errorf("decode source file %q: %w", key, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return SourceFile{}, false, err
-	}
-	if source.Path == "" {
-		return SourceFile{}, false, nil
-	}
-	return source, true, nil
-}
-
-func (s *DB) SaveSourceFile(source SourceFile) error {
-	data, err := json.Marshal(source)
-	if err != nil {
-		return fmt.Errorf("encode source file: %w", err)
-	}
-	key := sourceFileKey(source.Provider, source.Path)
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(sourceFilesBucket)
-		if err := bucket.Put([]byte(key), data); err != nil {
-			return fmt.Errorf("save source file %q: %w", key, err)
-		}
-		return nil
-	})
-}
-
+// InsertEvents stores entries with status "pending". Entries whose ID already
+// exists are skipped; the number of newly inserted entries is returned.
 func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 	if len(entries) == 0 {
 		return 0, nil
 	}
-	return insertEvents(s.db, entries)
-}
-
-func (s *DB) UsageEvents() ([]usage.Entry, error) {
-	entries := make([]usage.Entry, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(usageEventsBucket)
-		return bucket.ForEach(func(_, data []byte) error {
-			var entry usage.Entry
-			if err := json.Unmarshal(data, &entry); err != nil {
-				return fmt.Errorf("decode usage event: %w", err)
-			}
-			entry.Language = usage.NormalizeLanguage(entry.Language)
-			entries = append(entries, entry)
-			return nil
-		})
-	})
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return entries, nil
-}
+	defer tx.Rollback()
 
-func (s *DB) PendingUsageEvents(limit int) ([]usage.Entry, error) {
-	entries := make([]usage.Entry, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		events := tx.Bucket(usageEventsBucket)
-		states := tx.Bucket(uploadStatesBucket)
-		return events.ForEach(func(key, data []byte) error {
-			if limit > 0 && len(entries) >= limit {
-				return nil
-			}
-			state, err := decodeUploadState(states.Get(key))
-			if err != nil {
-				return fmt.Errorf("decode upload state %q: %w", string(key), err)
-			}
-			if state.Status == UploadUploaded || state.Status == UploadRejected {
-				return nil
-			}
-			var entry usage.Entry
-			if err := json.Unmarshal(data, &entry); err != nil {
-				return fmt.Errorf("decode usage event: %w", err)
-			}
-			entry.Language = usage.NormalizeLanguage(entry.Language)
-			entries = append(entries, entry)
-			return nil
-		})
-	})
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO usage_events (id, ts, payload) VALUES (?, ?, ?)`)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return entries, nil
-}
+	defer stmt.Close()
 
-func (s *DB) MarkEventsUploaded(ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	return s.db.Update(func(tx *bolt.Tx) error {
-		states := tx.Bucket(uploadStatesBucket)
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			state, err := decodeUploadState(states.Get([]byte(id)))
-			if err != nil {
-				return fmt.Errorf("decode upload state %q: %w", id, err)
-			}
-			state.EventID = id
-			state.Status = UploadUploaded
-			state.LastAttemptAt = &now
-			state.UploadedAt = &now
-			state.LastError = ""
-			if err := saveUploadState(states, state); err != nil {
-				return err
-			}
+	inserted := 0
+	for _, entry := range entries {
+		if entry.ID == "" {
+			return 0, fmt.Errorf("usage event id is required")
 		}
-		return nil
-	})
+		entry.Language = usage.NormalizeLanguage(entry.Language)
+		payload, err := json.Marshal(entry)
+		if err != nil {
+			return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
+		}
+		result, err := stmt.Exec(entry.ID, entry.Timestamp.UTC().Unix(), string(payload))
+		if err != nil {
+			return 0, fmt.Errorf("save usage event %q: %w", entry.ID, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		inserted += int(affected)
+	}
+	return inserted, tx.Commit()
 }
 
+// PendingEvents returns events due for upload at now, oldest first. A limit
+// of zero or less means no limit.
+func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
+	if limit <= 0 {
+		limit = -1
+	}
+	rows, err := s.db.Query(`
+		SELECT payload FROM usage_events
+		WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
+		ORDER BY ts, id
+		LIMIT ?`, now.Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]usage.Entry, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			return nil, fmt.Errorf("decode usage event: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// MarkEventsUploaded marks ids as accepted by the server.
+func (s *DB) MarkEventsUploaded(ids []string) error {
+	now := time.Now().UTC().Unix()
+	return s.updateEach(ids, func(stmt *sql.Stmt, id string) error {
+		_, err := stmt.Exec(now, id)
+		return err
+	}, `UPDATE usage_events SET status = 'uploaded', uploaded_at = ?, last_error = '' WHERE id = ?`)
+}
+
+// MarkEventsRejected marks events the server refused permanently; they are
+// never retried.
 func (s *DB) MarkEventsRejected(rejected map[string]string) error {
 	if len(rejected) == 0 {
 		return nil
 	}
-	now := time.Now().UTC()
-	return s.db.Update(func(tx *bolt.Tx) error {
-		states := tx.Bucket(uploadStatesBucket)
-		for id, reason := range rejected {
-			if id == "" {
-				continue
-			}
-			state, err := decodeUploadState(states.Get([]byte(id)))
-			if err != nil {
-				return fmt.Errorf("decode upload state %q: %w", id, err)
-			}
-			state.EventID = id
-			state.Status = UploadRejected
-			state.LastAttemptAt = &now
-			state.LastError = reason
-			if err := saveUploadState(states, state); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *DB) MarkEventsUploadFailed(ids []string, message string) error {
-	if len(ids) == 0 {
-		return nil
+	ids := make([]string, 0, len(rejected))
+	for id := range rejected {
+		ids = append(ids, id)
 	}
-	now := time.Now().UTC()
-	return s.db.Update(func(tx *bolt.Tx) error {
-		states := tx.Bucket(uploadStatesBucket)
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			state, err := decodeUploadState(states.Get([]byte(id)))
-			if err != nil {
-				return fmt.Errorf("decode upload state %q: %w", id, err)
-			}
-			state.EventID = id
-			state.Status = UploadFailed
-			state.AttemptCount++
-			state.LastAttemptAt = &now
-			state.LastError = message
-			if err := saveUploadState(states, state); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return s.updateEach(ids, func(stmt *sql.Stmt, id string) error {
+		_, err := stmt.Exec(rejected[id], id)
+		return err
+	}, `UPDATE usage_events SET status = 'rejected', last_error = ? WHERE id = ?`)
 }
 
-// CountEvents returns the number of indexed usage events without decoding them.
-func (s *DB) CountEvents() (int, error) {
-	count := 0
-	err := s.db.View(func(tx *bolt.Tx) error {
-		count = tx.Bucket(usageEventsBucket).Stats().KeyN
-		return nil
-	})
+// MarkEventsUploadFailed records a failed attempt and schedules the next one
+// with exponential backoff computed from the previous attempt count.
+func (s *DB) MarkEventsUploadFailed(ids []string, message string) error {
+	now := time.Now().UTC().Unix()
+	return s.updateEach(ids, func(stmt *sql.Stmt, id string) error {
+		_, err := stmt.Exec(now, backoffBaseSeconds, backoffMaxSeconds, message, id)
+		return err
+	}, `UPDATE usage_events SET
+		status = 'failed',
+		attempt_count = attempt_count + 1,
+		next_attempt_at = ? + min(? << min(attempt_count, 7), ?),
+		last_error = ?
+	WHERE id = ?`)
+}
+
+// PruneUploaded deletes uploaded events older than before and returns how
+// many were removed.
+func (s *DB) PruneUploaded(before time.Time) (int64, error) {
+	result, err := s.db.Exec(`DELETE FROM usage_events WHERE status = 'uploaded' AND uploaded_at < ?`, before.Unix())
 	if err != nil {
 		return 0, err
 	}
-	return count, nil
+	return result.RowsAffected()
 }
 
-func insertEvents(db *bolt.DB, entries []usage.Entry) (int, error) {
-	inserted := 0
-	err := db.Update(func(tx *bolt.Tx) error {
-		events := tx.Bucket(usageEventsBucket)
-		states := tx.Bucket(uploadStatesBucket)
-		for _, entry := range entries {
-			if entry.ID == "" {
-				return fmt.Errorf("usage event id is required")
-			}
-			entry.Language = usage.NormalizeLanguage(entry.Language)
-			key := []byte(entry.ID)
-			if events.Get(key) != nil {
-				continue
-			}
-			data, err := json.Marshal(entry)
-			if err != nil {
-				return fmt.Errorf("encode usage event %q: %w", entry.ID, err)
-			}
-			if err := events.Put(key, data); err != nil {
-				return fmt.Errorf("save usage event %q: %w", entry.ID, err)
-			}
-			if err := saveUploadState(states, UploadState{EventID: entry.ID, Status: UploadPending}); err != nil {
-				return err
-			}
-			inserted++
-		}
+func (s *DB) updateEach(ids []string, exec func(*sql.Stmt, string) error, query string) error {
+	if len(ids) == 0 {
 		return nil
-	})
-	return inserted, err
-}
-
-func decodeUploadState(data []byte) (UploadState, error) {
-	if data == nil {
-		return UploadState{Status: UploadPending}, nil
 	}
-	var state UploadState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return UploadState{}, err
-	}
-	if state.Status == "" {
-		state.Status = UploadPending
-	}
-	return state, nil
-}
-
-func saveUploadState(bucket *bolt.Bucket, state UploadState) error {
-	if state.EventID == "" {
-		return fmt.Errorf("upload state event id is required")
-	}
-	data, err := json.Marshal(state)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("encode upload state %q: %w", state.EventID, err)
+		return err
 	}
-	if err := bucket.Put([]byte(state.EventID), data); err != nil {
-		return fmt.Errorf("save upload state %q: %w", state.EventID, err)
-	}
-	return nil
-}
+	defer tx.Rollback()
 
-func (s *DB) DailyProjectSummaries(providerFilter, projectFilter string) ([]usage.DailyProjectSummary, error) {
-	var entries []usage.Entry
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(usageEventsBucket)
-		return bucket.ForEach(func(_, data []byte) error {
-			var entry usage.Entry
-			if err := json.Unmarshal(data, &entry); err != nil {
-				return fmt.Errorf("decode usage event: %w", err)
-			}
-			entry.Language = usage.NormalizeLanguage(entry.Language)
-			if providerFilter != "" && providerFilter != "all" && string(entry.Provider) != providerFilter {
-				return nil
-			}
-			if projectFilter != "" && entry.Project != projectFilter && entry.ProjectPath != projectFilter {
-				return nil
-			}
-			entries = append(entries, entry)
-			return nil
-		})
-	})
+	stmt, err := tx.Prepare(query)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	defer stmt.Close()
 
-	summaries := usage.SummarizeDailyProjects(entries)
-	sort.Slice(summaries, func(i, j int) bool {
-		if summaries[i].Provider != summaries[j].Provider {
-			return summaries[i].Provider < summaries[j].Provider
+	for _, id := range ids {
+		if id == "" {
+			continue
 		}
-		if summaries[i].Project != summaries[j].Project {
-			return summaries[i].Project < summaries[j].Project
+		if err := exec(stmt, id); err != nil {
+			return fmt.Errorf("update usage event %q: %w", id, err)
 		}
-		return summaries[i].Date < summaries[j].Date
-	})
-	return summaries, nil
-}
-
-func FileSource(provider usage.Provider, path string, info os.FileInfo) SourceFile {
-	return SourceFile{
-		Provider:      provider,
-		Path:          path,
-		Size:          info.Size(),
-		ModTimeUnixNS: info.ModTime().UnixNano(),
-		ScannedAt:     time.Now().UTC(),
 	}
-}
-
-func sourceFileKey(provider usage.Provider, path string) string {
-	return string(provider) + "\x00" + path
+	return tx.Commit()
 }

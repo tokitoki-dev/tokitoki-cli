@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	UsageDBFile   = "usage.bolt"
+	UsageDBFile   = "usage.db"
 	apiKeyFile    = "api_key"
 	directoryMod  = 0o700
 	apiKeyFileMod = 0o600

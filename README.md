@@ -49,6 +49,7 @@ set key <API_KEY>       Create or update ~/.tokitoki/api_key.
 get key                 Print the API key from ~/.tokitoki/api_key.
 get dashboard-url       Print a one-time URL that opens the web dashboard signed in.
 version                 Print the CLI version ("dev" for local builds).
+heartbeat               Record one IDE activity event and flush the upload queue.
 upgrade                 Replace this binary with the newest published release.
 service install         Install tokitoki as a service.
 service uninstall       Remove the installed service.
@@ -148,5 +149,15 @@ Override the server for distribution or staging:
 TOKITOKI_BASE_URL=https://tokitoki.example.com tokitoki
 ```
 
-The API key is stored under `~/.tokitoki/`. The local database in that directory
-prevents unchanged source files from being parsed again on later runs.
+## Local data and the offline queue
+
+The API key and a SQLite database (`usage.db`) live under `~/.tokitoki/`. The
+database is a write-ahead upload queue: every discovered event is stored as
+`pending` first, then uploaded in batches. When the network is down the run
+fails fast and the events simply stay queued; each failed attempt backs off
+exponentially (30s doubling up to 1h), so an offline machine retries calmly
+instead of hammering the server on every heartbeat. The next heartbeat or
+sync after connectivity returns drains the queue automatically — there is no
+separate recovery mechanism to configure. Uploaded events are pruned after 30
+days; events the server rejects permanently are kept for inspection but never
+retried.
