@@ -41,23 +41,33 @@ type DevicePayload struct {
 }
 
 type Event struct {
-	ID                       string `json:"id"`
-	Provider                 string `json:"provider"`
-	Timestamp                string `json:"timestamp"`
-	SessionID                string `json:"session_id,omitempty"`
-	Project                  string `json:"project"`
-	ProjectPathHash          string `json:"project_path_hash,omitempty"`
-	Model                    string `json:"model,omitempty"`
-	Language                 string `json:"language"`
-	OS                       string `json:"os,omitempty"`
-	Client                   string `json:"client,omitempty"`
-	InputTokens              uint64 `json:"input_tokens,omitempty"`
-	OutputTokens             uint64 `json:"output_tokens,omitempty"`
-	CachedInputTokens        uint64 `json:"cached_input_tokens,omitempty"`
-	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64 `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64 `json:"total_tokens,omitempty"`
+	ID                       string         `json:"id"`
+	Provider                 string         `json:"provider"`
+	SourceType               string         `json:"source_type,omitempty"`
+	SourceProvider           string         `json:"source_provider,omitempty"`
+	EventKind                string         `json:"event_kind,omitempty"`
+	Timestamp                string         `json:"timestamp"`
+	SessionID                string         `json:"session_id,omitempty"`
+	Project                  string         `json:"project"`
+	ProjectPathHash          string         `json:"project_path_hash,omitempty"`
+	Model                    string         `json:"model,omitempty"`
+	Language                 string         `json:"language"`
+	OS                       string         `json:"os,omitempty"`
+	Client                   string         `json:"client,omitempty"`
+	Entity                   string         `json:"entity,omitempty"`
+	EntityType               string         `json:"entity_type,omitempty"`
+	Branch                   string         `json:"branch,omitempty"`
+	Editor                   string         `json:"editor,omitempty"`
+	Category                 string         `json:"category,omitempty"`
+	IsWrite                  *bool          `json:"is_write,omitempty"`
+	Raw                      map[string]any `json:"raw,omitempty"`
+	InputTokens              uint64         `json:"input_tokens,omitempty"`
+	OutputTokens             uint64         `json:"output_tokens,omitempty"`
+	CachedInputTokens        uint64         `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens uint64         `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     uint64         `json:"cache_read_input_tokens,omitempty"`
+	ReasoningOutputTokens    uint64         `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens              uint64         `json:"total_tokens,omitempty"`
 }
 
 type Response struct {
@@ -182,6 +192,9 @@ func convertEvent(entry usage.Entry) Event {
 	return Event{
 		ID:                       entry.ID,
 		Provider:                 string(entry.Provider),
+		SourceType:               entry.SourceType,
+		SourceProvider:           string(entry.Provider),
+		EventKind:                entry.EventKind,
 		Timestamp:                entry.Timestamp.UTC().Format(time.RFC3339Nano),
 		SessionID:                entry.SessionID,
 		Project:                  entry.Project,
@@ -190,6 +203,13 @@ func convertEvent(entry usage.Entry) Event {
 		Language:                 usage.NormalizeLanguage(entry.Language),
 		OS:                       entry.OS,
 		Client:                   entry.Client,
+		Entity:                   entry.Entity,
+		EntityType:               entry.EntityType,
+		Branch:                   entry.Branch,
+		Editor:                   entry.Editor,
+		Category:                 entry.Category,
+		IsWrite:                  entry.IsWrite,
+		Raw:                      entry.Raw,
 		InputTokens:              entry.Usage.InputTokens,
 		OutputTokens:             entry.Usage.OutputTokens,
 		CachedInputTokens:        entry.Usage.CachedInputTokens,
