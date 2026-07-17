@@ -1,0 +1,46 @@
+name: Release
+
+# Pushing a semver tag (v1.2.0) builds every platform and publishes a GitHub
+# release. The TokiToki server's `cli` update channel reads these releases:
+# asset names carry the platform/arch tokens (darwin/linux/windows +
+# arm64/amd64) its matcher expects, and GitHub's per-asset sha256 digest is
+# what the CLI verifies downloads against. Publishing to users still happens
+# in /admin/releases — a GitHub release alone ships nothing.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go test ./...
+
+      - name: Build all platforms
+        run: make cross VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Verify the stamped version matches the tag
+        run: |
+          got="$(dist/tokitoki-linux-amd64 version)"
+          want="${GITHUB_REF_NAME#v}"
+          if [ "$got" != "$want" ]; then
+            echo "binary reports '$got', tag says '$want'" >&2
+            exit 1
+          fi
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
