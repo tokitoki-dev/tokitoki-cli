@@ -1,6 +1,6 @@
 package usageprovider
 
-import "github.com/labx/tokitoki-agent/internal/usage"
+import "github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 
 // Provider loads normalized usage entries for one local AI agent.
 type Provider interface {

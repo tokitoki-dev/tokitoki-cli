@@ -1,4 +1,4 @@
-# TokiToki Agent
+# tokitoki-cli
 
 TokiToki is a small cross-platform uploader for local AI coding usage. Each
 run reads the configured local agent usage folders, then uploads the discovered
@@ -58,6 +58,44 @@ service stop            Stop the installed service.
 service restart         Restart the installed service.
 service status          Print service status.
 ```
+
+## Stable project names
+
+TokiToki normally uses the project name reported by an IDE or local AI agent.
+To give a checkout a stable name across editors, machines, and differently
+named local folders, create `.tokitoki-project` in the project root:
+
+```text
+customer-portal
+release/2026
+```
+
+The first line overrides the project name. The optional second line overrides
+the branch. An empty file uses the containing folder's name and preserves any
+branch reported by the editor. The nearest project file found by walking up
+from the active file wins; for out-of-tree agent files, TokiToki also searches
+the event's reported project path.
+
+Use `{project}` in the first line to include the nearest Git, Mercurial, or
+Subversion root folder dynamically:
+
+```text
+my-company/{project}
+```
+
+For a file inside a `payments-api` repository this resolves to
+`my-company/payments-api`. Without version control, `{project}` becomes the
+folder containing `.tokitoki-project`.
+
+Existing `.wakatime-project` files use the same two-line format and are
+accepted as a compatibility fallback. When both files exist in one folder,
+`.tokitoki-project` takes precedence. A `.wakatime` file is different: it is a
+WakaTime project-level INI configuration file and is not treated as a project
+name by TokiToki.
+
+Project-file resolution is applied centrally before events enter the local
+queue, so it affects IDE heartbeats and AI-agent usage scans consistently. It
+does not rename events that were already uploaded.
 
 Normal runs and `service install` default to these provider roots:
 
@@ -125,8 +163,8 @@ Rules every front-end and plugin must follow:
    to fire and forget) at launch and on a slow timer. The CLI owns the whole
    check–download–verify–swap sequence.
 
-The reference implementation of all three rules is
-`tracklm-macos/tracklm-macos/AgentProcess.swift`.
+The reference implementation of all three rules is `AgentProcess.swift` in
+the macOS app.
 
 ## Self-update
 

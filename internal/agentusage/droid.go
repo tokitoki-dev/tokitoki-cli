@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadDroidEntries(paths []string) ([]usage.Entry, error) {

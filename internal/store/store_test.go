@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 )
 
 func TestDefaultDataDir(t *testing.T) {

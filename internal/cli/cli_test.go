@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
 func TestSyncRequiresAPIKey(t *testing.T) {

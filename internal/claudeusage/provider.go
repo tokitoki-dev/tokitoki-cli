@@ -1,8 +1,8 @@
 package claudeusage
 
 import (
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usageprovider"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
 // Provider loads Claude usage entries.

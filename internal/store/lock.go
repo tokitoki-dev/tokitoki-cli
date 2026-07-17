@@ -10,6 +10,11 @@ import (
 
 const LockFile = "tokitoki.lock"
 
+// UploadLockFile serializes queue drains across processes, separately from
+// the data lock: draining talks to the network for up to the whole upload
+// timeout, and ingestion must never wait behind that.
+const UploadLockFile = "upload.lock"
+
 // ErrLockBusy reports that another process held the lock for the whole
 // timeout. Callers that treat "someone else is already doing this work" as
 // success test for it with errors.Is.

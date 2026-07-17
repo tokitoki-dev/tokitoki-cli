@@ -1,4 +1,4 @@
-module github.com/labx/tokitoki-agent
+module github.com/tokitoki-dev/tokitoki-cli
 
 go 1.25.0
 

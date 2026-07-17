@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/config"
-	"github.com/labx/tokitoki-agent/internal/usageupload"
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 func TestParseRunFlagsDefaultsToProviderDirs(t *testing.T) {
@@ -155,6 +155,69 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 	}
 	if got := event.Raw["line_number"]; got != float64(7) && got != 7 {
 		t.Fatalf("line_number = %#v, want 7", got)
+	}
+}
+
+func TestRunHeartbeatAppliesProjectIdentityFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if code := run([]string{"set", "key", "tokitoki_test_key"}); code != 0 {
+		t.Fatalf("run(set key) = %d, want 0", code)
+	}
+
+	projectDir := filepath.Join(t.TempDir(), "payments-api")
+	entity := filepath.Join(projectDir, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(entity), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entity, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, ".tokitoki-project"),
+		[]byte("my-company/{project}\nrelease/2026\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload usageupload.Payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		accepted := []string{}
+		if len(payload.Events) == 1 {
+			accepted = append(accepted, payload.Events[0].ID)
+		}
+		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted})
+	}))
+	defer server.Close()
+	t.Setenv(usageupload.BaseURLEnv, server.URL)
+
+	code := run([]string{
+		"heartbeat",
+		"--entity", entity,
+		"--project", "editor-project",
+		"--project-folder", filepath.Dir(entity),
+		"--branch", "editor-branch",
+		"--editor", "sakura",
+	})
+	if code != 0 {
+		t.Fatalf("run(heartbeat) = %d, want 0", code)
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(payload.Events))
+	}
+	event := payload.Events[0]
+	if event.Project != "my-company/payments-api" {
+		t.Fatalf("project = %q, want my-company/payments-api", event.Project)
+	}
+	if event.Branch != "release/2026" {
+		t.Fatalf("branch = %q, want release/2026", event.Branch)
 	}
 }
 

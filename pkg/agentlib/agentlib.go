@@ -14,16 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/cli"
-	"github.com/labx/tokitoki-agent/internal/config"
-	"github.com/labx/tokitoki-agent/internal/deviceauth"
-	"github.com/labx/tokitoki-agent/internal/langdetect"
-	"github.com/labx/tokitoki-agent/internal/store"
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
-	"github.com/labx/tokitoki-agent/internal/usagescan"
-	"github.com/labx/tokitoki-agent/internal/usageupload"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/cli"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/deviceauth"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagescan"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 )
 
 const (
@@ -226,27 +227,33 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 		ctx = context.Background()
 	}
 
-	return c.withDataLock(func() error {
-		fileStore, err := store.Open(c.dataDir)
-		if err != nil {
-			return err
-		}
+	fileStore, err := store.Open(c.dataDir)
+	if err != nil {
+		return err
+	}
+	usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
+	if err != nil {
+		return err
+	}
+	defer usageDB.Close()
 
-		usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
-		if err != nil {
-			return err
-		}
-		defer usageDB.Close()
+	scanner := usagescan.New(usageDB)
+	scanner.Logger = c.logger
+	app := &cli.App{
+		Agent:        agent.New(fileStore, c.logger),
+		UsageDB:      usageDB,
+		Scanner:      scanner,
+		ProviderDirs: providerDirs,
+		Out:          io.Discard,
+	}
 
-		app := &cli.App{
-			Agent:        agent.New(fileStore, c.logger),
-			UsageDB:      usageDB,
-			Scanner:      usagescan.New(usageDB),
-			ProviderDirs: providerDirs,
-			Out:          io.Discard,
-		}
-		return app.Sync(ctx)
-	})
+	// Two phases, two locks. Ingestion mutates shared local state and runs
+	// under the data lock; the drain talks to the network for up to the whole
+	// upload timeout and must not make other processes' ingestion wait on it.
+	if err := c.withDataLock(app.Ingest); err != nil {
+		return err
+	}
+	return c.withUploadLock(func() error { return app.Upload(ctx) })
 }
 
 // SendHeartbeat persists an IDE activity event before attempting upload. If
@@ -261,6 +268,11 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	}
 	if heartbeat.Timestamp.IsZero() {
 		heartbeat.Timestamp = time.Now().UTC()
+	}
+	// A project identity file is an optional override; one that exists but
+	// cannot be read must not cost the heartbeat itself.
+	if err := applyProjectFile(&heartbeat); err != nil {
+		c.logger.Warn("project identity file ignored", "error", err)
 	}
 	if strings.TrimSpace(heartbeat.Project) == "" {
 		heartbeat.Project = filepath.Base(strings.TrimSpace(heartbeat.ProjectPath))
@@ -311,29 +323,55 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		fmt.Sprintf("%t", heartbeat.IsWrite),
 	)
 
-	return c.withDataLock(func() error {
+	usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
+	if err != nil {
+		return err
+	}
+	defer usageDB.Close()
+
+	// Queue the event under the data lock, then drain under the upload lock.
+	// The drain can take the whole network timeout; heartbeats from other
+	// editors must be able to enqueue while it runs, not wait behind it.
+	var settings agent.Settings
+	if err := c.withDataLock(func() error {
 		fileStore, err := store.Open(c.dataDir)
 		if err != nil {
 			return err
 		}
-		settings, err := agent.New(fileStore, c.logger).Settings()
+		settings, err = agent.New(fileStore, c.logger).Settings()
 		if err != nil {
 			return err
 		}
 		if settings.APIKey == "" {
 			return ErrMissingAPIKey
 		}
+		_, err = usageDB.InsertEvents([]usage.Entry{entry})
+		return err
+	}); err != nil {
+		return err
+	}
 
-		usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
-		if err != nil {
-			return err
-		}
-		defer usageDB.Close()
-		if _, err := usageDB.InsertEvents([]usage.Entry{entry}); err != nil {
-			return err
-		}
+	return c.withUploadLock(func() error {
 		return usageupload.SyncPending(ctx, settings, usageDB)
 	})
+}
+
+func applyProjectFile(heartbeat *Heartbeat) error {
+	resolved, found, err := projectfile.Resolve(projectfile.Input{
+		Entity:      heartbeat.Entity,
+		ProjectPath: heartbeat.ProjectPath,
+		Branch:      heartbeat.Branch,
+	})
+	if err != nil {
+		return fmt.Errorf("resolve project identity: %w", err)
+	}
+	if !found {
+		return nil
+	}
+	heartbeat.Project = resolved.Project
+	heartbeat.ProjectPath = resolved.ProjectPath
+	heartbeat.Branch = resolved.Branch
+	return nil
 }
 
 func normalizeProviderDirs(raw map[Provider][]string) map[usage.Provider][]string {
@@ -350,6 +388,23 @@ func normalizeProviderDirs(raw map[Provider][]string) map[usage.Provider][]strin
 
 func (c *Client) withDataLock(fn func() error) error {
 	lock, err := store.AcquireDataLock(c.dataDir, c.lockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return fn()
+}
+
+// withUploadLock runs fn while holding the cross-process upload lock. When
+// another process already holds it, that process is draining the same queue
+// this one just wrote to, so there is nothing left to do here: the events are
+// safely queued and "busy" is success, not failure.
+func (c *Client) withUploadLock(fn func() error) error {
+	lock, err := store.AcquireLock(c.dataDir, store.UploadLockFile, 0)
+	if errors.Is(err, store.ErrLockBusy) {
+		c.logger.Debug("another tokitoki process is uploading; events stay queued")
+		return nil
+	}
 	if err != nil {
 		return err
 	}

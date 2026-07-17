@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadOpenCodeEntries(paths []string) ([]usage.Entry, error) {

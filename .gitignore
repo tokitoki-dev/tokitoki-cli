@@ -11,3 +11,5 @@ tmp/
 *.sqlite-wal
 .DS_Store
 ccusage/
+/tokitoki
+*.profraw

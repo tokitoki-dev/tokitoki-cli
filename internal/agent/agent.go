@@ -6,6 +6,10 @@ import (
 
 type Settings struct {
 	APIKey string `json:"api_key"`
+	// InstallationID is this install's stable random identity. The server
+	// keys device rows on it, so it must be unique per machine and constant
+	// across runs — the store generates it once and persists it.
+	InstallationID string `json:"installation_id"`
 }
 
 type Store interface {

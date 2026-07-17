@@ -3,20 +3,28 @@ package usagescan
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sort"
+	"strings"
 
-	"github.com/labx/tokitoki-agent/internal/agentusage"
-	"github.com/labx/tokitoki-agent/internal/claudeusage"
-	"github.com/labx/tokitoki-agent/internal/codexusage"
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
-	"github.com/labx/tokitoki-agent/internal/usageprovider"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentusage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/claudeusage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
 type Scanner struct {
 	db            *usagedb.DB
 	providers     map[usage.Provider]usageprovider.Provider
 	providerOrder []usage.Provider
+
+	// Logger receives warnings about project identity files that exist but
+	// cannot be read. Nil discards them.
+	Logger *slog.Logger
 }
 
 // Result describes how many usage events were processed for each provider.
@@ -98,6 +106,7 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) 
 	if err != nil {
 		return result, err
 	}
+	s.applyProjectFiles(entries)
 	inserted, err := s.db.InsertEvents(entries)
 	if err != nil {
 		return result, err
@@ -105,6 +114,68 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) 
 	result.EventsParsed = len(entries)
 	result.EventsInserted = inserted
 	return result, nil
+}
+
+// applyProjectFiles rewrites each entry's identity from the nearest project
+// identity file. An identity file is an optional override: one that exists
+// but cannot be read is warned about and skipped — a stray unreadable
+// .wakatime-project somewhere on disk must never stop usage from flowing.
+func (s *Scanner) applyProjectFiles(entries []usage.Entry) {
+	type cacheKey struct {
+		entityDir   string
+		projectPath string
+		branch      string
+	}
+	type cacheValue struct {
+		result projectfile.Result
+		found  bool
+	}
+	cache := make(map[cacheKey]cacheValue)
+
+	for i := range entries {
+		input := projectfile.Input{
+			Entity:      entries[i].Entity,
+			ProjectPath: entries[i].ProjectPath,
+			Branch:      entries[i].Branch,
+		}
+		key := cacheKey{
+			entityDir:   projectSearchDirectory(input.Entity, true),
+			projectPath: projectSearchDirectory(input.ProjectPath, false),
+			branch:      strings.TrimSpace(input.Branch),
+		}
+		cached, ok := cache[key]
+		if !ok {
+			resolved, found, err := projectfile.Resolve(input)
+			if err != nil {
+				if s.Logger != nil {
+					s.Logger.Warn("project identity file ignored", "error", err)
+				}
+				// Cache the miss too: the same broken file would fail
+				// identically for every sibling event.
+				found = false
+			}
+			cached = cacheValue{result: resolved, found: found}
+			cache[key] = cached
+		}
+		if !cached.found {
+			continue
+		}
+		entries[i].Project = cached.result.Project
+		entries[i].ProjectPath = cached.result.ProjectPath
+		entries[i].Branch = cached.result.Branch
+	}
+}
+
+func projectSearchDirectory(path string, isFile bool) string {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if isFile {
+		return filepath.Dir(path)
+	}
+	return path
 }
 
 type pathConfiguredProvider interface {
