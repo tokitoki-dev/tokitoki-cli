@@ -204,6 +204,14 @@ func (c *Client) GetAPIKey() (string, error) {
 	return settings.APIKey, nil
 }
 
+// BaseURL returns the TokiToki server every subsystem talks to — usage
+// uploads, update checks, and the web dashboard alike. Front-ends open it
+// when they need a plain link to the server (for example as the fallback
+// when DashboardURL cannot mint a signed login link).
+func BaseURL() string {
+	return usageupload.BaseURL()
+}
+
 // DashboardURL exchanges the stored API key for a one-time browser login URL.
 // Opening it signs the user straight into their web dashboard — no password.
 func (c *Client) DashboardURL(ctx context.Context) (string, error) {
