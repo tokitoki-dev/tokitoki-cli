@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
-	"github.com/labx/tokitoki-agent/internal/usagescan"
-	"github.com/labx/tokitoki-agent/internal/usageupload"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagescan"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 )
 
 type App struct {
@@ -46,7 +46,20 @@ func (a *App) GetAPIKey() error {
 // Sync scans the selected providers then uploads their events. The CLI avoids
 // emitting counts or summaries: success only means the local files were
 // processed and the server accepted the request.
+//
+// Callers that coordinate multiple processes call the two phases separately —
+// Ingest under the data lock, Upload under the upload lock — so a slow drain
+// never blocks another process's ingestion.
 func (a *App) Sync(ctx context.Context) error {
+	if err := a.Ingest(); err != nil {
+		return err
+	}
+	return a.Upload(ctx)
+}
+
+// Ingest scans the selected providers into the shared local queue. It writes
+// the database, so the caller holds the data lock.
+func (a *App) Ingest() error {
 	settings, err := a.Agent.Settings()
 	if err != nil {
 		return err
@@ -54,7 +67,14 @@ func (a *App) Sync(ctx context.Context) error {
 	if settings.APIKey == "" {
 		return errors.New("API key is required in ~/.tokitoki/api_key")
 	}
-	if _, err := a.Scanner.Scan(a.ProviderDirs); err != nil {
+	_, err = a.Scanner.Scan(a.ProviderDirs)
+	return err
+}
+
+// Upload drains queued events to the server.
+func (a *App) Upload(ctx context.Context) error {
+	settings, err := a.Agent.Settings()
+	if err != nil {
 		return err
 	}
 	if err := usageupload.SyncPending(ctx, settings, a.UsageDB); err != nil {

@@ -11,12 +11,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 )
 
 const (
@@ -166,8 +168,13 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
-			InstallationID: "local-go-agent",
-			Name:           "TokiToki Go Agent",
+			// The server keys device rows on installation_id; an empty one
+			// (possible only for callers that hand-build Settings) falls back
+			// to a shared identity server-side.
+			InstallationID: settings.InstallationID,
+			Name:           deviceName(),
+			Platform:       usage.NormalizeOS(runtime.GOOS),
+			AppVersion:     buildinfo.Resolved(),
 		},
 		Events: make([]Event, 0, len(events)),
 	}
@@ -251,6 +258,16 @@ func convertEvent(entry usage.Entry) Event {
 		ReasoningOutputTokens:    entry.Usage.ReasoningOutputTokens,
 		TotalTokens:              entry.Usage.TotalTokens,
 	}
+}
+
+// deviceName labels this device in the dashboard. The hostname is what users
+// already call the machine; it only ever travels to their own server.
+func deviceName() string {
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "tokitoki-cli"
+	}
+	return strings.TrimSpace(name)
 }
 
 func hashProjectPath(path string) string {

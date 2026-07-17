@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/usage"
-	"github.com/labx/tokitoki-agent/internal/usagedb"
-	"github.com/labx/tokitoki-agent/internal/usageprovider"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
 func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
@@ -100,6 +100,86 @@ func TestScanUsesRegisteredProvider(t *testing.T) {
 	providerResult := result.Providers[provider.provider]
 	if providerResult.EventsInserted != 1 {
 		t.Fatalf("events inserted = %d, want 1", providerResult.EventsInserted)
+	}
+}
+
+func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "checkout-folder")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, ".tokitoki-project"),
+		[]byte("shared-ai-and-ide-name\nrelease\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	provider := fakeProvider{
+		provider: usage.Provider("fixture"),
+		entries: []usage.Entry{{
+			Provider:    usage.Provider("fixture"),
+			ID:          "project-file-event",
+			Timestamp:   time.Now().UTC().Add(-time.Minute),
+			Date:        time.Now().UTC().Format("2006-01-02"),
+			Project:     "provider-name",
+			ProjectPath: projectDir,
+			Branch:      "provider-branch",
+			Language:    usage.UnknownLanguage,
+		}},
+	}
+	if _, err := New(db, &provider).Scan(map[usage.Provider][]string{
+		provider.provider: {dir},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := db.PendingEvents(time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(pending))
+	}
+	entry := pending[0]
+	if entry.Project != "shared-ai-and-ide-name" {
+		t.Fatalf("project = %q, want shared-ai-and-ide-name", entry.Project)
+	}
+	if entry.ProjectPath != projectDir {
+		t.Fatalf("project path = %q, want %q", entry.ProjectPath, projectDir)
+	}
+	if entry.Branch != "release" {
+		t.Fatalf("branch = %q, want release", entry.Branch)
+	}
+}
+
+func TestApplyProjectFilesPreservesPerEventBranchWithoutOverride(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(projectDir, ".tokitoki-project"),
+		[]byte("shared-name\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	entries := []usage.Entry{
+		{ID: "one", ProjectPath: projectDir, Branch: "main"},
+		{ID: "two", ProjectPath: projectDir, Branch: "feature"},
+	}
+	(&Scanner{}).applyProjectFiles(entries)
+	if entries[0].Project != "shared-name" || entries[1].Project != "shared-name" {
+		t.Fatalf("projects = %q/%q, want shared-name", entries[0].Project, entries[1].Project)
+	}
+	if entries[0].Branch != "main" || entries[1].Branch != "feature" {
+		t.Fatalf("branches = %q/%q, want preserved", entries[0].Branch, entries[1].Branch)
 	}
 }
 

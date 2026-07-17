@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 )
 
 func TestNewUsesDefaultDataDir(t *testing.T) {
@@ -124,6 +124,59 @@ func TestSyncRequiresAPIKey(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "API key is required") {
 		t.Fatalf("Sync() error = %v, want API key requirement", err)
+	}
+}
+
+func TestApplyProjectFileOverridesHeartbeatIdentity(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "local-checkout")
+	entity := filepath.Join(projectDir, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(entity), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entity, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, ".tokitoki-project"),
+		[]byte("stable-dashboard-name\nstable-branch\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	heartbeat := Heartbeat{
+		Entity:      entity,
+		Project:     "editor-detected-name",
+		ProjectPath: filepath.Dir(entity),
+		Branch:      "editor-branch",
+	}
+	if err := applyProjectFile(&heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat.Project != "stable-dashboard-name" {
+		t.Fatalf("project = %q, want stable-dashboard-name", heartbeat.Project)
+	}
+	if heartbeat.ProjectPath != projectDir {
+		t.Fatalf("project path = %q, want %q", heartbeat.ProjectPath, projectDir)
+	}
+	if heartbeat.Branch != "stable-branch" {
+		t.Fatalf("branch = %q, want stable-branch", heartbeat.Branch)
+	}
+}
+
+func TestApplyProjectFileKeepsHeartbeatWithoutIdentityFile(t *testing.T) {
+	heartbeat := Heartbeat{
+		Entity:      filepath.Join(t.TempDir(), "main.go"),
+		Project:     "editor-project",
+		ProjectPath: "/editor/project",
+		Branch:      "main",
+	}
+	want := heartbeat
+	if err := applyProjectFile(&heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat != want {
+		t.Fatalf("heartbeat = %+v, want unchanged %+v", heartbeat, want)
 	}
 }
 

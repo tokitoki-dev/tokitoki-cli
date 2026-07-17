@@ -9,12 +9,16 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
 // UpdateChannel is the release channel the CLI reads on the TokiToki server.
@@ -82,6 +86,14 @@ func upgradeExecutable(ctx context.Context, logger *slog.Logger, baseURL, curren
 		return Result{}, fmt.Errorf("refusing to update %s: it is part of an app bundle", executable)
 	}
 
+	// The whole point of a self-update is that its output becomes the next
+	// thing we execute. Fetching executable code over cleartext HTTP hands
+	// that to whoever sits on the path — loopback is the only exception,
+	// because it never leaves the machine.
+	if err := requireTrustedTransport(baseURL); err != nil {
+		return Result{}, err
+	}
+
 	lock, err := store.AcquireLock(lockDir, lockName, lockTimeout)
 	if errors.Is(err, store.ErrLockBusy) {
 		// Another front-end is already upgrading this same binary.
@@ -131,6 +143,29 @@ type updateInfo struct {
 	Version   string `json:"version"`
 	URL       string `json:"url"`
 	Size      int64  `json:"size"`
+	// SHA256 is the asset's hex digest. Present whenever GitHub published
+	// one; the download is rejected if it does not match.
+	SHA256 string `json:"sha256"`
+}
+
+// requireTrustedTransport rejects base URLs that would fetch a binary over a
+// connection an on-path attacker can rewrite.
+func requireTrustedTransport(baseURL string) error {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("self-update server URL %q: %w", baseURL, err)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("refusing to self-update over %q: a non-loopback update server must use https", baseURL)
 }
 
 func check(ctx context.Context, baseURL, current string) (*updateInfo, error) {
@@ -176,12 +211,23 @@ func download(ctx context.Context, baseURL string, update *updateInfo, dir strin
 	if err != nil {
 		return "", fmt.Errorf("download update: %w", err)
 	}
-	written, err := io.Copy(file, resp.Body)
+	digest := sha256.New()
+	written, err := io.Copy(io.MultiWriter(file, digest), resp.Body)
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}
 	if err == nil && update.Size > 0 && written != update.Size {
 		err = fmt.Errorf("got %d bytes, expected %d", written, update.Size)
+	}
+	// The digest is the integrity check: it ties the bytes on disk to the
+	// bytes the release was published with, before anything executes them.
+	// Old releases without a published digest fall back to the size check.
+	if err == nil && update.SHA256 != "" {
+		got := hex.EncodeToString(digest.Sum(nil))
+		want := strings.ToLower(strings.TrimPrefix(update.SHA256, "sha256:"))
+		if got != want {
+			err = fmt.Errorf("sha256 mismatch: downloaded %s, server published %s", got, want)
+		}
 	}
 	if err == nil {
 		err = os.Chmod(file.Name(), 0o755)

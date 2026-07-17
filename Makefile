@@ -4,12 +4,13 @@ PKG := ./cmd/tokitoki
 # Release builds stamp a semantic version (`make cross VERSION=1.2.0`). The
 # default "dev" marks a local build, which the CLI refuses to self-update.
 VERSION ?= dev
-LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+VERSION_VAR := github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo.Version
+LDFLAGS := -ldflags "-X $(VERSION_VAR)=$(VERSION)"
 
 # Release builds also strip symbol tables (-s -w), cutting the binary by about
 # a third. Panic stack traces still print; only debugger symbols are lost, so
 # the local `build` target keeps them.
-RELEASE_LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
+RELEASE_LDFLAGS := -ldflags "-s -w -X $(VERSION_VAR)=$(VERSION)"
 
 # Provider data roots to scan. Override on the command line to point at
 # fixtures, e.g. `make run PROVIDER_DIRS='claude=/tmp/claude codex=/tmp/codex'`.

@@ -17,9 +17,10 @@ import (
 	"time"
 
 	daemonservice "github.com/kardianos/service"
-	"github.com/labx/tokitoki-agent/internal/selfupdate"
-	"github.com/labx/tokitoki-agent/internal/usageupload"
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 const (
@@ -31,9 +32,10 @@ const (
 	upgradeTimeout  = 5 * time.Minute
 )
 
-// version is stamped by the release build (-ldflags "-X main.version=…").
-// "dev" marks a local build, which never self-updates.
-var version = "dev"
+// version comes from internal/buildinfo, the one place release builds stamp;
+// go-install builds resolve it from the module version recorded in the
+// binary. "dev" marks a local build, which never self-updates.
+var version = buildinfo.Resolved()
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -551,26 +553,26 @@ func serviceStatusString(status daemonservice.Status) string {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to http://localhost:9093
+	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the TokiToki server
 
 Usage:
   tokitoki [--provider-dir PROVIDER=DIR ...]
   tokitoki set key <API_KEY>
   tokitoki get key
   tokitoki get dashboard-url
-	  tokitoki heartbeat --entity FILE [options]
+  tokitoki heartbeat --entity FILE [options]
   tokitoki version
   tokitoki upgrade
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the provider roots you pass and uploads their usage
-events to http://localhost:9093/api/usage-events/batch. By default, tokitoki
-scans the built-in roots for claude, codex, copilot, gemini, kimi, qwen,
-openclaw, pi, amp, droid, kilo, hermes, codebuff, opencode, and goose. Pass one
-or more --provider-dir provider=dir values to scan an explicit provider set.
-The API key is read from ~/.tokitoki/api_key. Use tokitoki set key <API_KEY> to
-create or update that file. Set TOKITOKI_BASE_URL to override the default base
-URL.
+events to the TokiToki server (TOKITOKI_BASE_URL, default
+http://localhost:9093). By default, tokitoki scans the built-in roots for
+claude, codex, copilot, gemini, kimi, qwen, openclaw, pi, amp, droid, kilo,
+hermes, codebuff, opencode, and goose. Pass one or more
+--provider-dir provider=dir values to scan an explicit provider set. The API
+key is read from ~/.tokitoki/api_key; use tokitoki set key <API_KEY> to create
+or update that file.
 
 tokitoki upgrade replaces this binary with the newest published release from
 the same server; the service worker does the same check every 12 hours on its
@@ -580,7 +582,7 @@ Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki get dashboard-url
-	  tokitoki heartbeat --entity /repo/main.go --project repo --project-folder /repo --editor eclipse
+  tokitoki heartbeat --entity /repo/main.go --project repo --project-folder /repo --editor eclipse
   tokitoki
   tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
   tokitoki service install

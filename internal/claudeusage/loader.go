@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/langdetect"
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 var ErrNoDataDirs = errors.New("no valid Claude data directories found")

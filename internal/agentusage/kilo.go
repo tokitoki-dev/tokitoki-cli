@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadKiloEntries(paths []string) ([]usage.Entry, error) {

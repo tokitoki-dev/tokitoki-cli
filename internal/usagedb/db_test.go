@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func openTestDB(t *testing.T) *DB {

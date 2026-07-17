@@ -1,19 +1,23 @@
 package store
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 )
 
 const (
 	UsageDBFile   = "usage.db"
 	apiKeyFile    = "api_key"
+	installIDFile = "installation_id"
 	directoryMod  = 0o700
 	apiKeyFileMod = 0o600
 )
@@ -49,22 +53,56 @@ func Open(dir string) (*FileStore, error) {
 	return &FileStore{dir: dir}, nil
 }
 
-// LoadSettings reads the API key from the api_key file.
+// LoadSettings reads the API key from the api_key file and this install's
+// stable identity, generating the latter on first use.
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	installID, err := s.installationIDLocked()
+	if err != nil {
+		return agent.Settings{}, err
+	}
 
 	data, err := os.ReadFile(filepath.Join(s.dir, apiKeyFile))
 	if errors.Is(err, os.ErrNotExist) {
 		if err := s.ensureAPIKeyFileLocked(); err != nil {
 			return agent.Settings{}, err
 		}
-		return agent.Settings{}, nil
+		return agent.Settings{InstallationID: installID}, nil
 	}
 	if err != nil {
 		return agent.Settings{}, err
 	}
-	return agent.Settings{APIKey: strings.TrimSpace(string(data))}, nil
+	return agent.Settings{
+		APIKey:         strings.TrimSpace(string(data)),
+		InstallationID: installID,
+	}, nil
+}
+
+// installationIDLocked returns the install's stable random identity, minting
+// and persisting one the first time it is asked for. The server keys device
+// rows on this value, so it must never change once written.
+func (s *FileStore) installationIDLocked() (string, error) {
+	path := filepath.Join(s.dir, installIDFile)
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate installation id: %w", err)
+	}
+	id := hex.EncodeToString(raw)
+	if err := s.writeFileLocked(path, id); err != nil {
+		return "", fmt.Errorf("persist installation id: %w", err)
+	}
+	return id, nil
 }
 
 func (s *FileStore) EnsureAPIKeyFile() error {
@@ -94,15 +132,20 @@ func (s *FileStore) SaveAPIKey(apiKey string) error {
 	if apiKey == "" {
 		return errors.New("API key cannot be empty")
 	}
-	path := filepath.Join(s.dir, apiKeyFile)
-	tmp, err := os.CreateTemp(s.dir, "."+apiKeyFile+".tmp.")
+	return s.writeFileLocked(filepath.Join(s.dir, apiKeyFile), apiKey)
+}
+
+// writeFileLocked writes value+"\n" to path with owner-only permissions, via
+// a temp file renamed into place so readers never see a torn write.
+func (s *FileStore) writeFileLocked(path, value string) error {
+	tmp, err := os.CreateTemp(s.dir, "."+filepath.Base(path)+".tmp.")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	if _, err := tmp.WriteString(apiKey + "\n"); err != nil {
+	if _, err := tmp.WriteString(value + "\n"); err != nil {
 		_ = tmp.Close()
 		return err
 	}

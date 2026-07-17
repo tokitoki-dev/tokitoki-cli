@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tokitoki-agent/internal/agent"
-	"github.com/labx/tokitoki-agent/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func TestDefaultServerURLIsLocalhost(t *testing.T) {
