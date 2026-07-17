@@ -199,3 +199,7 @@ sync after connectivity returns drains the queue automatically — there is no
 separate recovery mechanism to configure. Uploaded events are pruned after 30
 days; events the server rejects permanently are kept for inspection but never
 retried.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
