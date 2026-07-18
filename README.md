@@ -12,8 +12,8 @@ The CLI can run once or install itself as an OS service.
 make build
 ```
 
-`make` without a target builds the CLI and immediately runs it, which is the
-fastest way to test a local upload against `localhost:9093`.
+`make` without a target builds the CLI and immediately runs it. Set
+`TOKITOKI_BASE_URL=http://localhost:9093` to test against a local server.
 
 ## Usage
 
@@ -39,7 +39,7 @@ Options:
 Environment:
 
 ```text
-TOKITOKI_BASE_URL     Upload server base URL; defaults to http://localhost:9093.
+TOKITOKI_BASE_URL     Server base URL; defaults to https://tokitoki.dev.
 ```
 
 Commands:
@@ -178,13 +178,13 @@ binary. Local builds (version `dev`) never self-update.
 The default upload target is:
 
 ```text
-http://localhost:9093/api/usage-events/batch
+https://tokitoki.dev/api/usage-events/batch
 ```
 
-Override the server for distribution or staging:
+Override the server for local development or staging:
 
 ```sh
-TOKITOKI_BASE_URL=https://tokitoki.example.com tokitoki
+TOKITOKI_BASE_URL=http://localhost:9093 tokitoki
 ```
 
 ## Local data and the offline queue
