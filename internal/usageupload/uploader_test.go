@@ -12,13 +12,13 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func TestDefaultServerURLIsLocalhost(t *testing.T) {
-	if DefaultServerURL != "http://localhost:9093" {
-		t.Fatalf("DefaultServerURL = %q, want http://localhost:9093", DefaultServerURL)
+func TestDefaultServerURLIsProduction(t *testing.T) {
+	if DefaultServerURL != "https://tokitoki.dev" {
+		t.Fatalf("DefaultServerURL = %q, want https://tokitoki.dev", DefaultServerURL)
 	}
 }
 
-func TestBaseURLDefaultsToLocalhost(t *testing.T) {
+func TestBaseURLDefaultsToProduction(t *testing.T) {
 	t.Setenv(BaseURLEnv, "")
 
 	if got := BaseURL(); got != DefaultServerURL {

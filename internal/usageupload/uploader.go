@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	DefaultServerURL = "http://localhost:9093"
+	DefaultServerURL = "https://tokitoki.dev"
 	BaseURLEnv       = "TOKITOKI_BASE_URL"
 )
 
