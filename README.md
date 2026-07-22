@@ -15,6 +15,11 @@ make build
 `make` without a target builds the CLI and immediately runs it. Set
 `TOKITOKI_BASE_URL=http://localhost:9093` to test against a local server.
 
+Daily development uses `dev`; releases are merged to protected `main` and
+created automatically from semantic-version tags. The release matrix covers
+macOS, Linux, and Windows on both amd64 and arm64. See
+[RELEASING.md](RELEASING.md) for the branch and release process.
+
 ## Usage
 
 ```sh

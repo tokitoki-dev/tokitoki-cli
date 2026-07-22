@@ -1,35 +1,73 @@
 name: Release
 
-# Pushing a semver tag (v1.2.0) builds every platform and publishes a GitHub
-# release. The TokiToki server's `cli` update channel reads these releases:
-# asset names carry the platform/arch tokens (darwin/linux/windows +
-# arm64/amd64) its matcher expects, and GitHub's per-asset sha256 digest is
-# what the CLI verifies downloads against. Publishing to users still happens
-# in /admin/releases — a GitHub release alone ships nothing.
+# A semver tag on main builds the six raw executables consumed by the CLI
+# updater. Asset names are an API: the server matches their platform and arch
+# tokens, then proxies the selected binary without unpacking it.
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - run: go test ./...
+      - name: Verify the release tag belongs to main
+        run: |
+          git fetch origin main --no-tags
+          commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "Release tags must point to a commit on main" >&2
+            exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: Build all platforms
         run: make cross VERSION="${GITHUB_REF_NAME#v}"
 
-      - name: Verify the stamped version matches the tag
+      - name: Verify artifacts and stamped version
         run: |
+          expected=(
+            tokitoki-darwin-amd64
+            tokitoki-darwin-arm64
+            tokitoki-linux-amd64
+            tokitoki-linux-arm64
+            tokitoki-windows-amd64.exe
+            tokitoki-windows-arm64.exe
+          )
+          for asset in "${expected[@]}"; do
+            test -s "dist/$asset"
+          done
+          count="$(find dist -maxdepth 1 -type f -name 'tokitoki-*' | wc -l)"
+          test "$count" -eq "${#expected[@]}"
+
           got="$(dist/tokitoki-linux-amd64 version)"
           want="${GITHUB_REF_NAME#v}"
           if [ "$got" != "$want" ]; then
@@ -37,10 +75,17 @@ jobs:
             exit 1
           fi
 
+      - name: Generate and verify checksums
+        run: |
+          cd dist
+          sha256sum tokitoki-* > checksums.txt
+          sha256sum --check checksums.txt
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
