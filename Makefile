@@ -11,6 +11,7 @@ LDFLAGS := -ldflags "-X $(VERSION_VAR)=$(VERSION)"
 # a third. Panic stack traces still print; only debugger symbols are lost, so
 # the local `build` target keeps them.
 RELEASE_LDFLAGS := -ldflags "-s -w -X $(VERSION_VAR)=$(VERSION)"
+RELEASE_FLAGS := -trimpath -buildvcs=false $(RELEASE_LDFLAGS)
 
 # Provider data roots to scan. Override on the command line to point at
 # fixtures, e.g. `make run PROVIDER_DIRS='claude=/tmp/claude codex=/tmp/codex'`.
@@ -38,18 +39,20 @@ build:
 
 linux-amd64:
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-linux-amd64 $(PKG)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(RELEASE_FLAGS) -o dist/$(APP)-linux-amd64 $(PKG)
 
 # Cross-compile the agent for every target platform. Pure Go (CGO disabled),
 # so a single host builds all of them; the native front-ends bundle the
 # matching binary.
 cross:
+	rm -rf dist
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-darwin-amd64  $(PKG)
-	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-darwin-arm64  $(PKG)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-windows-amd64.exe $(PKG)
-	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-linux-amd64   $(PKG)
-	CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build $(RELEASE_LDFLAGS) -o dist/$(APP)-linux-arm64   $(PKG)
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build $(RELEASE_FLAGS) -o dist/$(APP)-darwin-amd64  $(PKG)
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build $(RELEASE_FLAGS) -o dist/$(APP)-darwin-arm64  $(PKG)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(RELEASE_FLAGS) -o dist/$(APP)-windows-amd64.exe $(PKG)
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(RELEASE_FLAGS) -o dist/$(APP)-windows-arm64.exe $(PKG)
+	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build $(RELEASE_FLAGS) -o dist/$(APP)-linux-amd64   $(PKG)
+	CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build $(RELEASE_FLAGS) -o dist/$(APP)-linux-arm64   $(PKG)
 
 tidy:
 	go mod tidy
