@@ -11,25 +11,26 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	daemonservice "github.com/kardianos/service"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 const (
 	defaultSyncInterval = 5 * time.Minute
-	// upgradeInterval paces the service worker's self-update checks. The
+	// updateInterval paces the service worker's self-update checks. The
 	// first check runs immediately after start, so a freshly installed or
 	// relaunched service is current within one loop iteration.
-	upgradeInterval = 12 * time.Hour
-	upgradeTimeout  = 5 * time.Minute
+	updateInterval = 12 * time.Hour
+	updateTimeout  = 5 * time.Minute
 )
 
 // version comes from internal/buildinfo, the one place release builds stamp;
@@ -50,8 +51,8 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stdout, version)
 		return 0
 	}
-	if len(args) > 0 && args[0] == "upgrade" {
-		return runUpgrade(args[1:])
+	if len(args) > 0 && args[0] == "update" {
+		return runUpdate(args[1:])
 	}
 	if len(args) > 0 && args[0] == "heartbeat" {
 		return runHeartbeat(args[1:])
@@ -77,11 +78,43 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
-	defer cancel()
-	if err := runSync(syncCtx, runFlags.providerDirs, os.Stdout); err != nil {
-		return fail(defaultLogger(), err)
+	syncErr := runSync(syncCtx, runFlags.providerDirs, os.Stdout)
+	cancel()
+
+	// The update check runs even after a failed sync: a broken deployment
+	// must still be able to replace itself with a fixed release.
+	if runFlags.checkUpdate {
+		maybeCheckUpdate(defaultLogger())
+	}
+	if syncErr != nil {
+		return fail(defaultLogger(), syncErr)
 	}
 	return 0
+}
+
+// maybeCheckUpdate self-updates at most once per updateInterval across
+// runs. The stamp file's mtime is the whole record — written before the
+// attempt so network failures are throttled the same as successes.
+func maybeCheckUpdate(logger *slog.Logger) {
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		logger.Warn("tokitoki update check skipped", "error", err)
+		return
+	}
+	stamp := filepath.Join(dir, "last-update-check")
+	if info, err := os.Stat(stamp); err == nil && time.Since(info.ModTime()) < updateInterval {
+		return
+	}
+	if err := os.WriteFile(stamp, nil, 0o600); err != nil {
+		logger.Warn("tokitoki update check skipped", "error", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+	defer cancel()
+	if _, err := selfupdate.Upgrade(ctx, logger, usageupload.BaseURL(), version); err != nil {
+		logger.Warn("tokitoki self-update failed", "error", err)
+	}
 }
 
 func runHeartbeat(args []string) int {
@@ -158,6 +191,7 @@ func parseRunFlags(args []string) (workerFlags, bool) {
 	flags.SetOutput(os.Stderr)
 	providerDirs := newProviderDirFlags(agentlib.DefaultProviderDirs())
 	flags.Var(providerDirs, "provider-dir", "provider data directory to scan (provider=dir; repeatable)")
+	checkUpdate := flags.Bool("check-update", false, "self-update after the sync, at most once per 12h")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
 	}
@@ -170,7 +204,11 @@ func parseRunFlags(args []string) (workerFlags, bool) {
 		fmt.Fprintln(os.Stderr, "nothing to scan; pass --provider-dir provider=dir")
 		return workerFlags{}, false
 	}
-	return workerFlags{providerDirs: dirs}, true
+	return workerFlags{
+		providerDirs: dirs,
+		explicitDirs: providerDirs.Explicit(),
+		checkUpdate:  *checkUpdate,
+	}, true
 }
 
 func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, out io.Writer) error {
@@ -234,16 +272,16 @@ func runGet(args []string) int {
 	return 0
 }
 
-func runUpgrade(args []string) int {
+func runUpdate(args []string) int {
 	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki upgrade")
+		fmt.Fprintln(os.Stderr, "usage: tokitoki update")
 		return 2
 	}
 
 	logger := defaultLogger()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, upgradeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
 
 	result, err := selfupdate.Upgrade(ctx, logger, usageupload.BaseURL(), version)
@@ -262,7 +300,13 @@ func runUpgrade(args []string) int {
 
 type workerFlags struct {
 	providerDirs map[agentlib.Provider][]string
+	// explicitDirs records whether providerDirs came from --provider-dir
+	// rather than the built-in defaults. Installed units only bake explicit
+	// dirs into ExecStart: defaults must resolve from the service user's
+	// home at run time, not the installer's at install time.
+	explicitDirs bool
 	interval     time.Duration
+	checkUpdate  bool
 }
 
 func runServiceWorker(args []string) int {
@@ -281,7 +325,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	defer ticker.Stop()
 
 	// Zero means "never checked", so the first iteration checks right away.
-	var lastUpgradeCheck time.Time
+	var lastUpdateCheck time.Time
 
 	for {
 		syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
@@ -290,10 +334,10 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 		}
 		cancel()
 
-		if time.Since(lastUpgradeCheck) >= upgradeInterval {
-			lastUpgradeCheck = time.Now()
-			upgradeCtx, cancel := context.WithTimeout(ctx, upgradeTimeout)
-			result, err := selfupdate.Upgrade(upgradeCtx, logger, usageupload.BaseURL(), version)
+		if time.Since(lastUpdateCheck) >= updateInterval {
+			lastUpdateCheck = time.Now()
+			updateCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+			result, err := selfupdate.Upgrade(updateCtx, logger, usageupload.BaseURL(), version)
 			cancel()
 			if err != nil {
 				logger.Warn("tokitoki self-update failed", "error", err)
@@ -313,36 +357,6 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	}
 }
 
-type serviceProgram struct {
-	flags  workerFlags
-	cancel context.CancelFunc
-	done   chan struct{}
-}
-
-func (p *serviceProgram) Start(_ daemonservice.Service) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	p.cancel = cancel
-	p.done = make(chan struct{})
-	go func() {
-		defer close(p.done)
-		_ = runWorkerLoop(ctx, p.flags)
-	}()
-	return nil
-}
-
-func (p *serviceProgram) Stop(_ daemonservice.Service) error {
-	if p.cancel != nil {
-		p.cancel()
-	}
-	if p.done != nil {
-		select {
-		case <-p.done:
-		case <-time.After(5 * time.Second):
-		}
-	}
-	return nil
-}
-
 func runService(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: tokitoki service <install|uninstall|start|stop|restart|status> [options]")
@@ -354,36 +368,7 @@ func runService(args []string) int {
 	if !ok {
 		return 2
 	}
-	service, err := newService(flags, userService)
-	if err != nil {
-		return fail(defaultLogger(), err)
-	}
-
-	switch action {
-	case "install":
-		err = service.Install()
-	case "uninstall":
-		err = service.Uninstall()
-	case "start":
-		err = service.Start()
-	case "stop":
-		err = service.Stop()
-	case "restart":
-		err = service.Restart()
-	case "status":
-		var status daemonservice.Status
-		status, err = service.Status()
-		if err == nil {
-			fmt.Fprintln(os.Stdout, serviceStatusString(status))
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "unknown service action %q\n", action)
-		return 2
-	}
-	if err != nil {
-		return fail(defaultLogger(), err)
-	}
-	return 0
+	return platformService(action, flags, userService)
 }
 
 func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
@@ -439,27 +424,9 @@ func parseServiceFlags(args []string) (workerFlags, bool, bool) {
 	}
 	return workerFlags{
 		providerDirs: dirs,
+		explicitDirs: providerDirs.Explicit(),
 		interval:     *interval,
 	}, !*system, true
-}
-
-func newService(flags workerFlags, userService bool) (daemonservice.Service, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	config := &daemonservice.Config{
-		Name:        "tokitoki",
-		DisplayName: "TokiToki",
-		Description: "Sync local AI usage to TokiToki.",
-		Executable:  executable,
-		Arguments:   serviceArguments(flags),
-		Option: daemonservice.KeyValue{
-			"UserService": userService,
-			"Restart":     "always",
-		},
-	}
-	return daemonservice.New(&serviceProgram{flags: flags}, config)
 }
 
 type providerDirFlags struct {
@@ -498,6 +465,12 @@ func (f *providerDirFlags) ProviderDirs() map[agentlib.Provider][]string {
 		return nil
 	}
 	return copyProviderDirs(f.dirs)
+}
+
+// Explicit reports whether any --provider-dir was passed, as opposed to the
+// dirs being the built-in defaults.
+func (f *providerDirFlags) Explicit() bool {
+	return f != nil && f.set
 }
 
 func serviceArguments(flags workerFlags) []string {
@@ -541,28 +514,17 @@ func copyProviderDirs(providerDirs map[agentlib.Provider][]string) map[agentlib.
 	return copied
 }
 
-func serviceStatusString(status daemonservice.Status) string {
-	switch status {
-	case daemonservice.StatusRunning:
-		return "running"
-	case daemonservice.StatusStopped:
-		return "stopped"
-	default:
-		return "unknown"
-	}
-}
-
 func usage() {
 	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the TokiToki server
 
 Usage:
-  tokitoki [--provider-dir PROVIDER=DIR ...]
+  tokitoki [--provider-dir PROVIDER=DIR ...] [--check-update]
   tokitoki set key <API_KEY>
   tokitoki get key
   tokitoki get dashboard-url
   tokitoki heartbeat --entity FILE [options]
   tokitoki version
-  tokitoki upgrade
+  tokitoki update
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the provider roots you pass and uploads their usage
@@ -574,9 +536,16 @@ hermes, codebuff, opencode, and goose. Pass one or more
 key is read from ~/.tokitoki/api_key; use tokitoki set key <API_KEY> to create
 or update that file.
 
-tokitoki upgrade replaces this binary with the newest published release from
-the same server; the service worker does the same check every 12 hours on its
-own. Local builds (version "dev") never self-update.
+tokitoki update replaces this binary with the newest published release from
+the same server. --check-update does the same after a sync, throttled to once
+per 12 hours, and the resident service worker checks on the same cadence.
+Local builds (version "dev") never self-update.
+
+tokitoki service install keeps the sync running on its own. On Linux it
+writes a systemd oneshot service plus timer: run it with sudo on servers to
+get system units that need no login session, or as a plain user to get user
+units (install then enables lingering so the timer survives logout). On macOS
+and Windows it installs a resident worker via the OS service manager.
 
 Examples:
   tokitoki set key tt_live_xxx
