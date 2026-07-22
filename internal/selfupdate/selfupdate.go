@@ -3,8 +3,8 @@
 //
 // This is the single implementation of CLI updating for the whole product:
 // the macOS/Windows apps and the editor plugins never download the CLI — they
-// seed the shared binary from their bundled copy and invoke `tokitoki
-// upgrade`, and everything after that happens here, once, in Go.
+// seed the shared binary from their bundled copy and invoke `tokitoki update`,
+// and everything after that happens here, once, in Go.
 package selfupdate
 
 import (

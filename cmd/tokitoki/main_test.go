@@ -102,6 +102,28 @@ func TestRunGetKeyRejectsExtraArgs(t *testing.T) {
 	}
 }
 
+func TestRunUpdate(t *testing.T) {
+	originalVersion := version
+	version = "dev"
+	t.Cleanup(func() { version = originalVersion })
+
+	if code := run([]string{"update"}); code != 0 {
+		t.Errorf("run(update) = %d, want 0", code)
+	}
+}
+
+func TestRunRejectsRemovedUpgradeCommand(t *testing.T) {
+	if code := run([]string{"upgrade"}); code != 2 {
+		t.Errorf("run(upgrade) = %d, want 2", code)
+	}
+}
+
+func TestRunUpdateRejectsArguments(t *testing.T) {
+	if code := run([]string{"update", "extra"}); code != 2 {
+		t.Fatalf("run(update extra) = %d, want 2", code)
+	}
+}
+
 func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
