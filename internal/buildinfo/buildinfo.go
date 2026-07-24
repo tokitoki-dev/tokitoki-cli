@@ -5,8 +5,13 @@ package buildinfo
 
 import (
 	"regexp"
+	"runtime"
 	"runtime/debug"
 )
+
+// Name identifies this CLI in reported requests. It is the product half of the
+// User-Agent, kept here so every caller reports the same name.
+const Name = "tokitoki-cli"
 
 // Version is stamped by the release build:
 //
@@ -35,4 +40,12 @@ func Resolved() string {
 		return info.Main.Version
 	}
 	return Version
+}
+
+// UserAgent is the value every reported request sends as its User-Agent header,
+// e.g. "tokitoki-cli/1.2.0 (darwin; arm64)". Reporting it from one place keeps
+// the name, version, OS and CPU architecture consistent across callers, so the
+// server can measure version fragmentation from a single field.
+func UserAgent() string {
+	return Name + "/" + Resolved() + " (" + runtime.GOOS + "; " + runtime.GOARCH + ")"
 }
