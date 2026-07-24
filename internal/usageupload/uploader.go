@@ -192,6 +192,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	if settings.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.APIKey)
 	}

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
@@ -259,7 +260,7 @@ func httpGet(ctx context.Context, url string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "tokitoki-cli")
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	return http.DefaultClient.Do(req)
 }
 
