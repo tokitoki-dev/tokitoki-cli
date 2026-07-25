@@ -37,7 +37,7 @@ for every supported target:
 The workflow verifies the asset set and embedded version, generates
 `checksums.txt`, and creates the GitHub Release. The executables intentionally
 remain raw rather than being wrapped in ZIP or tar archives: the Tokitoki update
-server proxies them directly to `tokitoki upgrade`.
+server proxies them directly to `tokitoki update`.
 
 Creating the GitHub Release does not publish it to clients. Import and publish
 the version from `/admin/releases`; until then the update API ignores it.

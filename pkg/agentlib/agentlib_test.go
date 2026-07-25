@@ -137,7 +137,7 @@ func TestApplyProjectFileOverridesHeartbeatIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki-project"),
+		filepath.Join(projectDir, ".tokitoki"),
 		[]byte("stable-dashboard-name\nstable-branch\n"),
 		0o600,
 	); err != nil {

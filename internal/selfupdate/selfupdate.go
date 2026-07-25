@@ -3,8 +3,8 @@
 //
 // This is the single implementation of CLI updating for the whole product:
 // the macOS/Windows apps and the editor plugins never download the CLI — they
-// seed the shared binary from their bundled copy and invoke `tokitoki
-// upgrade`, and everything after that happens here, once, in Go.
+// seed the shared binary from their bundled copy and invoke `tokitoki update`,
+// and everything after that happens here, once, in Go.
 package selfupdate
 
 import (
@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
@@ -259,7 +260,7 @@ func httpGet(ctx context.Context, url string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "tokitoki-cli")
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	return http.DefaultClient.Do(req)
 }
 

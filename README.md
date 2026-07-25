@@ -29,16 +29,28 @@ tokitoki set key "$TOKITOKI_API_KEY"
 # Later runs: scan and upload from the default provider directories.
 tokitoki
 
-# Install/start as a user service where supported.
+# Keep the sync running on its own.
 tokitoki service install
 tokitoki service start
 ```
+
+On Linux, `service install` writes a systemd oneshot service plus timer
+instead of a resident daemon: each firing runs one sync and exits. Run it
+with `sudo` on servers — that installs system units under
+`/etc/systemd/system` which need no login session and survive reboots, with
+the sync running as the sudo caller, not root. Without sudo it installs user
+units and enables lingering (`loginctl enable-linger`) so the timer keeps
+firing after logout; if lingering cannot be enabled, install says so and the
+timer only runs while a session is open. On macOS and Windows, `service
+install` uses the OS service manager to run a resident worker.
 
 Options:
 
 ```text
 --provider-dir      Provider data directory to scan as provider=dir; repeatable.
                     Defaults to the built-in provider directories below.
+--check-update      Self-update after the sync, throttled to once per 12 hours.
+                    The installed Linux timer passes this automatically.
 ```
 
 Environment:
@@ -55,8 +67,8 @@ get key                 Print the API key from ~/.tokitoki/api_key.
 get dashboard-url       Print a one-time URL that opens the web dashboard signed in.
 version                 Print the CLI version ("dev" for local builds).
 heartbeat               Record one IDE activity event and flush the upload queue.
-upgrade                 Replace this binary with the newest published release.
-service install         Install tokitoki as a service.
+update                  Replace this binary with the newest published release.
+service install         Install tokitoki as a service (systemd timer on Linux).
 service uninstall       Remove the installed service.
 service start           Start the installed service.
 service stop            Stop the installed service.
@@ -68,7 +80,7 @@ service status          Print service status.
 
 TokiToki normally uses the project name reported by an IDE or local AI agent.
 To give a checkout a stable name across editors, machines, and differently
-named local folders, create `.tokitoki-project` in the project root:
+named local folders, create `.tokitoki` in the project root:
 
 ```text
 customer-portal
@@ -90,13 +102,13 @@ my-company/{project}
 
 For a file inside a `payments-api` repository this resolves to
 `my-company/payments-api`. Without version control, `{project}` becomes the
-folder containing `.tokitoki-project`.
+folder containing `.tokitoki`.
 
-Existing `.legacy-project` files use the same two-line format and are
-accepted as a compatibility fallback. When both files exist in one folder,
-`.tokitoki-project` takes precedence. A `.toolconfig` file is different: it is a
-legacy project-level INI configuration file and is not treated as a project
-name by TokiToki.
+Only regular files are read: the shared data directory `~/.tokitoki` shares
+the name but is a directory, so it is never mistaken for a project file.
+
+Only `.tokitoki` is read. legacy `.legacy-project` and `.toolconfig`
+files are not treated as project names by TokiToki.
 
 Project-file resolution is applied centrally before events enter the local
 queue, so it affects IDE heartbeats and AI-agent usage scans consistently. It
@@ -164,7 +176,7 @@ Rules every front-end and plugin must follow:
    shared path — staged next to the destination and renamed into place, so
    the swap is atomic. Never overwrite a newer shared binary, and never
    fetch the CLI from the network yourself.
-3. **Delegate freshness to the CLI.** Invoke `tokitoki upgrade` (silent, safe
+3. **Delegate freshness to the CLI.** Invoke `tokitoki update` (silent, safe
    to fire and forget) at launch and on a slow timer. The CLI owns the whole
    check–download–verify–swap sequence.
 
@@ -173,7 +185,7 @@ the macOS app.
 
 ## Self-update
 
-`tokitoki upgrade` checks the server's `cli` release channel, downloads the
+`tokitoki update` checks the server's `cli` release channel, downloads the
 new binary, verifies it reports the offered version, and renames it over the
 running executable — atomically, so concurrent invocations see either the old
 binary or the new one. The service worker runs the same check every 12 hours

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 )
 
 // DashboardURL asks the server to mint a single-use login URL for the user
@@ -18,7 +20,7 @@ func DashboardURL(ctx context.Context, baseURL, apiKey string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", "tokitoki-cli")
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
