@@ -80,7 +80,7 @@ service status          Print service status.
 
 TokiToki normally uses the project name reported by an IDE or local AI agent.
 To give a checkout a stable name across editors, machines, and differently
-named local folders, create `.tokitoki-project` in the project root:
+named local folders, create `.tokitoki` in the project root:
 
 ```text
 customer-portal
@@ -102,13 +102,13 @@ my-company/{project}
 
 For a file inside a `payments-api` repository this resolves to
 `my-company/payments-api`. Without version control, `{project}` becomes the
-folder containing `.tokitoki-project`.
+folder containing `.tokitoki`.
 
-Existing `.legacy-project` files use the same two-line format and are
-accepted as a compatibility fallback. When both files exist in one folder,
-`.tokitoki-project` takes precedence. A `.toolconfig` file is different: it is a
-legacy project-level INI configuration file and is not treated as a project
-name by TokiToki.
+Only regular files are read: the shared data directory `~/.tokitoki` shares
+the name but is a directory, so it is never mistaken for a project file.
+
+Only `.tokitoki` is read. legacy `.legacy-project` and `.toolconfig`
+files are not treated as project names by TokiToki.
 
 Project-file resolution is applied centrally before events enter the local
 queue, so it affects IDE heartbeats and AI-agent usage scans consistently. It

@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	// Name is TokiToki's canonical per-project identity file.
-	Name = ".tokitoki-project"
-	// legacyName is accepted as a migration-compatible fallback. This lets
-	// an existing legacy project keep the same identity in TokiToki.
-	legacyName = ".legacy-project"
+	// Name is TokiToki's canonical per-project configuration file, placed in
+	// the project root. The shared data directory ~/.tokitoki shares the name
+	// but is a directory; the lookup only accepts regular files, so the two
+	// never collide.
+	Name = ".tokitoki"
 	// Placeholder is replaced by the nearest VCS directory name, falling back
 	// to the directory containing the project file.
 	Placeholder = "{project}"
@@ -42,12 +42,10 @@ type Result struct {
 	ProjectPath string
 	Branch      string
 	Filepath    string
-	Compatible  bool
 }
 
 // Resolve searches the entity and then the supplied project path for the
-// nearest .tokitoki-project or .legacy-project file. A nearer file wins; in
-// the same directory, TokiToki's canonical file wins.
+// nearest .tokitoki file. A nearer file wins.
 func Resolve(input Input) (Result, bool, error) {
 	starts := []searchStart{
 		{path: strings.TrimSpace(input.Entity), isFile: true},
@@ -55,18 +53,13 @@ func Resolve(input Input) (Result, bool, error) {
 	}
 
 	var identityPath string
-	var compatible bool
 	var matchedStart searchStart
 	for _, start := range starts {
 		if start.path == "" || !filepath.IsAbs(start.path) {
 			continue
 		}
 		var found bool
-		var err error
-		identityPath, compatible, found, err = find(start)
-		if err != nil {
-			return Result{}, false, err
-		}
+		identityPath, found = find(start)
 		if found {
 			matchedStart = start
 			break
@@ -104,7 +97,6 @@ func Resolve(input Input) (Result, bool, error) {
 		ProjectPath: projectRoot,
 		Branch:      branch,
 		Filepath:    identityPath,
-		Compatible:  compatible,
 	}, true, nil
 }
 
@@ -113,35 +105,28 @@ type searchStart struct {
 	isFile bool
 }
 
-func find(start searchStart) (identityPath string, compatible, found bool, err error) {
+func find(start searchStart) (identityPath string, found bool) {
 	dir := filepath.Clean(start.path)
 	if start.isFile {
 		dir = filepath.Dir(dir)
 	}
 
 	for {
-		for _, candidate := range []struct {
-			name       string
-			compatible bool
-		}{
-			{name: Name},
-			{name: legacyName, compatible: true},
-		} {
-			path := filepath.Join(dir, candidate.name)
-			info, statErr := os.Stat(path)
-			if statErr == nil && info.Mode().IsRegular() {
-				return path, candidate.compatible, true, nil
-			}
-			// Anything else — the file is absent, the directory denies stat
-			// (network mounts, tightened parents), or the name is a directory —
-			// means "no identity file here". The walk covers every ancestor up
-			// to the root, so treating an unreadable rung as empty can only
-			// cost an override, never an event.
+		path := filepath.Join(dir, Name)
+		info, statErr := os.Stat(path)
+		if statErr == nil && info.Mode().IsRegular() {
+			return path, true
 		}
+		// Anything else — the file is absent, the directory denies stat
+		// (network mounts, tightened parents), or the name is a directory
+		// (the shared data directory ~/.tokitoki) — means "no project file
+		// here". The walk covers every ancestor up to the root, so treating
+		// an unreadable rung as empty can only cost an override, never an
+		// event.
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false, false, nil
+			return "", false
 		}
 		dir = parent
 	}
