@@ -63,6 +63,9 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "get" {
 		return runGet(args[1:])
 	}
+	if len(args) > 0 && args[0] == "verify" {
+		return runVerify(args[1:])
+	}
 	if len(args) > 0 && args[0] == "__service-run" {
 		return runServiceWorker(args[1:])
 	}
@@ -269,6 +272,35 @@ func runGet(args []string) int {
 		return fail(logger, err)
 	}
 	fmt.Fprintln(os.Stdout, value)
+	return 0
+}
+
+func runVerify(args []string) int {
+	if len(args) != 1 || args[0] != "key" {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki verify key")
+		return 2
+	}
+
+	logger := defaultLogger()
+	client, err := agentlib.New(agentlib.Options{Logger: logger})
+	if err != nil {
+		return fail(logger, err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// An invalid key is a definite answer, not a failure: exit 0 with
+	// valid:false so callers can tell it apart from "could not check".
+	valid, err := client.VerifyAPIKey(ctx)
+	if err != nil {
+		return fail(logger, err)
+	}
+	if err := writeJSON(os.Stdout, map[string]any{"ok": true, "valid": valid}); err != nil {
+		return fail(logger, err)
+	}
 	return 0
 }
 
@@ -522,6 +554,7 @@ Usage:
   tokitoki set key <API_KEY>
   tokitoki get key
   tokitoki get dashboard-url
+  tokitoki verify key
   tokitoki heartbeat --entity FILE [options]
   tokitoki version
   tokitoki update
