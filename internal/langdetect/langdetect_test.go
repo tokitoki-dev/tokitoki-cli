@@ -2,7 +2,7 @@ package langdetect
 
 import "testing"
 
-func TestFromPathUseslegacyStyleFilenameAndExtensionRules(t *testing.T) {
+func TestFromPathUsesFilenameAndExtensionRules(t *testing.T) {
 	tests := map[string]string{
 		"/repo/go.mod":          "Go",
 		"/repo/app/page.tsx":    "TypeScript",

@@ -34,7 +34,7 @@ P1 — correctness/robustness:
 - [x] Upload watermark: each event now has local upload state, so `tokitoki`
   uploads only pending/failed events and marks accepted/duplicate server
   responses as uploaded.
-- [ ] Claude streaming token upsert (see legacy note below) — affects count
+- [ ] Claude streaming token upsert (see notes below) — affects count
   accuracy.
 - [ ] Replace hardcoded `InstallationID: "local-go-agent"` with a per-machine id
   persisted under `~/.tokitoki/`, so one user's multiple devices stay distinct.
@@ -42,7 +42,7 @@ P1 — correctness/robustness:
 P2 — missing basics:
 
 - [x] `version` command / `--version`, with the version injected via ldflags.
-- [ ] Scan lock + large-transcript protection (see legacy notes below).
+- [ ] Scan lock + large-transcript protection (see notes below).
 
 P3 — cross-platform packaging:
 
@@ -53,12 +53,12 @@ P3 — cross-platform packaging:
 
 ## Scanner Ideas To Revisit
 
-- Add a scan cursor similar to legacy `ai_logs_last_parsed_at` so unchanged provider files are skipped. (The old `source_files` table was dead code and has been removed; a fresh design would add per-file rows to `usage.db`.)
+- Add a per-file scan cursor so unchanged provider files are skipped. (The old `source_files` table was dead code and has been removed; a fresh design would add per-file rows to `usage.db`.)
 - Add a short global scan lock so startup scan and manual `/usage/scan` cannot parse the same files concurrently.
 - Add large transcript protection: bounded scanner buffers, max line size handling, and optional tail scanning for very large session files.
 - Fix Claude streaming-update semantics: use a logical event key based on `provider + session_id + request_id + message_id`, then upsert latest token values instead of inserting a new event when token counts grow.
-- Review Codex token handling against legacy total-token/delta approach and decide whether TokiToki should store raw token-count events or normalized deltas.
-- ~~Add upload queue behavior inspired by legacy offline sync~~ — done 2026-07-17: batch limits, stop-on-first-failure, exponential backoff, permanent rejection, and pruning all live in `usagedb` + `usageupload.SyncPending`.
+- Review Codex token handling and decide whether TokiToki should store raw token-count events or normalized deltas.
+- ~~Add offline upload queue behavior~~ — done 2026-07-17: batch limits, stop-on-first-failure, exponential backoff, permanent rejection, and pruning all live in `usagedb` + `usageupload.SyncPending`.
 - Add summary-level upload state so server sync sends daily/project/model summaries instead of every local `usage_event`.
 - Add source status/debug endpoints for scan counts, last scan time, last error, indexed event count, and pending upload count.
 

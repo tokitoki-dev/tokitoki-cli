@@ -107,8 +107,7 @@ folder containing `.tokitoki`.
 Only regular files are read: the shared data directory `~/.tokitoki` shares
 the name but is a directory, so it is never mistaken for a project file.
 
-Only `.tokitoki` is read. legacy `.legacy-project` and `.toolconfig`
-files are not treated as project names by TokiToki.
+Only `.tokitoki` is read; other tools' project files are ignored.
 
 Project-file resolution is applied centrally before events enter the local
 queue, so it affects IDE heartbeats and AI-agent usage scans consistently. It

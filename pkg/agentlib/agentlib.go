@@ -118,7 +118,7 @@ type SyncOptions struct {
 	ProviderDirs map[Provider][]string
 }
 
-// Heartbeat describes one heartbeat-style IDE activity sample.
+// Heartbeat describes one IDE activity sample.
 type Heartbeat struct {
 	Entity         string
 	Timestamp      time.Time
