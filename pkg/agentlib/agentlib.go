@@ -225,6 +225,20 @@ func (c *Client) DashboardURL(ctx context.Context) (string, error) {
 	return deviceauth.DashboardURL(ctx, usageupload.BaseURL(), apiKey)
 }
 
+// VerifyAPIKey checks the stored API key against the server. A definite
+// answer returns (true, nil) or (false, nil); network or server trouble is
+// an error so callers can tell "invalid" apart from "could not check".
+func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
+	apiKey, err := c.GetAPIKey()
+	if err != nil {
+		return false, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return deviceauth.VerifyKey(ctx, usageupload.BaseURL(), apiKey)
+}
+
 // Sync scans selected provider directories and uploads newly discovered events.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	providerDirs := normalizeProviderDirs(options.ProviderDirs)

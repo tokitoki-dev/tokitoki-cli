@@ -43,3 +43,37 @@ func DashboardURL(ctx context.Context, baseURL, apiKey string) (string, error) {
 	}
 	return decoded.URL, nil
 }
+
+// VerifyKey asks the server whether apiKey is currently valid. A definite
+// server answer returns (true, nil) or (false, nil); anything else — network
+// failure, server error — is an error, so callers can tell "invalid key"
+// apart from "could not check".
+func VerifyKey(ctx context.Context, baseURL, apiKey string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/auth/api-key/verify", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("verify API key: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var decoded struct {
+			Valid bool `json:"valid"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return false, fmt.Errorf("verify API key: %w", err)
+		}
+		return decoded.Valid, nil
+	case http.StatusUnauthorized:
+		return false, nil
+	default:
+		return false, fmt.Errorf("verify API key: server returned %s", resp.Status)
+	}
+}
