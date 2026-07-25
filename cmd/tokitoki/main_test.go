@@ -199,7 +199,7 @@ func TestRunHeartbeatAppliesProjectIdentityFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki-project"),
+		filepath.Join(projectDir, ".tokitoki"),
 		[]byte("my-company/{project}\nrelease/2026\n"),
 		0o600,
 	); err != nil {

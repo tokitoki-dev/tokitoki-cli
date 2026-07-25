@@ -34,9 +34,6 @@ func TestResolveProjectAndBranch(t *testing.T) {
 	if result.Filepath != filepath.Join(projectDir, Name) {
 		t.Fatalf("identity file = %q", result.Filepath)
 	}
-	if result.Compatible {
-		t.Fatal("canonical file reported as compatible fallback")
-	}
 }
 
 func TestResolveEmptyFileUsesContainingFolderAndKeepsBranch(t *testing.T) {
@@ -158,7 +155,7 @@ func TestResolvePlaceholderUsesProjectPathVCSForOutOfTreeEntity(t *testing.T) {
 	}
 }
 
-func TestResolveAcceptsWakaTimeProjectAsNearestCompatibilityFile(t *testing.T) {
+func TestResolveIgnoresWakaTimeProjectFiles(t *testing.T) {
 	root := t.TempDir()
 	outer := filepath.Join(root, "outer")
 	inner := filepath.Join(outer, "inner")
@@ -166,31 +163,14 @@ func TestResolveAcceptsWakaTimeProjectAsNearestCompatibilityFile(t *testing.T) {
 	mustMkdirAll(t, inner)
 	mustWriteFile(t, entity, "package main\n")
 	writeProjectFile(t, outer, Name, "outer-tokitoki\n")
-	writeProjectFile(t, inner, WakaTimeName, "inner-wakatime\nlegacy-branch\n")
+	writeProjectFile(t, inner, ".wakatime-project", "inner-wakatime\nlegacy-branch\n")
 
 	result, found, err := Resolve(Input{Entity: entity})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || result.Project != "inner-wakatime" || result.Branch != "legacy-branch" {
-		t.Fatalf("Resolve() = (%+v, %t), want nearest WakaTime identity", result, found)
-	}
-	if !result.Compatible {
-		t.Fatal("WakaTime file not reported as compatibility fallback")
-	}
-}
-
-func TestResolveCanonicalWinsInSameDirectory(t *testing.T) {
-	projectDir, entity := projectTree(t)
-	writeProjectFile(t, projectDir, Name, "tokitoki-name\n")
-	writeProjectFile(t, projectDir, WakaTimeName, "wakatime-name\n")
-
-	result, found, err := Resolve(Input{Entity: entity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "tokitoki-name" || result.Compatible {
-		t.Fatalf("Resolve() = (%+v, %t), want canonical identity", result, found)
+	if !found || result.Project != "outer-tokitoki" {
+		t.Fatalf("Resolve() = (%+v, %t), want .wakatime-project ignored", result, found)
 	}
 }
 

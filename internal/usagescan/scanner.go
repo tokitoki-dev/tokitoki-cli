@@ -119,7 +119,7 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) 
 // applyProjectFiles rewrites each entry's identity from the nearest project
 // identity file. An identity file is an optional override: one that exists
 // but cannot be read is warned about and skipped — a stray unreadable
-// .wakatime-project somewhere on disk must never stop usage from flowing.
+// .tokitoki file somewhere on disk must never stop usage from flowing.
 func (s *Scanner) applyProjectFiles(entries []usage.Entry) {
 	type cacheKey struct {
 		entityDir   string

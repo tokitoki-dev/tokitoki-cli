@@ -110,7 +110,7 @@ func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki-project"),
+		filepath.Join(projectDir, ".tokitoki"),
 		[]byte("shared-ai-and-ide-name\nrelease\n"),
 		0o600,
 	); err != nil {
@@ -164,7 +164,7 @@ func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
 func TestApplyProjectFilesPreservesPerEventBranchWithoutOverride(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki-project"),
+		filepath.Join(projectDir, ".tokitoki"),
 		[]byte("shared-name\n"),
 		0o600,
 	); err != nil {
