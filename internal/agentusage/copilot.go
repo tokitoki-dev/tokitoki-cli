@@ -10,13 +10,13 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadCopilotEntries(paths []string) ([]usage.Entry, error) {
+func loadCopilotEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, collectExt(root, ".jsonl")...)
 	}
 	sort.Strings(files)
-	files = uniqueStrings(files)
+	files = filterFiles(uniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {

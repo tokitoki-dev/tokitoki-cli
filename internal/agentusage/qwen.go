@@ -8,7 +8,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadQwenEntries(paths []string) ([]usage.Entry, error) {
+func loadQwenEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, collectFiles(filepath.Join(root, "projects"), isQwenChatFile)...)
@@ -17,7 +17,7 @@ func loadQwenEntries(paths []string) ([]usage.Entry, error) {
 		}
 	}
 	sort.Strings(files)
-	files = uniqueStrings(files)
+	files = filterFiles(uniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {

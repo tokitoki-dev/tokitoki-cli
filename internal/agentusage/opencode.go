@@ -12,10 +12,10 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadOpenCodeEntries(paths []string) ([]usage.Entry, error) {
+func loadOpenCodeEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	entriesByID := make(map[string]usage.Entry)
 	for _, root := range paths {
-		rootEntries, err := loadOpenCodeRoot(root)
+		rootEntries, err := loadOpenCodeRoot(root, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -36,7 +36,7 @@ func loadOpenCodeEntries(paths []string) ([]usage.Entry, error) {
 	return entries, nil
 }
 
-func loadOpenCodeRoot(root string) ([]usage.Entry, error) {
+func loadOpenCodeRoot(root string, filter usage.FileFilter) ([]usage.Entry, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, nil
@@ -73,6 +73,7 @@ func loadOpenCodeRoot(root string) ([]usage.Entry, error) {
 
 	files := collectExt(filepath.Join(root, "storage", "message"), ".json")
 	sort.Strings(files)
+	files = filterFiles(files, filter)
 	for _, file := range files {
 		stem := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
 		if seenIDs[stableOpenCodeMessageID(stem)] {

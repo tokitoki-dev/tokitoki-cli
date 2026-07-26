@@ -22,13 +22,13 @@ type codebuffUsage struct {
 	extraTotalTokens         uint64
 }
 
-func loadCodebuffEntries(paths []string) ([]usage.Entry, error) {
+func loadCodebuffEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, collectCodebuffChatFiles(root)...)
 	}
 	sort.Strings(files)
-	files = uniqueStrings(files)
+	files = filterFiles(uniqueStrings(files), filter)
 
 	entriesByID := make(map[string]usage.Entry)
 	for _, file := range files {

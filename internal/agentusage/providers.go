@@ -5,8 +5,14 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
+// providerBase carries the scan configuration shared by every agent
+// provider. filter skips source files whose events are already ingested;
+// the SQLite-backed providers (Kilo, Hermes, Goose) deliberately do not
+// implement WithFileFilter because WAL keeps the main database file's stat
+// unchanged while data grows in the -wal journal.
 type providerBase struct {
-	paths []string
+	paths  []string
+	filter usage.FileFilter
 }
 
 func newProviderBase(paths []string) providerBase {
@@ -76,9 +82,16 @@ func (CopilotProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the GitHub Copilot CLI provider id.
 func (CopilotProvider) Provider() usage.Provider { return usage.ProviderCopilot }
 
+// WithFileFilter returns a GitHub Copilot CLI provider that skips source
+// files the filter rejects.
+func (p CopilotProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized GitHub Copilot CLI usage entries.
 func (p CopilotProvider) Entries() ([]usage.Entry, error) {
-	return loadCopilotEntries(p.paths)
+	return loadCopilotEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Gemini CLI provider configured with data roots.
@@ -89,9 +102,16 @@ func (GeminiProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Gemini CLI provider id.
 func (GeminiProvider) Provider() usage.Provider { return usage.ProviderGemini }
 
+// WithFileFilter returns a Gemini CLI provider that skips source files the
+// filter rejects.
+func (p GeminiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Gemini CLI usage entries.
 func (p GeminiProvider) Entries() ([]usage.Entry, error) {
-	return loadGeminiEntries(p.paths)
+	return loadGeminiEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Kimi provider configured with data roots.
@@ -102,9 +122,16 @@ func (KimiProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Kimi provider id.
 func (KimiProvider) Provider() usage.Provider { return usage.ProviderKimi }
 
+// WithFileFilter returns a Kimi provider that skips source files the filter
+// rejects.
+func (p KimiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Kimi usage entries.
 func (p KimiProvider) Entries() ([]usage.Entry, error) {
-	return loadKimiEntries(p.paths)
+	return loadKimiEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Qwen provider configured with data roots.
@@ -115,9 +142,16 @@ func (QwenProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Qwen provider id.
 func (QwenProvider) Provider() usage.Provider { return usage.ProviderQwen }
 
+// WithFileFilter returns a Qwen provider that skips source files the filter
+// rejects.
+func (p QwenProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Qwen usage entries.
 func (p QwenProvider) Entries() ([]usage.Entry, error) {
-	return loadQwenEntries(p.paths)
+	return loadQwenEntries(p.paths, p.filter)
 }
 
 // WithPaths returns an OpenClaw provider configured with data roots.
@@ -128,9 +162,16 @@ func (OpenClawProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the OpenClaw provider id.
 func (OpenClawProvider) Provider() usage.Provider { return usage.ProviderOpenClaw }
 
+// WithFileFilter returns an OpenClaw provider that skips source files the
+// filter rejects.
+func (p OpenClawProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized OpenClaw usage entries.
 func (p OpenClawProvider) Entries() ([]usage.Entry, error) {
-	return loadOpenClawEntries(p.paths)
+	return loadOpenClawEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a pi-agent provider configured with data roots.
@@ -141,9 +182,16 @@ func (PiProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the pi-agent provider id.
 func (PiProvider) Provider() usage.Provider { return usage.ProviderPi }
 
+// WithFileFilter returns a pi-agent provider that skips source files the
+// filter rejects.
+func (p PiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized pi-agent usage entries.
 func (p PiProvider) Entries() ([]usage.Entry, error) {
-	return loadPiEntries(p.paths)
+	return loadPiEntries(p.paths, p.filter)
 }
 
 // WithPaths returns an Amp provider configured with data roots.
@@ -154,9 +202,16 @@ func (AmpProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Amp provider id.
 func (AmpProvider) Provider() usage.Provider { return usage.ProviderAmp }
 
+// WithFileFilter returns an Amp provider that skips source files the filter
+// rejects.
+func (p AmpProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Amp usage entries.
 func (p AmpProvider) Entries() ([]usage.Entry, error) {
-	return loadAmpEntries(p.paths)
+	return loadAmpEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Droid provider configured with data roots.
@@ -167,9 +222,16 @@ func (DroidProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Droid provider id.
 func (DroidProvider) Provider() usage.Provider { return usage.ProviderDroid }
 
+// WithFileFilter returns a Droid provider that skips source files the filter
+// rejects.
+func (p DroidProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Droid usage entries.
 func (p DroidProvider) Entries() ([]usage.Entry, error) {
-	return loadDroidEntries(p.paths)
+	return loadDroidEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Kilo provider configured with data roots.
@@ -206,9 +268,16 @@ func (CodebuffProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Codebuff provider id.
 func (CodebuffProvider) Provider() usage.Provider { return usage.ProviderCodebuff }
 
+// WithFileFilter returns a Codebuff provider that skips source files the
+// filter rejects.
+func (p CodebuffProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized Codebuff usage entries.
 func (p CodebuffProvider) Entries() ([]usage.Entry, error) {
-	return loadCodebuffEntries(p.paths)
+	return loadCodebuffEntries(p.paths, p.filter)
 }
 
 // WithPaths returns an OpenCode provider configured with data roots.
@@ -219,9 +288,17 @@ func (OpenCodeProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the OpenCode provider id.
 func (OpenCodeProvider) Provider() usage.Provider { return usage.ProviderOpenCode }
 
+// WithFileFilter returns an OpenCode provider that skips source files the
+// filter rejects. The filter applies to message files only; the OpenCode
+// database goes through the SQLite path and is always scanned.
+func (p OpenCodeProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provider {
+	p.filter = filter
+	return p
+}
+
 // Entries loads normalized OpenCode usage entries.
 func (p OpenCodeProvider) Entries() ([]usage.Entry, error) {
-	return loadOpenCodeEntries(p.paths)
+	return loadOpenCodeEntries(p.paths, p.filter)
 }
 
 // WithPaths returns a Goose provider configured with data roots.
