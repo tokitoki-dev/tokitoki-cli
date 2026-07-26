@@ -8,12 +8,13 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadPiEntries(paths []string) ([]usage.Entry, error) {
+func loadPiEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, path := range paths {
 		files = append(files, collectExt(path, ".jsonl")...)
 	}
 	sort.Strings(files)
+	files = filterFiles(files, filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {

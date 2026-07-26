@@ -138,7 +138,7 @@ func TestUpgradeRejectsVersionMismatch(t *testing.T) {
 }
 
 func TestUpgradeRefusesAppBundle(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "TokiToki.app", "Contents", "Resources")
+	dir := filepath.Join(t.TempDir(), "Tokitoki.app", "Contents", "Resources")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

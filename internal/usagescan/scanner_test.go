@@ -60,6 +60,77 @@ func TestScanInsertsBuiltInProviderEntries(t *testing.T) {
 	}
 }
 
+func TestScanSkipsUnchangedFiles(t *testing.T) {
+	dir := t.TempDir()
+	codexDir := filepath.Join(dir, "codex")
+	sessionDir := filepath.Join(codexDir, "sessions", "2026", "06", "04")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := filepath.Join(sessionDir, "rollout-session-a.jsonl")
+	if err := os.WriteFile(
+		sessionFile,
+		[]byte(
+			`{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-a","cwd":"/Users/me/workspace/tokitoki"}}`+"\n"+
+				`{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}}`+"\n",
+		),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	scanner := New(db)
+	dirs := map[usage.Provider][]string{usage.ProviderCodex: {codexDir}}
+
+	result, err := scanner.Scan(dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed := result.Providers[usage.ProviderCodex].EventsParsed; parsed != 1 {
+		t.Fatalf("first events parsed = %d, want 1", parsed)
+	}
+
+	result, err = scanner.Scan(dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed := result.Providers[usage.ProviderCodex].EventsParsed; parsed != 0 {
+		t.Fatalf("unchanged file events parsed = %d, want 0", parsed)
+	}
+
+	appended, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appended.WriteString(
+		`{"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9}}}}` + "\n",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := appended.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = scanner.Scan(dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexResult := result.Providers[usage.ProviderCodex]
+	if codexResult.EventsParsed != 2 {
+		t.Fatalf("appended file events parsed = %d, want 2", codexResult.EventsParsed)
+	}
+	if codexResult.EventsInserted != 1 {
+		t.Fatalf("appended file events inserted = %d, want 1", codexResult.EventsInserted)
+	}
+}
+
 func TestScanUsesRegisteredProvider(t *testing.T) {
 	dir := t.TempDir()
 	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))

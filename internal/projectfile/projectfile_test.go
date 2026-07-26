@@ -155,7 +155,7 @@ func TestResolvePlaceholderUsesProjectPathVCSForOutOfTreeEntity(t *testing.T) {
 	}
 }
 
-func TestResolveIgnoreslegacyProjectFiles(t *testing.T) {
+func TestResolveIgnoresOtherToolsProjectFiles(t *testing.T) {
 	root := t.TempDir()
 	outer := filepath.Join(root, "outer")
 	inner := filepath.Join(outer, "inner")
@@ -198,7 +198,7 @@ func TestResolveNoFilePreservesExistingDetection(t *testing.T) {
 	}
 }
 
-func TestResolveDoesNotTreatDotlegacyConfigAsProjectIdentity(t *testing.T) {
+func TestResolveDoesNotTreatOtherDotfilesAsProjectIdentity(t *testing.T) {
 	projectDir, entity := projectTree(t)
 	mustWriteFile(t, filepath.Join(projectDir, ".toolconfig"), "[settings]\nproject=not-an-identity\n")
 
@@ -207,7 +207,7 @@ func TestResolveDoesNotTreatDotlegacyConfigAsProjectIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if found || result != (Result{}) {
-		t.Fatalf("Resolve() = (%+v, %t), want .toolconfig ignored", result, found)
+		t.Fatalf("Resolve() = (%+v, %t), want other dotfiles ignored", result, found)
 	}
 }
 

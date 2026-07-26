@@ -55,6 +55,20 @@ func collectFiles(root string, match func(string) bool) []string {
 	return files
 }
 
+// filterFiles drops files the filter rejects. A nil filter keeps everything.
+func filterFiles(files []string, filter usage.FileFilter) []string {
+	if filter == nil {
+		return files
+	}
+	kept := files[:0]
+	for _, file := range files {
+		if filter(file) {
+			kept = append(kept, file)
+		}
+	}
+	return kept
+}
+
 func collectExt(root, ext string) []string {
 	ext = strings.ToLower(ext)
 	return collectFiles(root, func(path string) bool {

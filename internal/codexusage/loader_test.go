@@ -108,7 +108,7 @@ func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
 {"timestamp":"2026-06-03T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}}
 `)
 
-	entries, err := LoadEntriesFromPaths([]string{dir}, "tokitoki")
+	entries, err := LoadEntriesFromPaths([]string{dir}, "tokitoki", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
 		t.Fatalf("len(entries) = %d, want 1", len(entries))
 	}
 
-	entries, err = LoadEntriesFromPaths([]string{dir}, "/Users/me/workspace/tokitoki")
+	entries, err = LoadEntriesFromPaths([]string{dir}, "/Users/me/workspace/tokitoki", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestLoadEntriesFiltersByProjectOrProjectPath(t *testing.T) {
 		t.Fatalf("len(entries by path) = %d, want 1", len(entries))
 	}
 
-	entries, err = LoadEntriesFromPaths([]string{dir}, "other")
+	entries, err = LoadEntriesFromPaths([]string{dir}, "other", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

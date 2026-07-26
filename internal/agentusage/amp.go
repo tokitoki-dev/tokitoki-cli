@@ -10,7 +10,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadAmpEntries(paths []string) ([]usage.Entry, error) {
+func loadAmpEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, path := range paths {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
@@ -25,7 +25,7 @@ func loadAmpEntries(paths []string) ([]usage.Entry, error) {
 		}
 	}
 	sort.Strings(files)
-	files = uniqueStrings(files)
+	files = filterFiles(uniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {

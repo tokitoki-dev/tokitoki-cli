@@ -127,7 +127,7 @@ func systemdUnitTexts(flags workerFlags, system bool) (string, string, error) {
 
 	var service strings.Builder
 	service.WriteString("[Unit]\n")
-	service.WriteString("Description=Sync local AI usage to TokiToki\n")
+	service.WriteString("Description=Sync local AI usage to Tokitoki\n")
 	service.WriteString("Wants=network-online.target\n")
 	service.WriteString("After=network-online.target\n\n")
 	service.WriteString("[Service]\n")
@@ -145,7 +145,7 @@ func systemdUnitTexts(flags workerFlags, system bool) (string, string, error) {
 		seconds = 1
 	}
 	timer := fmt.Sprintf(`[Unit]
-Description=Run the TokiToki usage sync on an interval
+Description=Run the Tokitoki usage sync on an interval
 
 [Timer]
 OnBootSec=2min

@@ -8,13 +8,13 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadKimiEntries(paths []string) ([]usage.Entry, error) {
+func loadKimiEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, collectFiles(filepath.Join(root, "sessions"), isKimiWireFile)...)
 	}
 	sort.Strings(files)
-	files = uniqueStrings(files)
+	files = filterFiles(uniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	seen := make(map[string]bool)

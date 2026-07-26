@@ -18,7 +18,7 @@ const UploadLockFile = "upload.lock"
 // ErrLockBusy reports that another process held the lock for the whole
 // timeout. Callers that treat "someone else is already doing this work" as
 // success test for it with errors.Is.
-var ErrLockBusy = errors.New("another TokiToki command is still running")
+var ErrLockBusy = errors.New("another Tokitoki command is still running")
 
 type DataLock struct {
 	file *os.File

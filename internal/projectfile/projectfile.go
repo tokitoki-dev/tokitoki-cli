@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// Name is TokiToki's canonical per-project configuration file, placed in
+	// Name is Tokitoki's canonical per-project configuration file, placed in
 	// the project root. The shared data directory ~/.tokitoki shares the name
 	// but is a directory; the lookup only accepts regular files, so the two
 	// never collide.
