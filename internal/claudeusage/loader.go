@@ -172,10 +172,13 @@ func SummarizeDailyProjects(entries []LoadedEntry) []DailyProjectSummary {
 	return summaries
 }
 
-func LoadEntriesFromPaths(paths []string, projectFilter string) ([]LoadedEntry, error) {
+func LoadEntriesFromPaths(paths []string, projectFilter string, fileFilter usage.FileFilter) ([]LoadedEntry, error) {
 	files := UsageFiles(paths, projectFilter)
 	entries := make([]LoadedEntry, 0)
 	for _, file := range files {
+		if fileFilter != nil && !fileFilter(file) {
+			continue
+		}
 		fileEntries, err := ReadUsageFile(file)
 		if err != nil {
 			return nil, err

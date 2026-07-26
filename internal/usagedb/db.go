@@ -34,7 +34,20 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	last_error      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_queue ON usage_events(status, next_attempt_at);
+CREATE TABLE IF NOT EXISTS scanned_files (
+	path     TEXT PRIMARY KEY,
+	size     INTEGER NOT NULL,
+	mtime_ns INTEGER NOT NULL
+);
 `
+
+// FileState is the stat snapshot of a source file at the time it was last
+// successfully scanned. A file whose current stat matches its stored state
+// holds no events the database has not already seen.
+type FileState struct {
+	Size    int64
+	MtimeNS int64
+}
 
 type DB struct {
 	db *sql.DB
@@ -98,6 +111,53 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 		inserted += int(affected)
 	}
 	return inserted, tx.Commit()
+}
+
+// ScannedFiles returns the stat snapshot of every file recorded as scanned.
+func (s *DB) ScannedFiles() (map[string]FileState, error) {
+	rows, err := s.db.Query(`SELECT path, size, mtime_ns FROM scanned_files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	states := make(map[string]FileState)
+	for rows.Next() {
+		var path string
+		var state FileState
+		if err := rows.Scan(&path, &state.Size, &state.MtimeNS); err != nil {
+			return nil, err
+		}
+		states[path] = state
+	}
+	return states, rows.Err()
+}
+
+// UpsertScannedFiles records the stat snapshots of files whose events have
+// been ingested. Call it only after the corresponding InsertEvents succeeded;
+// recording a file before its events are stored would skip them forever.
+func (s *DB) UpsertScannedFiles(states map[string]FileState) error {
+	if len(states) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scanned_files (path, size, mtime_ns) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for path, state := range states {
+		if _, err := stmt.Exec(path, state.Size, state.MtimeNS); err != nil {
+			return fmt.Errorf("save scanned file %q: %w", path, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // PendingEvents returns events due for upload at now, oldest first. A limit

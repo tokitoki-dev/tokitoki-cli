@@ -30,6 +30,11 @@ const (
 
 const UnknownLanguage = "Unknown"
 
+// FileFilter reports whether a source file must be parsed. Returning false
+// means the file's events are already ingested and parsing it again would be
+// wasted work. A nil FileFilter parses everything.
+type FileFilter func(path string) bool
+
 type TokenUsage struct {
 	InputTokens              uint64 `json:"input_tokens"`
 	OutputTokens             uint64 `json:"output_tokens"`

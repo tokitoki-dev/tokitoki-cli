@@ -52,10 +52,13 @@ type tokenUsagePayload struct {
 	TotalTokens           uint64 `json:"total_tokens"`
 }
 
-func LoadEntriesFromPaths(paths []string, projectFilter string) ([]usage.Entry, error) {
+func LoadEntriesFromPaths(paths []string, projectFilter string, fileFilter usage.FileFilter) ([]usage.Entry, error) {
 	files := UsageFiles(paths)
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
+		if fileFilter != nil && !fileFilter(file) {
+			continue
+		}
 		fileEntries, err := ReadUsageFile(file)
 		if err != nil {
 			return nil, err

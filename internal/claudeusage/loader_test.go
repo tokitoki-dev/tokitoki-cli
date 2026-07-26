@@ -225,7 +225,7 @@ func TestLoadEntriesDeduplicatesByMessageAndRequest(t *testing.T) {
 {"timestamp":"2026-05-21T01:02:04Z","requestId":"req-1","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":10,"output_tokens":1}}}
 `)
 
-	entries, err := LoadEntriesFromPaths([]string{dir}, "")
+	entries, err := LoadEntriesFromPaths([]string{dir}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

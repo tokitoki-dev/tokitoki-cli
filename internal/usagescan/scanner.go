@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -80,6 +81,16 @@ func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error)
 	var result Result
 	var errs []error
 
+	// Stat snapshots of files already ingested. On error scan everything:
+	// re-parsing is wasted work, skipping is lost data.
+	scanned, err := s.db.ScannedFiles()
+	if err != nil {
+		scanned = nil
+		if s.Logger != nil {
+			s.Logger.Warn("scanned file states unavailable, scanning all files", "error", err)
+		}
+	}
+
 	for _, providerID := range s.scanOrder(providerDirs) {
 		dirs := filterPaths(providerDirs[providerID])
 		if len(dirs) == 0 {
@@ -90,7 +101,7 @@ func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error)
 			errs = append(errs, fmt.Errorf("no usage provider registered for %q", providerID))
 			continue
 		}
-		providerResult, err := s.scanProvider(provider, dirs)
+		providerResult, err := s.scanProvider(provider, dirs, scanned)
 		result.setProviderResult(providerID, providerResult)
 		if err != nil {
 			errs = append(errs, err)
@@ -100,15 +111,36 @@ func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error)
 	return result, errors.Join(errs...)
 }
 
-func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string) (ProviderResult, error) {
+func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string, scanned map[string]usagedb.FileState) (ProviderResult, error) {
 	var result ProviderResult
-	entries, err := providerWithPaths(provider, paths).Entries()
+	configured := providerWithPaths(provider, paths)
+	pending := make(map[string]usagedb.FileState)
+	if filterable, ok := configured.(filterConfiguredProvider); ok && scanned != nil {
+		configured = filterable.WithFileFilter(func(path string) bool {
+			info, err := os.Stat(path)
+			if err != nil || info.IsDir() {
+				return true
+			}
+			state := usagedb.FileState{Size: info.Size(), MtimeNS: info.ModTime().UnixNano()}
+			if previous, ok := scanned[path]; ok && previous == state {
+				return false
+			}
+			pending[path] = state
+			return true
+		})
+	}
+	entries, err := configured.Entries()
 	if err != nil {
 		return result, err
 	}
 	s.applyProjectFiles(entries)
 	inserted, err := s.db.InsertEvents(entries)
 	if err != nil {
+		return result, err
+	}
+	// The stat snapshots were taken before parsing, so a write that lands
+	// mid-scan still changes the stored state and forces a re-scan.
+	if err := s.db.UpsertScannedFiles(pending); err != nil {
 		return result, err
 	}
 	result.EventsParsed = len(entries)
@@ -180,6 +212,12 @@ func projectSearchDirectory(path string, isFile bool) string {
 
 type pathConfiguredProvider interface {
 	WithPaths(paths []string) usageprovider.Provider
+}
+
+// filterConfiguredProvider is implemented by providers that can skip source
+// files the filter rejects. Providers without it are always fully scanned.
+type filterConfiguredProvider interface {
+	WithFileFilter(filter usage.FileFilter) usageprovider.Provider
 }
 
 func providerWithPaths(provider usageprovider.Provider, paths []string) usageprovider.Provider {
