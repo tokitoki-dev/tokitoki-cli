@@ -62,6 +62,17 @@ type Event struct {
 	SourceProvider           string         `json:"source_provider,omitempty"`
 	EventKind                string         `json:"event_kind,omitempty"`
 	Timestamp                string         `json:"timestamp"`
+	// The machine's IANA zone ("Asia/Tokyo"), omitted when it cannot be
+	// resolved — see usage.MachineTimezone. Never a fixed abbreviation like
+	// "JST": those are ambiguous across regions and cannot be re-expanded.
+	//
+	// The UTC offset is deliberately not sent alongside it. Timestamp is an
+	// absolute instant and this is a zone, so the offset at that instant —
+	// including whether DST was in effect, and half-hour zones like
+	// Australia/Lord_Howe — is a pure function of the two. Sending it as well
+	// would be a second copy of a derived value, and the copy is what goes
+	// stale when tzdata is corrected.
+	Timezone string `json:"timezone,omitempty"`
 	SessionID                string         `json:"session_id,omitempty"`
 	Project                  string         `json:"project"`
 	ProjectPathHash          string         `json:"project_path_hash,omitempty"`
@@ -176,8 +187,11 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		},
 		Events: make([]Event, 0, len(events)),
 	}
+	// A property of the machine, not of any one event, so it is resolved once
+	// per upload rather than per event.
+	zoneName := usage.MachineTimezone()
 	for _, entry := range events {
-		payload.Events = append(payload.Events, convertEvent(entry))
+		payload.Events = append(payload.Events, convertEvent(entry, zoneName))
 	}
 
 	body, err := json.Marshal(payload)
@@ -227,7 +241,21 @@ func BaseURL() string {
 	return value
 }
 
-func convertEvent(entry usage.Entry) Event {
+// convertEvent maps one loaded entry onto the wire format.
+//
+// `zoneName` is this machine's IANA zone, or "" when it could not be resolved.
+// It is passed in rather than looked up here so the lookup happens once per
+// upload instead of once per event.
+//
+// A caveat worth stating plainly, because the field name cannot: the agent logs
+// this reads store their timestamps in UTC, so the zone an event was *recorded*
+// in is not recoverable from them. What is reported is the zone of the machine
+// doing the reading. For the ordinary case — you code and upload on the same
+// laptop — those are the same thing. For a backfill of logs copied from another
+// machine, or from a machine you have since moved, they are not, and the server
+// should treat this as "where the user was, approximately" rather than as an
+// exact per-event fact.
+func convertEvent(entry usage.Entry, zoneName string) Event {
 	return Event{
 		ID:                       entry.ID,
 		Provider:                 string(entry.Provider),
@@ -235,6 +263,7 @@ func convertEvent(entry usage.Entry) Event {
 		SourceProvider:           string(entry.Provider),
 		EventKind:                entry.EventKind,
 		Timestamp:                entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		Timezone:                 zoneName,
 		SessionID:                entry.SessionID,
 		Project:                  entry.Project,
 		ProjectPathHash:          hashProjectPath(entry.ProjectPath),
