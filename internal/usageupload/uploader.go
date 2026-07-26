@@ -46,11 +46,13 @@ type Payload struct {
 	Events  []Event       `json:"events"`
 }
 
+// DevicePayload labels which machine a batch came from. It is display metadata
+// only — event identity is the content hash in Event.ID, and the server dedupes
+// on (user, event id). Nothing here may affect whether an event is stored.
 type DevicePayload struct {
-	InstallationID string `json:"installation_id"`
-	Name           string `json:"name,omitempty"`
-	Platform       string `json:"platform,omitempty"`
-	AppVersion     string `json:"app_version,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
 }
 
 type Event struct {
@@ -168,13 +170,9 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
-			// The server keys device rows on installation_id; an empty one
-			// (possible only for callers that hand-build Settings) falls back
-			// to a shared identity server-side.
-			InstallationID: settings.InstallationID,
-			Name:           deviceName(),
-			Platform:       usage.NormalizeOS(runtime.GOOS),
-			AppVersion:     buildinfo.Resolved(),
+			Name:       deviceName(),
+			Platform:   usage.NormalizeOS(runtime.GOOS),
+			AppVersion: buildinfo.Resolved(),
 		},
 		Events: make([]Event, 0, len(events)),
 	}
