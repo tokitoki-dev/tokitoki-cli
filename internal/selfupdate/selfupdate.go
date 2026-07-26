@@ -31,7 +31,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
-// UpdateChannel is the release channel the CLI reads on the TokiToki server.
+// UpdateChannel is the release channel the CLI reads on the Tokitoki server.
 const UpdateChannel = "cli"
 
 const (
@@ -53,7 +53,7 @@ type Result struct {
 // "dev" above all — identifies a local build, which must never update itself.
 var semverRE = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+`)
 
-// Upgrade brings the running executable up to date against the TokiToki
+// Upgrade brings the running executable up to date against the Tokitoki
 // server. baseURL is the server root (usageupload.BaseURL()); current is the
 // running version.
 //

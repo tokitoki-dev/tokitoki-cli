@@ -1,5 +1,5 @@
 // Command tokitoki scans local Claude Code/Codex usage files and uploads the
-// resulting events to the local TokiToki server.
+// resulting events to the local Tokitoki server.
 package main
 
 import (
@@ -547,7 +547,7 @@ func copyProviderDirs(providerDirs map[agentlib.Provider][]string) map[agentlib.
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the TokiToki server
+	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the Tokitoki server
 
 Usage:
   tokitoki [--provider-dir PROVIDER=DIR ...] [--check-update]
@@ -561,7 +561,7 @@ Usage:
   tokitoki service <install|uninstall|start|stop|restart|status> [options]
 
 Each invocation scans the provider roots you pass and uploads their usage
-events to the TokiToki server (TOKITOKI_BASE_URL, default
+events to the Tokitoki server (TOKITOKI_BASE_URL, default
 https://tokitoki.dev). By default, tokitoki scans the built-in roots for
 claude, codex, copilot, gemini, kimi, qwen, openclaw, pi, amp, droid, kilo,
 hermes, codebuff, opencode, and goose. Pass one or more

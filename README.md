@@ -1,8 +1,8 @@
 # tokitoki-cli
 
-TokiToki is a small cross-platform uploader for local AI coding usage. Each
+Tokitoki is a small cross-platform uploader for local AI coding usage. Each
 run reads the configured local agent usage folders, then uploads the discovered
-events to the local TokiToki server.
+events to the local Tokitoki server.
 
 The CLI can run once or install itself as an OS service.
 
@@ -78,7 +78,7 @@ service status          Print service status.
 
 ## Stable project names
 
-TokiToki normally uses the project name reported by an IDE or local AI agent.
+Tokitoki normally uses the project name reported by an IDE or local AI agent.
 To give a checkout a stable name across editors, machines, and differently
 named local folders, create `.tokitoki` in the project root:
 
@@ -90,7 +90,7 @@ release/2026
 The first line overrides the project name. The optional second line overrides
 the branch. An empty file uses the containing folder's name and preserves any
 branch reported by the editor. The nearest project file found by walking up
-from the active file wins; for out-of-tree agent files, TokiToki also searches
+from the active file wins; for out-of-tree agent files, Tokitoki also searches
 the event's reported project path.
 
 Use `{project}` in the first line to include the nearest Git, Mercurial, or
@@ -153,7 +153,7 @@ tokitoki service install --system
 
 ## The shared CLI
 
-Every TokiToki front-end — the macOS and Windows apps and every editor
+Every Tokitoki front-end — the macOS and Windows apps and every editor
 plugin — invokes one shared copy of this CLI. Its location is a contract, not
 a suggestion; a plugin that resolves a different path forks the fleet and
 stops receiving updates:

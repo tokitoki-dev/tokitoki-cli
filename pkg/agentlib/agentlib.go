@@ -1,4 +1,4 @@
-// Package agentlib exposes TokiToki's local usage sync engine for native
+// Package agentlib exposes Tokitoki's local usage sync engine for native
 // front-ends.
 package agentlib
 
@@ -31,7 +31,7 @@ const (
 	// DefaultUploadTimeout is the maximum duration for one scan and upload run.
 	DefaultUploadTimeout = 2 * time.Minute
 
-	// DefaultLockTimeout is the maximum duration to wait for another TokiToki
+	// DefaultLockTimeout is the maximum duration to wait for another Tokitoki
 	// command to release the shared local data lock.
 	DefaultLockTimeout = DefaultUploadTimeout + 10*time.Second
 )
@@ -204,7 +204,7 @@ func (c *Client) GetAPIKey() (string, error) {
 	return settings.APIKey, nil
 }
 
-// BaseURL returns the TokiToki server every subsystem talks to — usage
+// BaseURL returns the Tokitoki server every subsystem talks to — usage
 // uploads, update checks, and the web dashboard alike. Front-ends open it
 // when they need a plain link to the server (for example as the fallback
 // when DashboardURL cannot mint a signed login link).
@@ -434,7 +434,7 @@ func (c *Client) withUploadLock(fn func() error) error {
 	return fn()
 }
 
-// DefaultDataDir returns the shared TokiToki data directory.
+// DefaultDataDir returns the shared Tokitoki data directory.
 func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

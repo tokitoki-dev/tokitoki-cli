@@ -1,4 +1,4 @@
-// Package cli implements TokiToki's one operation: scan local AI usage files
+// Package cli implements Tokitoki's one operation: scan local AI usage files
 // and upload them to the local server.
 package cli
 

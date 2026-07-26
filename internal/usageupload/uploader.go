@@ -219,7 +219,7 @@ func uploadEndpoint() string {
 	return BaseURL() + "/api/usage-events/batch"
 }
 
-// BaseURL is the TokiToki server every subsystem talks to — usage uploads and
+// BaseURL is the Tokitoki server every subsystem talks to — usage uploads and
 // update checks alike. TOKITOKI_BASE_URL overrides the default.
 func BaseURL() string {
 	value := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")

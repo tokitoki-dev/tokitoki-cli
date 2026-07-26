@@ -1,4 +1,4 @@
-# TokiToki TODO
+# Tokitoki TODO
 
 ## Known Issues (prioritized, reviewed 2026-07-17)
 
@@ -19,7 +19,7 @@ P0 — storage consolidation (done 2026-07-17):
 P0 — dead scaffolding after the daemon→CLI refactor:
 
 - [x] Remove the heartbeat chain. It POSTed to `<server>/heartbeats`, which the
-  TokiToki server does not implement (only `/api/usage-events/batch` exists).
+  Tokitoki server does not implement (only `/api/usage-events/batch` exists).
   Removed: `Heartbeat` type, `RecordHeartbeat`/`Sync`/`postHeartbeats`,
   `queue.jsonl` + store queue methods, and the `heartbeat`/`push-heartbeats`
   subcommands. (A new `heartbeat` subcommand exists today, but it feeds the
@@ -57,7 +57,7 @@ P3 — cross-platform packaging:
 - Add a short global scan lock so startup scan and manual `/usage/scan` cannot parse the same files concurrently.
 - Add large transcript protection: bounded scanner buffers, max line size handling, and optional tail scanning for very large session files.
 - Fix Claude streaming-update semantics: use a logical event key based on `provider + session_id + request_id + message_id`, then upsert latest token values instead of inserting a new event when token counts grow.
-- Review Codex token handling and decide whether TokiToki should store raw token-count events or normalized deltas.
+- Review Codex token handling and decide whether Tokitoki should store raw token-count events or normalized deltas.
 - ~~Add offline upload queue behavior~~ — done 2026-07-17: batch limits, stop-on-first-failure, exponential backoff, permanent rejection, and pruning all live in `usagedb` + `usageupload.SyncPending`.
 - Add summary-level upload state so server sync sends daily/project/model summaries instead of every local `usage_event`.
 - Add source status/debug endpoints for scan counts, last scan time, last error, indexed event count, and pending upload count.

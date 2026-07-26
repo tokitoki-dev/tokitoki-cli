@@ -54,8 +54,8 @@ func newService(flags workerFlags, userService bool) (daemonservice.Service, err
 	}
 	config := &daemonservice.Config{
 		Name:        "tokitoki",
-		DisplayName: "TokiToki",
-		Description: "Sync local AI usage to TokiToki.",
+		DisplayName: "Tokitoki",
+		Description: "Sync local AI usage to Tokitoki.",
 		Executable:  executable,
 		Arguments:   serviceArguments(flags),
 		Option: daemonservice.KeyValue{
