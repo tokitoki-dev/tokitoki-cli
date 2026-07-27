@@ -32,10 +32,14 @@ func AcquireDataLock(dir string, timeout time.Duration) (*DataLock, error) {
 	return lock, nil
 }
 
-// AcquireLock takes an exclusive advisory lock on dir/name, waiting up to
+// AcquireLock takes an exclusive advisory lock on dir/state/name, waiting up to
 // timeout before giving up with ErrLockBusy.
 func AcquireLock(dir, name string, timeout time.Duration) (*DataLock, error) {
-	path := filepath.Join(dir, name)
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create state dir: %w", err)
+	}
+	path := filepath.Join(stateDir, name)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)

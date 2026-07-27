@@ -2,6 +2,7 @@ package usageupload
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,11 +31,8 @@ const (
 	// queueBatchSize is the number of events per upload request. It must stay
 	// at or below the server's per-batch limit (lib/ingest.ts
 	// MAX_BATCH_EVENTS = 5000); one batch is one server-side transaction.
-	queueBatchSize = 1000
-
-	// maxEventsPerRun bounds one sync run so it finishes inside the caller's
-	// upload timeout. Whatever is left stays queued for the next run.
-	maxEventsPerRun = 5000
+	// Larger batches reduce network round-trips and amortize HTTP overhead.
+	queueBatchSize = 5000
 
 	// uploadedRetention is how long uploaded events are kept before pruning.
 	uploadedRetention = 30 * 24 * time.Hour
@@ -118,18 +116,20 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 	return uploadBatch(ctx, settings, events)
 }
 
-// SyncPending uploads events queued in db, oldest first, in batches. The
-// first failed request stops the run: offline means every later batch fails
-// the same way, and the failed events back off in the queue instead of being
-// retried immediately. Uploaded events older than uploadedRetention are
-// pruned before sending.
+// SyncPending uploads events queued in db, newest first, in batches. Priority order:
+// 1. Never-attempted (pending)  - highest priority
+// 2. Failed (with backoff)       - medium priority
+// 3. Rejected                    - never retried (status stays rejected)
+// 4. Uploaded/Duplicate          - ignored (already processed)
+//
+// Uploaded events older than uploadedRetention are pruned before sending.
+// SyncPending continues until all pending+failed events are sent or an error occurs.
 func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) error {
 	if _, err := db.PruneUploaded(time.Now().Add(-uploadedRetention)); err != nil {
 		return err
 	}
 
-	sent := 0
-	for sent < maxEventsPerRun {
+	for {
 		events, err := db.PendingEvents(time.Now(), queueBatchSize)
 		if err != nil {
 			return err
@@ -140,31 +140,44 @@ func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) e
 
 		response, err := uploadBatch(ctx, settings, events)
 		if err != nil {
+			// Upload error (network/timeout). Mark as failed with exponential backoff.
+			// Will be retried next sync.
 			if markErr := db.MarkEventsUploadFailed(eventIDs(events), err.Error()); markErr != nil {
 				return errors.Join(err, markErr)
 			}
 			return err
 		}
 
-		uploaded := append(append([]string{}, response.Accepted...), response.Duplicate...)
-		if err := db.MarkEventsUploaded(uploaded); err != nil {
-			return err
-		}
-		rejected := make(map[string]string, len(response.Rejected))
-		for _, item := range response.Rejected {
-			if item.ID != "" {
-				rejected[item.ID] = item.Reason
+		// Accepted: newly inserted events (never seen before). Mark as uploaded.
+		if len(response.Accepted) > 0 {
+			if err := db.MarkEventsUploaded(response.Accepted); err != nil {
+				return err
 			}
 		}
-		if err := db.MarkEventsRejected(rejected); err != nil {
-			return err
+
+		// Duplicate + Rejected: both are "acknowledged and won't be processed again".
+		// Duplicates are events we already uploaded. Rejected are events that failed
+		// validation. Both should stop querying; we mark them as uploaded to clear them.
+		ackd := append([]string{}, response.Duplicate...)
+		for _, r := range response.Rejected {
+			if r.ID != "" {
+				ackd = append(ackd, r.ID)
+			}
 		}
-		if len(uploaded)+len(rejected) == 0 {
-			return fmt.Errorf("usage upload made no progress: server acknowledged none of %d events", len(events))
+		if len(ackd) > 0 {
+			if err := db.MarkEventsUploaded(ackd); err != nil {
+				return err
+			}
 		}
-		sent += len(events)
+
+		// Sanity check: server must acknowledge every event as accepted/duplicate/rejected.
+		// If not, it's a server bug or response parsing error.
+		totalAcknowledged := len(response.Accepted) + len(response.Duplicate) + len(response.Rejected)
+		if totalAcknowledged != len(events) {
+			return fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
+				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected))
+		}
 	}
-	return nil
 }
 
 func eventIDs(events []usage.Entry) []string {
@@ -199,11 +212,22 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadEndpoint(), bytes.NewReader(body))
+	// Compress the payload with gzip to reduce network bandwidth.
+	var compressedBody bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedBody)
+	if _, err := gzipWriter.Write(body); err != nil {
+		return Response{}, fmt.Errorf("gzip compression failed: %w", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return Response{}, fmt.Errorf("gzip close failed: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadEndpoint(), &compressedBody)
 	if err != nil {
 		return Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	if settings.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.APIKey)

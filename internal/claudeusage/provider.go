@@ -1,6 +1,8 @@
 package claudeusage
 
 import (
+	"sort"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
@@ -31,11 +33,15 @@ func (Provider) Provider() usage.Provider {
 	return usage.ProviderClaude
 }
 
-// Entries loads normalized Claude usage entries.
+// Entries loads normalized Claude usage entries, newest first.
 func (p Provider) Entries() ([]usage.Entry, error) {
 	entries, err := LoadEntriesFromPaths(p.paths, "", p.filter)
 	if err != nil {
 		return nil, err
 	}
-	return ConvertEntries(entries), nil
+	converted := ConvertEntries(entries)
+	sort.Slice(converted, func(i, j int) bool {
+		return converted[i].Timestamp.After(converted[j].Timestamp)
+	})
+	return converted, nil
 }

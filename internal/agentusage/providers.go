@@ -1,9 +1,18 @@
 package agentusage
 
 import (
+	"sort"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
+
+func sortEntriesByTimestampDesc(entries []usage.Entry) []usage.Entry {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
+	return entries
+}
 
 // providerBase carries the scan configuration shared by every agent
 // provider. filter skips source files whose events are already ingested;
@@ -89,9 +98,13 @@ func (p CopilotProvider) WithFileFilter(filter usage.FileFilter) usageprovider.P
 	return p
 }
 
-// Entries loads normalized GitHub Copilot CLI usage entries.
+// Entries loads normalized GitHub Copilot CLI usage entries, newest first.
 func (p CopilotProvider) Entries() ([]usage.Entry, error) {
-	return loadCopilotEntries(p.paths, p.filter)
+	entries, err := loadCopilotEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Gemini CLI provider configured with data roots.
@@ -109,9 +122,13 @@ func (p GeminiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Pr
 	return p
 }
 
-// Entries loads normalized Gemini CLI usage entries.
+// Entries loads normalized Gemini CLI usage entries, newest first.
 func (p GeminiProvider) Entries() ([]usage.Entry, error) {
-	return loadGeminiEntries(p.paths, p.filter)
+	entries, err := loadGeminiEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Kimi provider configured with data roots.
@@ -129,9 +146,13 @@ func (p KimiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Prov
 	return p
 }
 
-// Entries loads normalized Kimi usage entries.
+// Entries loads normalized Kimi usage entries, newest first.
 func (p KimiProvider) Entries() ([]usage.Entry, error) {
-	return loadKimiEntries(p.paths, p.filter)
+	entries, err := loadKimiEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Qwen provider configured with data roots.
@@ -149,9 +170,13 @@ func (p QwenProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Prov
 	return p
 }
 
-// Entries loads normalized Qwen usage entries.
+// Entries loads normalized Qwen usage entries, newest first.
 func (p QwenProvider) Entries() ([]usage.Entry, error) {
-	return loadQwenEntries(p.paths, p.filter)
+	entries, err := loadQwenEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns an OpenClaw provider configured with data roots.
@@ -169,9 +194,13 @@ func (p OpenClawProvider) WithFileFilter(filter usage.FileFilter) usageprovider.
 	return p
 }
 
-// Entries loads normalized OpenClaw usage entries.
+// Entries loads normalized OpenClaw usage entries, newest first.
 func (p OpenClawProvider) Entries() ([]usage.Entry, error) {
-	return loadOpenClawEntries(p.paths, p.filter)
+	entries, err := loadOpenClawEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a pi-agent provider configured with data roots.
@@ -189,9 +218,13 @@ func (p PiProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provid
 	return p
 }
 
-// Entries loads normalized pi-agent usage entries.
+// Entries loads normalized pi-agent usage entries, newest first.
 func (p PiProvider) Entries() ([]usage.Entry, error) {
-	return loadPiEntries(p.paths, p.filter)
+	entries, err := loadPiEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns an Amp provider configured with data roots.
@@ -209,9 +242,13 @@ func (p AmpProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Provi
 	return p
 }
 
-// Entries loads normalized Amp usage entries.
+// Entries loads normalized Amp usage entries, newest first.
 func (p AmpProvider) Entries() ([]usage.Entry, error) {
-	return loadAmpEntries(p.paths, p.filter)
+	entries, err := loadAmpEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Droid provider configured with data roots.
@@ -229,9 +266,13 @@ func (p DroidProvider) WithFileFilter(filter usage.FileFilter) usageprovider.Pro
 	return p
 }
 
-// Entries loads normalized Droid usage entries.
+// Entries loads normalized Droid usage entries, newest first.
 func (p DroidProvider) Entries() ([]usage.Entry, error) {
-	return loadDroidEntries(p.paths, p.filter)
+	entries, err := loadDroidEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Kilo provider configured with data roots.
@@ -242,9 +283,13 @@ func (KiloProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Kilo provider id.
 func (KiloProvider) Provider() usage.Provider { return usage.ProviderKilo }
 
-// Entries loads normalized Kilo usage entries.
+// Entries loads normalized Kilo usage entries, newest first.
 func (p KiloProvider) Entries() ([]usage.Entry, error) {
-	return loadKiloEntries(p.paths)
+	entries, err := loadKiloEntries(p.paths)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Hermes provider configured with data roots.
@@ -255,9 +300,13 @@ func (HermesProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Hermes provider id.
 func (HermesProvider) Provider() usage.Provider { return usage.ProviderHermes }
 
-// Entries loads normalized Hermes Agent usage entries.
+// Entries loads normalized Hermes Agent usage entries, newest first.
 func (p HermesProvider) Entries() ([]usage.Entry, error) {
-	return loadHermesEntries(p.paths)
+	entries, err := loadHermesEntries(p.paths)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Codebuff provider configured with data roots.
@@ -275,9 +324,13 @@ func (p CodebuffProvider) WithFileFilter(filter usage.FileFilter) usageprovider.
 	return p
 }
 
-// Entries loads normalized Codebuff usage entries.
+// Entries loads normalized Codebuff usage entries, newest first.
 func (p CodebuffProvider) Entries() ([]usage.Entry, error) {
-	return loadCodebuffEntries(p.paths, p.filter)
+	entries, err := loadCodebuffEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns an OpenCode provider configured with data roots.
@@ -296,9 +349,13 @@ func (p OpenCodeProvider) WithFileFilter(filter usage.FileFilter) usageprovider.
 	return p
 }
 
-// Entries loads normalized OpenCode usage entries.
+// Entries loads normalized OpenCode usage entries, newest first.
 func (p OpenCodeProvider) Entries() ([]usage.Entry, error) {
-	return loadOpenCodeEntries(p.paths, p.filter)
+	entries, err := loadOpenCodeEntries(p.paths, p.filter)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }
 
 // WithPaths returns a Goose provider configured with data roots.
@@ -309,7 +366,11 @@ func (GooseProvider) WithPaths(paths []string) usageprovider.Provider {
 // Provider returns the Goose provider id.
 func (GooseProvider) Provider() usage.Provider { return usage.ProviderGoose }
 
-// Entries loads normalized Goose usage entries.
+// Entries loads normalized Goose usage entries, newest first.
 func (p GooseProvider) Entries() ([]usage.Entry, error) {
-	return loadGooseEntries(p.paths)
+	entries, err := loadGooseEntries(p.paths)
+	if err != nil {
+		return nil, err
+	}
+	return sortEntriesByTimestampDesc(entries), nil
 }

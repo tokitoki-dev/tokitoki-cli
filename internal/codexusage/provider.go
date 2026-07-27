@@ -1,6 +1,8 @@
 package codexusage
 
 import (
+	"sort"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
@@ -31,7 +33,14 @@ func (Provider) Provider() usage.Provider {
 	return usage.ProviderCodex
 }
 
-// Entries loads normalized Codex usage entries.
+// Entries loads normalized Codex usage entries, newest first.
 func (p Provider) Entries() ([]usage.Entry, error) {
-	return LoadEntriesFromPaths(p.paths, "", p.filter)
+	entries, err := LoadEntriesFromPaths(p.paths, "", p.filter)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
+	return entries, nil
 }

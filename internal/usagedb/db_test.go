@@ -152,8 +152,8 @@ func TestPendingEventsOrdersByTimestampAndHonorsLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].ID != "event-old" {
-		t.Fatalf("pending = %+v, want oldest event first", pending)
+	if len(pending) != 1 || pending[0].ID != "event-new" {
+		t.Fatalf("pending = %+v, want newest event first", pending)
 	}
 }
 

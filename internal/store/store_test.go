@@ -31,7 +31,11 @@ func TestLoadSettingsReadsAPIKeyFile(t *testing.T) {
 	}
 
 	const key = "tokitoki_test_key"
-	if err := os.WriteFile(filepath.Join(dir, apiKeyFile), []byte(key+"\n"), 0o600); err != nil {
+	configDir := filepath.Join(dir, configDirName)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, apiKeyFile), []byte(key+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +62,7 @@ func TestLoadSettingsEmptyWhenNoKeyFile(t *testing.T) {
 	if loaded.APIKey != "" {
 		t.Fatalf("LoadSettings().APIKey = %q, want empty", loaded.APIKey)
 	}
-	info, err := os.Stat(filepath.Join(dir, apiKeyFile))
+	info, err := os.Stat(filepath.Join(dir, configDirName, apiKeyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +81,7 @@ func TestEnsureAPIKeyFileCreatesEmptyFile(t *testing.T) {
 	if err := fileStore.EnsureAPIKeyFile(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, apiKeyFile))
+	data, err := os.ReadFile(filepath.Join(dir, configDirName, apiKeyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,14 +101,14 @@ func TestSaveAPIKeyWritesKeyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, apiKeyFile))
+	data, err := os.ReadFile(filepath.Join(dir, configDirName, apiKeyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(data) != "tokitoki_test_key\n" {
 		t.Fatalf("api key file = %q, want trimmed key with newline", string(data))
 	}
-	info, err := os.Stat(filepath.Join(dir, apiKeyFile))
+	info, err := os.Stat(filepath.Join(dir, configDirName, apiKeyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
