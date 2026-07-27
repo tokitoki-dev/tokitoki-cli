@@ -239,7 +239,9 @@ func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
 	return deviceauth.VerifyKey(ctx, usageupload.BaseURL(), apiKey)
 }
 
-// Sync scans selected provider directories and uploads newly discovered events.
+// Sync scans selected provider directories and uploads newly discovered
+// events. Scanning is local and always runs; without a configured API key the
+// events simply stay queued and upload resumes once a key is saved.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	providerDirs := normalizeProviderDirs(options.ProviderDirs)
 	if len(providerDirs) == 0 {
@@ -273,6 +275,13 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	// under the data lock; the drain talks to the network for up to the whole
 	// upload timeout and must not make other processes' ingestion wait on it.
 	if err := c.withDataLock(app.Ingest); err != nil {
+		return err
+	}
+	if _, err := c.GetAPIKey(); err != nil {
+		if errors.Is(err, ErrMissingAPIKey) {
+			c.logger.Debug("skip upload; API key is not configured")
+			return nil
+		}
 		return err
 	}
 	return c.withUploadLock(func() error { return app.Upload(ctx) })

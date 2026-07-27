@@ -57,25 +57,24 @@ func (a *App) Sync(ctx context.Context) error {
 	return a.Upload(ctx)
 }
 
-// Ingest scans the selected providers into the shared local queue. It writes
-// the database, so the caller holds the data lock.
+// Ingest scans the selected providers into the shared local queue. Scanning
+// is pure local work and needs no API key: events queue in the database until
+// a key exists to upload them. It writes the database, so the caller holds
+// the data lock.
 func (a *App) Ingest() error {
+	_, err := a.Scanner.Scan(a.ProviderDirs)
+	return err
+}
+
+// Upload drains queued events to the server — the half of a sync that needs
+// the API key.
+func (a *App) Upload(ctx context.Context) error {
 	settings, err := a.Agent.Settings()
 	if err != nil {
 		return err
 	}
 	if settings.APIKey == "" {
 		return errors.New("API key is required in ~/.tokitoki/api_key")
-	}
-	_, err = a.Scanner.Scan(a.ProviderDirs)
-	return err
-}
-
-// Upload drains queued events to the server.
-func (a *App) Upload(ctx context.Context) error {
-	settings, err := a.Agent.Settings()
-	if err != nil {
-		return err
 	}
 	if err := usageupload.SyncPending(ctx, settings, a.UsageDB); err != nil {
 		return err

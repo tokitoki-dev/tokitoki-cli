@@ -5,10 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
 func TestNewUsesDefaultDataDir(t *testing.T) {
@@ -115,15 +115,20 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 	}
 }
 
-func TestSyncRequiresAPIKey(t *testing.T) {
+// Scanning is offline; a missing API key only means the upload half is
+// skipped, so Sync succeeds and events queue locally for later.
+func TestSyncWithoutAPIKeyScansOffline(t *testing.T) {
 	client := newTestClient(t)
 	claudeDir := t.TempDir()
 
 	err := client.Sync(context.Background(), SyncOptions{
 		ProviderDirs: map[Provider][]string{ProviderClaude: {claudeDir}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required") {
-		t.Fatalf("Sync() error = %v, want API key requirement", err)
+	if err != nil {
+		t.Fatalf("Sync() without API key = %v, want offline scan to succeed", err)
+	}
+	if _, err := os.Stat(store.UsageDBPath(client.DataDir())); err != nil {
+		t.Fatalf("usage database missing after offline sync: %v", err)
 	}
 }
 
