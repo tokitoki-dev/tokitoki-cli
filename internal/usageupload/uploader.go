@@ -2,6 +2,7 @@ package usageupload
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,7 +31,8 @@ const (
 	// queueBatchSize is the number of events per upload request. It must stay
 	// at or below the server's per-batch limit (lib/ingest.ts
 	// MAX_BATCH_EVENTS = 5000); one batch is one server-side transaction.
-	queueBatchSize = 1000
+	// Larger batches reduce network round-trips and amortize HTTP overhead.
+	queueBatchSize = 5000
 
 	// maxEventsPerRun bounds one sync run so it finishes inside the caller's
 	// upload timeout. Whatever is left stays queued for the next run.
@@ -199,11 +201,22 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadEndpoint(), bytes.NewReader(body))
+	// Compress the payload with gzip to reduce network bandwidth.
+	var compressedBody bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedBody)
+	if _, err := gzipWriter.Write(body); err != nil {
+		return Response{}, fmt.Errorf("gzip compression failed: %w", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return Response{}, fmt.Errorf("gzip close failed: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadEndpoint(), &compressedBody)
 	if err != nil {
 		return Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	if settings.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.APIKey)
