@@ -253,7 +253,7 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	if err != nil {
 		return err
 	}
-	usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
+	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
 	if err != nil {
 		return err
 	}
@@ -345,7 +345,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		fmt.Sprintf("%t", heartbeat.IsWrite),
 	)
 
-	usageDB, err := usagedb.Open(filepath.Join(c.dataDir, store.UsageDBFile))
+	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
 	if err != nil {
 		return err
 	}

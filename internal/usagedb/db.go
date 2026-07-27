@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -54,6 +55,10 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
+	// Ensure the directory exists.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create database directory: %w", err)
+	}
 	// The DSN is a "file:" URI, so Windows paths must use forward slashes.
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", filepath.ToSlash(path))
 	db, err := sql.Open("sqlite", dsn)

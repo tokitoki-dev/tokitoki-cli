@@ -12,8 +12,12 @@ import (
 )
 
 const (
-	UsageDBFile = "usage.db"
-	apiKeyFile  = "api_key"
+	configDirName = "config"
+	dataDirName   = "data"
+	stateDirName  = "state"
+
+	UsageDBFile   = "tokitoki.db"
+	apiKeyFile    = "api_key"
 	directoryMod  = 0o700
 	apiKeyFileMod = 0o600
 )
@@ -39,6 +43,12 @@ func InitializeDataDir() (string, error) {
 	if err := os.MkdirAll(dir, directoryMod); err != nil {
 		return "", err
 	}
+	if err := migrateOldDataStructure(dir); err != nil {
+		return "", err
+	}
+	if err := ensureSubdirectoriesExist(dir); err != nil {
+		return "", err
+	}
 	return dir, nil
 }
 
@@ -49,12 +59,17 @@ func Open(dir string) (*FileStore, error) {
 	return &FileStore{dir: dir}, nil
 }
 
-// LoadSettings reads the API key from the api_key file.
+// UsageDBPath returns the path to the usage database file within the data directory.
+func UsageDBPath(dataDir string) string {
+	return filepath.Join(dataDir, dataDirName, UsageDBFile)
+}
+
+// LoadSettings reads the API key from the config/api_key file.
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(filepath.Join(s.dir, apiKeyFile))
+	data, err := os.ReadFile(filepath.Join(s.dir, configDirName, apiKeyFile))
 	if errors.Is(err, os.ErrNotExist) {
 		if err := s.ensureAPIKeyFileLocked(); err != nil {
 			return agent.Settings{}, err
@@ -75,7 +90,11 @@ func (s *FileStore) EnsureAPIKeyFile() error {
 }
 
 func (s *FileStore) ensureAPIKeyFileLocked() error {
-	path := filepath.Join(s.dir, apiKeyFile)
+	configDir := filepath.Join(s.dir, configDirName)
+	if err := os.MkdirAll(configDir, directoryMod); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, apiKeyFile)
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, apiKeyFileMod)
 	if err != nil {
 		return err
@@ -94,7 +113,11 @@ func (s *FileStore) SaveAPIKey(apiKey string) error {
 	if apiKey == "" {
 		return errors.New("API key cannot be empty")
 	}
-	return s.writeFileLocked(filepath.Join(s.dir, apiKeyFile), apiKey)
+	configDir := filepath.Join(s.dir, configDirName)
+	if err := os.MkdirAll(configDir, directoryMod); err != nil {
+		return err
+	}
+	return s.writeFileLocked(filepath.Join(configDir, apiKeyFile), apiKey)
 }
 
 // writeFileLocked writes value+"\n" to path with owner-only permissions, via
@@ -122,4 +145,66 @@ func (s *FileStore) writeFileLocked(path, value string) error {
 		return err
 	}
 	return os.Chmod(path, apiKeyFileMod)
+}
+
+func ensureSubdirectoriesExist(dir string) error {
+	subdirs := []string{configDirName, dataDirName, stateDirName}
+	for _, subdir := range subdirs {
+		path := filepath.Join(dir, subdir)
+		if err := os.MkdirAll(path, directoryMod); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateOldDataStructure handles migration from flat structure to hierarchical.
+// Old structure: ~/.tokitoki/{api_key, usage.db, *.lock}
+// New structure: ~/.tokitoki/{config/api_key, data/tokitoki.db, state/*.lock}
+func migrateOldDataStructure(dir string) error {
+	// Migrate api_key
+	oldAPIKeyPath := filepath.Join(dir, "api_key")
+	newAPIKeyPath := filepath.Join(dir, configDirName, "api_key")
+	if _, err := os.Stat(oldAPIKeyPath); err == nil && !fileExists(newAPIKeyPath) {
+		if err := os.MkdirAll(filepath.Dir(newAPIKeyPath), directoryMod); err != nil {
+			return err
+		}
+		if err := os.Rename(oldAPIKeyPath, newAPIKeyPath); err != nil {
+			return err
+		}
+	}
+
+	// Migrate usage.db
+	oldDBPath := filepath.Join(dir, "usage.db")
+	newDBPath := filepath.Join(dir, dataDirName, "tokitoki.db")
+	if _, err := os.Stat(oldDBPath); err == nil && !fileExists(newDBPath) {
+		if err := os.MkdirAll(filepath.Dir(newDBPath), directoryMod); err != nil {
+			return err
+		}
+		if err := os.Rename(oldDBPath, newDBPath); err != nil {
+			return err
+		}
+	}
+
+	// Migrate lock files to state/
+	lockFiles := []string{"tokitoki.lock", "upgrade.lock", "upload.lock"}
+	for _, lockFile := range lockFiles {
+		oldLockPath := filepath.Join(dir, lockFile)
+		newLockPath := filepath.Join(dir, stateDirName, lockFile)
+		if _, err := os.Stat(oldLockPath); err == nil && !fileExists(newLockPath) {
+			if err := os.MkdirAll(filepath.Dir(newLockPath), directoryMod); err != nil {
+				return err
+			}
+			if err := os.Rename(oldLockPath, newLockPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
