@@ -10,13 +10,32 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagescan"
 )
 
-func TestSyncRequiresAPIKey(t *testing.T) {
+// Scanning is offline work, so a missing API key only skips the upload half:
+// Sync ingests and returns cleanly, leaving events queued for a later run.
+func TestSyncWithoutAPIKeyScansOffline(t *testing.T) {
 	app := newApp(t)
-	err := app.Sync(context.Background())
+	if err := app.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() without API key = %v, want offline scan to succeed", err)
+	}
+}
+
+func TestIngestWorksWithoutAPIKey(t *testing.T) {
+	app := newApp(t)
+	if err := app.Ingest(); err != nil {
+		t.Fatalf("Ingest() without API key = %v, want offline scan to succeed", err)
+	}
+}
+
+// Upload is the half that needs the key, so calling it directly still fails.
+func TestUploadRequiresAPIKey(t *testing.T) {
+	app := newApp(t)
+	err := app.Upload(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "API key is required") {
-		t.Fatalf("Sync() error = %v, want API key requirement", err)
+		t.Fatalf("Upload() error = %v, want API key requirement", err)
 	}
 }
 
@@ -61,12 +80,20 @@ func TestGetAPIKeyRequiresConfiguredKey(t *testing.T) {
 
 func newApp(t *testing.T) *App {
 	t.Helper()
-	fileStore, err := store.Open(t.TempDir())
+	dataDir := t.TempDir()
+	fileStore, err := store.Open(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = usageDB.Close() })
 	return &App{
-		Agent: agent.New(fileStore, slog.New(slog.NewTextHandler(io.Discard, nil))),
-		Out:   &bytes.Buffer{},
+		Agent:   agent.New(fileStore, slog.New(slog.NewTextHandler(io.Discard, nil))),
+		UsageDB: usageDB,
+		Scanner: usagescan.New(usageDB),
+		Out:     &bytes.Buffer{},
 	}
 }

@@ -47,6 +47,10 @@ func (a *App) GetAPIKey() error {
 // emitting counts or summaries: success only means the local files were
 // processed and the server accepted the request.
 //
+// Without a configured API key the scan still runs and its events stay queued;
+// only the upload half is skipped, so a user who has not signed in yet keeps
+// accumulating history instead of losing it.
+//
 // Callers that coordinate multiple processes call the two phases separately —
 // Ingest under the data lock, Upload under the upload lock — so a slow drain
 // never blocks another process's ingestion.
@@ -54,28 +58,34 @@ func (a *App) Sync(ctx context.Context) error {
 	if err := a.Ingest(); err != nil {
 		return err
 	}
+	settings, err := a.Agent.Settings()
+	if err != nil {
+		return err
+	}
+	if settings.APIKey == "" {
+		return nil
+	}
 	return a.Upload(ctx)
 }
 
-// Ingest scans the selected providers into the shared local queue. It writes
-// the database, so the caller holds the data lock.
+// Ingest scans the selected providers into the shared local queue. Scanning
+// is pure local work and needs no API key: events queue in the database until
+// a key exists to upload them. It writes the database, so the caller holds
+// the data lock.
 func (a *App) Ingest() error {
+	_, err := a.Scanner.Scan(a.ProviderDirs)
+	return err
+}
+
+// Upload drains queued events to the server — the half of a sync that needs
+// the API key.
+func (a *App) Upload(ctx context.Context) error {
 	settings, err := a.Agent.Settings()
 	if err != nil {
 		return err
 	}
 	if settings.APIKey == "" {
 		return errors.New("API key is required in ~/.tokitoki/api_key")
-	}
-	_, err = a.Scanner.Scan(a.ProviderDirs)
-	return err
-}
-
-// Upload drains queued events to the server.
-func (a *App) Upload(ctx context.Context) error {
-	settings, err := a.Agent.Settings()
-	if err != nil {
-		return err
 	}
 	if err := usageupload.SyncPending(ctx, settings, a.UsageDB); err != nil {
 		return err

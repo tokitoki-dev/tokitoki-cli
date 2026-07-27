@@ -239,7 +239,9 @@ func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
 	return deviceauth.VerifyKey(ctx, usageupload.BaseURL(), apiKey)
 }
 
-// Sync scans selected provider directories and uploads newly discovered events.
+// Sync scans selected provider directories and uploads newly discovered
+// events. Scanning is local and always runs; without a configured API key the
+// events simply stay queued and upload resumes once a key is saved.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	providerDirs := normalizeProviderDirs(options.ProviderDirs)
 	if len(providerDirs) == 0 {
@@ -274,6 +276,14 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	// upload timeout and must not make other processes' ingestion wait on it.
 	if err := c.withDataLock(app.Ingest); err != nil {
 		return err
+	}
+	settings, err := agent.New(fileStore, c.logger).Settings()
+	if err != nil {
+		return err
+	}
+	if settings.APIKey == "" {
+		c.logger.Debug("skip upload; API key is not configured")
+		return nil
 	}
 	return c.withUploadLock(func() error { return app.Upload(ctx) })
 }
@@ -354,6 +364,10 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	// Queue the event under the data lock, then drain under the upload lock.
 	// The drain can take the whole network timeout; heartbeats from other
 	// editors must be able to enqueue while it runs, not wait behind it.
+	//
+	// Queueing is local work and never depends on the API key: an editor that
+	// starts sending heartbeats before the user configures one must not drop
+	// them. The key only gates the upload half below.
 	var settings agent.Settings
 	if err := c.withDataLock(func() error {
 		fileStore, err := store.Open(c.dataDir)
@@ -364,15 +378,16 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		if err != nil {
 			return err
 		}
-		if settings.APIKey == "" {
-			return ErrMissingAPIKey
-		}
 		_, err = usageDB.InsertEvents([]usage.Entry{entry})
 		return err
 	}); err != nil {
 		return err
 	}
 
+	if settings.APIKey == "" {
+		c.logger.Debug("skip upload; API key is not configured")
+		return nil
+	}
 	return c.withUploadLock(func() error {
 		return usageupload.SyncPending(ctx, settings, usageDB)
 	})

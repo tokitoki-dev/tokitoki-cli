@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 )
 
 func TestNewUsesDefaultDataDir(t *testing.T) {
@@ -115,15 +117,48 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 	}
 }
 
-func TestSyncRequiresAPIKey(t *testing.T) {
+// Scanning is offline; a missing API key only means the upload half is
+// skipped, so Sync succeeds and events queue locally for later.
+func TestSyncWithoutAPIKeyScansOffline(t *testing.T) {
 	client := newTestClient(t)
 	claudeDir := t.TempDir()
 
 	err := client.Sync(context.Background(), SyncOptions{
 		ProviderDirs: map[Provider][]string{ProviderClaude: {claudeDir}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required") {
-		t.Fatalf("Sync() error = %v, want API key requirement", err)
+	if err != nil {
+		t.Fatalf("Sync() without API key = %v, want offline scan to succeed", err)
+	}
+	if _, err := os.Stat(store.UsageDBPath(client.DataDir())); err != nil {
+		t.Fatalf("usage database missing after offline sync: %v", err)
+	}
+}
+
+// An editor may start sending heartbeats before the user signs in. The event
+// must still be queued locally; only the upload is skipped.
+func TestSendHeartbeatWithoutAPIKeyQueuesEvent(t *testing.T) {
+	client := newTestClient(t)
+
+	err := client.SendHeartbeat(context.Background(), Heartbeat{
+		Entity: filepath.Join(t.TempDir(), "main.go"),
+		Editor: "vscode",
+	})
+	if err != nil {
+		t.Fatalf("SendHeartbeat() without API key = %v, want queued event", err)
+	}
+
+	usageDB, err := usagedb.Open(store.UsageDBPath(client.DataDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	pending, err := usageDB.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1 queued heartbeat", len(pending))
 	}
 }
 
