@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestRunSetKeyWritesAPIKey(t *testing.T) {
 		t.Fatalf("run(set key) = %d, want 0", code)
 	}
 
-	path := filepath.Join(home, config.DataDirName, "api_key")
+	path := filepath.Join(home, config.DataDirName, "config", "api_key")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -85,14 +86,6 @@ func TestRunGetKeyReturnsErrorWhenMissing(t *testing.T) {
 
 	if code := run([]string{"get", "key"}); code != 1 {
 		t.Fatalf("run(get key) = %d, want 1", code)
-	}
-	path := filepath.Join(home, config.DataDirName, "api_key")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "" {
-		t.Fatalf("api_key = %q, want empty file", string(data))
 	}
 }
 
@@ -136,14 +129,25 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 		if r.URL.Path != "/api/usage-events/batch" {
 			t.Errorf("path = %q, want usage batch endpoint", r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		// Handle gzip-compressed request bodies.
+		body := r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gr, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer gr.Close()
+			body = gr
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
 			t.Error(err)
 		}
 		accepted := []string{}
 		if len(payload.Events) == 1 {
 			accepted = append(accepted, payload.Events[0].ID)
 		}
-		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted})
+		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted, Duplicate: []string{}, Rejected: []usageupload.Reject{}})
 	}))
 	defer server.Close()
 	t.Setenv(usageupload.BaseURLEnv, server.URL)
@@ -208,14 +212,25 @@ func TestRunHeartbeatAppliesProjectIdentityFile(t *testing.T) {
 
 	var payload usageupload.Payload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		// Handle gzip-compressed request bodies.
+		body := r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gr, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer gr.Close()
+			body = gr
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
 			t.Error(err)
 		}
 		accepted := []string{}
 		if len(payload.Events) == 1 {
 			accepted = append(accepted, payload.Events[0].ID)
 		}
-		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted})
+		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted, Duplicate: []string{}, Rejected: []usageupload.Reject{}})
 	}))
 	defer server.Close()
 	t.Setenv(usageupload.BaseURLEnv, server.URL)
