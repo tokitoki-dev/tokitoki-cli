@@ -160,7 +160,7 @@ func (s *DB) UpsertScannedFiles(states map[string]FileState) error {
 	return tx.Commit()
 }
 
-// PendingEvents returns events due for upload at now, oldest first. A limit
+// PendingEvents returns events due for upload at now, newest first. A limit
 // of zero or less means no limit.
 func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
 	if limit <= 0 {
@@ -169,7 +169,7 @@ func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
 	rows, err := s.db.Query(`
 		SELECT payload FROM usage_events
 		WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
-		ORDER BY ts, id
+		ORDER BY ts DESC, id
 		LIMIT ?`, now.Unix(), limit)
 	if err != nil {
 		return nil, err
