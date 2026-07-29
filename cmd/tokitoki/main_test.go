@@ -80,12 +80,14 @@ func TestRunSetKeyRejectsMissingKey(t *testing.T) {
 	}
 }
 
-func TestRunGetKeyReturnsErrorWhenMissing(t *testing.T) {
+// A missing key exits with its own code so front-ends can prompt for one
+// without pattern-matching the error text.
+func TestRunGetKeyReturnsNoAPIKeyCodeWhenMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	if code := run([]string{"get", "key"}); code != 1 {
-		t.Fatalf("run(get key) = %d, want 1", code)
+	if code := run([]string{"get", "key"}); code != exitNoAPIKey {
+		t.Fatalf("run(get key) = %d, want %d", code, exitNoAPIKey)
 	}
 }
 

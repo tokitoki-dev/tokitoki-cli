@@ -109,6 +109,28 @@ func TestProvidersLoadEntries(t *testing.T) {
 			},
 		},
 		{
+			name: "kimi-code",
+			provider: func() ([]usage.Entry, error) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "sessions", "wd_beeec_fe4684529abd", "session-b", "agents", "main", "wire.jsonl")
+				writeFile(t, path,
+					`{"type":"metadata","protocol_version":"1.4","created_at":1785336260355}`+"\n"+
+						`{"type":"usage.record","model":"kimi-code/kimi-for-coding","usage":{"inputOther":3064,"output":76,"inputCacheRead":14848,"inputCacheCreation":0},"usageScope":"turn","time":1782113184943}`+"\n"+
+						`{"type":"usage.record","model":"kimi-code/kimi-for-coding","usage":{"inputOther":5000,"output":200,"inputCacheRead":20000,"inputCacheCreation":100},"usageScope":"session","time":1782113185000}`+"\n")
+				return KimiProvider{}.WithPaths([]string{dir}).Entries()
+			},
+			want:      usage.ProviderKimi,
+			model:     "kimi-for-coding",
+			sessionID: "session-b",
+			project:   "kimi",
+			tokens: usage.TokenUsage{
+				InputTokens:          3064,
+				OutputTokens:         76,
+				CacheReadInputTokens: 14848,
+				TotalTokens:          17988,
+			},
+		},
+		{
 			name: "qwen",
 			provider: func() ([]usage.Entry, error) {
 				dir := t.TempDir()
