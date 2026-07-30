@@ -16,6 +16,12 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 )
 
+// ErrNoAPIKey reports that no API key is configured. Callers distinguish it
+// from every other failure — a missing key is a thing the user fixes, a
+// network or server error is not — so it travels as a sentinel rather than as
+// text for someone to pattern-match on.
+var ErrNoAPIKey = errors.New("API key is not configured in ~/.tokitoki/api_key")
+
 type App struct {
 	Agent        *agent.Agent
 	UsageDB      *usagedb.DB
@@ -37,7 +43,7 @@ func (a *App) GetAPIKey() error {
 		return err
 	}
 	if settings.APIKey == "" {
-		return errors.New("API key is not configured in ~/.tokitoki/api_key")
+		return ErrNoAPIKey
 	}
 	_, err = fmt.Fprintf(a.Out, "%s\n", settings.APIKey)
 	return err
@@ -85,7 +91,7 @@ func (a *App) Upload(ctx context.Context) error {
 		return err
 	}
 	if settings.APIKey == "" {
-		return errors.New("API key is required in ~/.tokitoki/api_key")
+		return ErrNoAPIKey
 	}
 	if err := usageupload.SyncPending(ctx, settings, a.UsageDB); err != nil {
 		return err

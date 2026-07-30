@@ -3,9 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
@@ -34,8 +34,8 @@ func TestIngestWorksWithoutAPIKey(t *testing.T) {
 func TestUploadRequiresAPIKey(t *testing.T) {
 	app := newApp(t)
 	err := app.Upload(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "API key is required") {
-		t.Fatalf("Upload() error = %v, want API key requirement", err)
+	if !errors.Is(err, ErrNoAPIKey) {
+		t.Fatalf("Upload() error = %v, want ErrNoAPIKey", err)
 	}
 }
 
@@ -73,8 +73,8 @@ func TestGetAPIKeyWritesSavedKey(t *testing.T) {
 func TestGetAPIKeyRequiresConfiguredKey(t *testing.T) {
 	app := newApp(t)
 	err := app.GetAPIKey()
-	if err == nil || !strings.Contains(err.Error(), "API key is not configured") {
-		t.Fatalf("GetAPIKey() error = %v, want missing key error", err)
+	if !errors.Is(err, ErrNoAPIKey) {
+		t.Fatalf("GetAPIKey() error = %v, want ErrNoAPIKey", err)
 	}
 }
 

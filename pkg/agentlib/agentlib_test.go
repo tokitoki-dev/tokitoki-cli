@@ -106,6 +106,9 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 			t.Fatalf("%s dirs = %#v, want first dir %q", provider, got, dir)
 		}
 	}
+	if got := dirs[ProviderKimi]; len(got) != 2 || got[1] != filepath.Join(home, ".kimi-code") {
+		t.Fatalf("kimi dirs = %#v, want .kimi and .kimi-code", got)
+	}
 	if got := dirs[ProviderOpenClaw]; len(got) != 4 {
 		t.Fatalf("openclaw dirs = %#v, want four defaults", got)
 	}

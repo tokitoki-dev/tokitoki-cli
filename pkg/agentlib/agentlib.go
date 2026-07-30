@@ -88,8 +88,9 @@ const (
 
 var (
 	// ErrMissingAPIKey is returned when the shared data directory does not have
-	// a configured API key.
-	ErrMissingAPIKey = errors.New("API key is not configured in ~/.tokitoki/api_key")
+	// a configured API key. It aliases the inner package's sentinel so a key
+	// error raised anywhere in the stack compares equal here.
+	ErrMissingAPIKey = cli.ErrNoAPIKey
 
 	// ErrNoScanDirectories is returned when a sync call has no provider
 	// directory to scan.
@@ -469,7 +470,7 @@ func DefaultProviderDirs() map[Provider][]string {
 		ProviderCodex:    {filepath.Join(home, ".codex")},
 		ProviderCopilot:  {filepath.Join(home, ".copilot", "otel")},
 		ProviderGemini:   {filepath.Join(home, ".gemini", "tmp")},
-		ProviderKimi:     {filepath.Join(home, ".kimi")},
+		ProviderKimi:     {filepath.Join(home, ".kimi"), filepath.Join(home, ".kimi-code")},
 		ProviderQwen:     {filepath.Join(home, ".qwen")},
 		ProviderOpenClaw: {filepath.Join(home, ".openclaw"), filepath.Join(home, ".clawdbot"), filepath.Join(home, ".moltbot"), filepath.Join(home, ".moldbot")},
 		ProviderPi:       {filepath.Join(home, ".pi", "agent", "sessions")},

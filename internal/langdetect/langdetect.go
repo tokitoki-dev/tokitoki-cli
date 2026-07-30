@@ -99,7 +99,6 @@ var extensionLanguages = map[string]string{
 	".groovy":           "Groovy",
 	".gsp":              "Gosu",
 	".gs":               "Gosu",
-	".h":                "C/C++ Header",
 	".h++":              "C++",
 	".haml":             "Haml",
 	".hh":               "C++",
@@ -183,18 +182,33 @@ var extensionLanguages = map[string]string{
 	".zsh":              "Bash",
 }
 
+// cFamilyLanguages lists the languages a ".h" header can belong to, in the
+// order preferred on a tie. A header inherits the dominant one from the
+// surrounding candidates; with no context it defaults to C.
+var cFamilyLanguages = []string{"C++", "C", "Objective-C", "Objective-C++"}
+
+func normalizedBase(path string) string {
+	return strings.ToLower(filepath.Base(strings.Trim(strings.TrimSpace(path), `"'`)))
+}
+
+func isCHeader(path string) bool {
+	return filepath.Ext(normalizedBase(path)) == ".h"
+}
+
 func FromPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
+	base := normalizedBase(path)
+	if base == "" || base == "." {
 		return Unknown
 	}
 
-	base := strings.ToLower(filepath.Base(strings.Trim(path, `"'`)))
 	if language, ok := filenameLanguages[base]; ok {
 		return language
 	}
 
-	ext := strings.ToLower(filepath.Ext(base))
+	ext := filepath.Ext(base)
+	if ext == ".h" {
+		return "C"
+	}
 	if language, ok := extensionLanguages[ext]; ok {
 		return language
 	}
@@ -210,6 +224,21 @@ func DominantFromPaths(paths []string) string {
 	return Dominant(candidates)
 }
 
+// headerLanguage resolves ".h" files to the dominant C-family language among
+// the other candidates, the same way wakatime-cli resolves headers by their
+// sibling files. Defaults to C when no context exists.
+func headerLanguage(scores map[string]int) string {
+	best := "C"
+	bestWeight := 0
+	for _, language := range cFamilyLanguages {
+		if scores[language] > bestWeight {
+			best = language
+			bestWeight = scores[language]
+		}
+	}
+	return best
+}
+
 func Dominant(candidates []Candidate) string {
 	type score struct {
 		language string
@@ -217,16 +246,25 @@ func Dominant(candidates []Candidate) string {
 	}
 
 	scores := map[string]int{}
+	headerWeight := 0
 	for _, candidate := range candidates {
-		language := FromPath(candidate.Path)
-		if language == Unknown {
-			continue
-		}
 		weight := candidate.Weight
 		if weight <= 0 {
 			weight = 1
 		}
+		if isCHeader(candidate.Path) {
+			headerWeight += weight
+			continue
+		}
+		language := FromPath(candidate.Path)
+		if language == Unknown {
+			continue
+		}
 		scores[language] += weight
+	}
+
+	if headerWeight > 0 {
+		scores[headerLanguage(scores)] += headerWeight
 	}
 
 	if len(scores) == 0 {

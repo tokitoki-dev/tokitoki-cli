@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -596,8 +597,17 @@ func defaultLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
+// exitNoAPIKey marks the one failure a caller can act on: no key is
+// configured. Front-ends prompt for a key on this code and treat every other
+// non-zero exit as a transient problem to log and retry, instead of guessing
+// from the error text.
+const exitNoAPIKey = 3
+
 func fail(logger *slog.Logger, err error) int {
 	logger.Error("tokitoki failed", "error", err)
+	if errors.Is(err, agentlib.ErrMissingAPIKey) {
+		return exitNoAPIKey
+	}
 	return 1
 }
 
