@@ -12,6 +12,7 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
@@ -24,6 +25,7 @@ import (
 type session struct {
 	directory string
 	version   string
+	model     string
 }
 
 type message struct {
@@ -172,17 +174,33 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 
 func querySessions(db *sql.DB) map[string]session {
 	sessions := make(map[string]session)
-	rows, err := db.Query(`SELECT id, COALESCE(directory, ''), COALESCE(version, '') FROM session`)
+	// The model column arrived in a later OpenCode release. Asking for it on an
+	// older database fails the whole query, so fall back to the columns that
+	// have always been there rather than lose the directory too.
+	rows, err := db.Query(`SELECT id, COALESCE(directory, ''), COALESCE(version, ''), COALESCE(model, '') FROM session`)
+	if err != nil {
+		rows, err = db.Query(`SELECT id, COALESCE(directory, ''), COALESCE(version, ''), '' FROM session`)
+	}
 	if err != nil {
 		return sessions
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, directory, version string
-		if err := rows.Scan(&id, &directory, &version); err != nil {
+		var id, directory, version, model string
+		if err := rows.Scan(&id, &directory, &version, &model); err != nil {
 			continue
 		}
-		sessions[id] = session{directory: directory, version: version}
+		// The session's model is stored as a JSON object, unlike the message's
+		// flat modelID.
+		block := agentdata.DecodeJSONObjectString(model)
+		sessions[id] = session{
+			directory: directory,
+			version:   version,
+			model: agentdata.FirstNonEmpty(
+				agentdata.StringField(block, "id"),
+				agentdata.StringField(block, "modelID"),
+			),
+		}
 	}
 	return sessions
 }
@@ -317,12 +335,23 @@ func growth(current, previous uint64) uint64 {
 	return current - previous
 }
 
+// modelName resolves which model answered a turn. OpenCode records it three
+// ways depending on the message: assistant messages carry a flat modelID, user
+// messages nest it under "model", and the session holds the one it was started
+// with. An entry keeps its tokens even when none of them is set — losing a
+// turn's usage is worse than not knowing its model.
+func modelName(record map[string]any, session session) string {
+	return agentdata.FirstNonEmpty(
+		agentdata.StringField(record, "modelID"),
+		agentdata.StringField(agentdata.ObjectAt(record["model"]), "modelID"),
+		agentdata.StringField(agentdata.ObjectAt(record["model"]), "id"),
+		session.model,
+	)
+}
+
 func newEntry(source string, session session, message *message, tokens usage.TokenUsage) (usage.Entry, bool) {
 	record := message.data
-	model := agentdata.StringField(record, "modelID")
-	if model == "" {
-		return usage.Entry{}, false
-	}
+	model := modelName(record, session)
 
 	timestamp := time.UnixMilli(message.created).UTC()
 	if parsed, ok := agentdata.ParseTimestamp(agentdata.ObjectAt(record["time"])["created"]); ok {
@@ -349,12 +378,69 @@ func newEntry(source string, session session, message *message, tokens usage.Tok
 		entry.ID = usageprovider.StableEntryID(entry)
 	}
 
+	candidates := make([]langdetect.Candidate, 0)
 	for _, part := range message.parts {
 		for _, change := range partChanges(part, cwd) {
 			entry.ApplyFileChange(change)
 		}
+		candidates = append(candidates, languageCandidates(part, cwd)...)
 	}
+	entry.Language = usage.NormalizeLanguage(langdetect.Dominant(candidates))
 	return entry, true
+}
+
+// Weights for the paths a turn touched. Writing a file says far more about
+// what is being worked on than reading one, and a path merely mentioned in a
+// shell command says least of all.
+const (
+	writeWeight = 4
+	readWeight  = 2
+	textWeight  = 1
+)
+
+// languageCandidates collects the file paths one part touched, weighted by how
+// strongly each says what language the turn was spent on.
+func languageCandidates(part map[string]any, cwd string) []langdetect.Candidate {
+	if agentdata.StringField(part, "type") != "tool" {
+		return nil
+	}
+	state := agentdata.ObjectAt(part["state"])
+	if agentdata.StringField(state, "status") != "completed" {
+		return nil
+	}
+	input := agentdata.ObjectAt(state["input"])
+
+	switch tool := agentdata.StringField(part, "tool"); tool {
+	case "edit", "write", "patch", "apply_patch":
+		candidates := make([]langdetect.Candidate, 0)
+		for _, change := range partChanges(part, cwd) {
+			candidates = append(candidates, langdetect.Candidate{Path: change.Path, Weight: writeWeight})
+		}
+		return candidates
+	case "read":
+		path := usage.ResolvePath(cwd, agentdata.StringField(input, "filePath"))
+		if path == "" {
+			return nil
+		}
+		return []langdetect.Candidate{{Path: path, Weight: readWeight}}
+	case "bash":
+		// A shell command names the files it runs against; they are a weak but
+		// real signal when a turn neither read nor wrote anything.
+		return pathCandidates(agentdata.StringField(input, "command"), textWeight)
+	case "glob", "grep":
+		return pathCandidates(agentdata.StringField(input, "pattern"), textWeight)
+	default:
+		return nil
+	}
+}
+
+func pathCandidates(text string, weight int) []langdetect.Candidate {
+	paths := langdetect.PathsFromText(text)
+	candidates := make([]langdetect.Candidate, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, langdetect.Candidate{Path: path, Weight: weight})
+	}
+	return candidates
 }
 
 // partChanges extracts the file edits one message part performed.
@@ -420,7 +506,14 @@ func writeChanges(input, metadata map[string]any, cwd string) []usage.FileChange
 	if path == "" {
 		return nil
 	}
-	return []usage.FileChange{{Path: path, LinesAdded: usage.CountLines(agentdata.StringField(input, "content"))}}
+
+	// Every line of the written content is an added line. Overwriting also
+	// displaces the file's previous lines, but the old content is not recorded
+	// anywhere, so those stay uncounted rather than guessed at.
+	return []usage.FileChange{{
+		Path:       path,
+		LinesAdded: usage.CountLines(agentdata.StringField(input, "content")),
+	}}
 }
 
 // applyPatchChanges prefers the per-file summary OpenCode attaches and

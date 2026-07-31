@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -159,19 +160,30 @@ func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) e
 			}
 		}
 
-		// Duplicate + Rejected: both are "acknowledged and won't be processed again".
-		// Duplicates are events we already uploaded. Rejected are events that failed
-		// validation. Both should stop querying; we mark them as uploaded to clear them.
-		ackd := append([]string{}, response.Duplicate...)
-		for _, r := range response.Rejected {
-			if r.ID != "" {
-				ackd = append(ackd, r.ID)
-			}
-		}
-		if len(ackd) > 0 {
-			if err := db.MarkEventsUploaded(ackd); err != nil {
+		// Duplicates are events the server already has: nothing was lost, so they
+		// count as uploaded.
+		if len(response.Duplicate) > 0 {
+			if err := db.MarkEventsUploaded(response.Duplicate); err != nil {
 				return err
 			}
+		}
+
+		// Rejected events are data the server threw away. Recording them as
+		// uploaded hid that: a server that refused every event from a whole
+		// provider looked exactly like a successful sync, and the reason it gave
+		// was discarded. They still are not retried — the queue keeps them as
+		// rejected, with the server's reason, so the loss is visible.
+		if len(response.Rejected) > 0 {
+			reasons := make(map[string]string, len(response.Rejected))
+			for _, rejected := range response.Rejected {
+				if rejected.ID != "" {
+					reasons[rejected.ID] = rejected.Reason
+				}
+			}
+			if err := db.MarkEventsRejected(reasons); err != nil {
+				return err
+			}
+			logRejections(response.Rejected)
 		}
 
 		// Sanity check: server must acknowledge every event as accepted/duplicate/rejected.
@@ -181,6 +193,23 @@ func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) e
 			return fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
 				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected))
 		}
+	}
+}
+
+// logRejections reports what the server refused. Rejections repeat: a server
+// that rejects one event from a provider rejects all of them, so the reasons
+// are counted rather than printed one per event.
+func logRejections(rejected []Reject) {
+	counts := make(map[string]int, len(rejected))
+	for _, r := range rejected {
+		reason := strings.TrimSpace(r.Reason)
+		if reason == "" {
+			reason = "no reason given"
+		}
+		counts[reason]++
+	}
+	for reason, count := range counts {
+		slog.Warn("usage events rejected by server", "reason", reason, "events", count)
 	}
 }
 

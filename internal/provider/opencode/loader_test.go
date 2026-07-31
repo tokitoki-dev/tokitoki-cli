@@ -33,7 +33,7 @@ func writeOpenCodeDBAt(t *testing.T, path string, sessions, messages, parts []op
 	defer db.Close()
 
 	schema := []string{
-		`CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, version TEXT)`,
+		`CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, version TEXT, model TEXT)`,
 		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)`,
 		`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)`,
 	}
@@ -43,7 +43,7 @@ func writeOpenCodeDBAt(t *testing.T, path string, sessions, messages, parts []op
 		}
 	}
 	for _, row := range sessions {
-		if _, err := db.Exec(`INSERT INTO session (id, directory, version) VALUES (?, ?, ?)`, row.id, row.sessionID, row.data); err != nil {
+		if _, err := db.Exec(`INSERT INTO session (id, directory, model) VALUES (?, ?, ?)`, row.id, row.sessionID, row.data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -385,5 +385,118 @@ func TestOpenCodeReadsEveryChannelDatabase(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want one per channel database", len(entries))
+	}
+}
+
+// TestDetectsLanguageFromTouchedFiles covers the language signal: a turn is
+// spent on whatever it edited, then on what it read, and only weakly on what a
+// shell command happened to name.
+func TestDetectsLanguageFromTouchedFiles(t *testing.T) {
+	path := writeOpenCodeDB(t,
+		[]openCodeRow{{id: "ses-1", sessionID: "/repo/demo"}},
+		[]openCodeRow{
+			{id: "msg-1", sessionID: "ses-1", created: 1000, data: `{"role":"assistant","modelID":"gpt-5","path":{"cwd":"/repo/demo"},"tokens":{"input":10,"output":5}}`},
+			{id: "msg-2", sessionID: "ses-1", created: 2000, data: `{"role":"assistant","modelID":"gpt-5","path":{"cwd":"/repo/demo"},"tokens":{"input":20,"output":5}}`},
+			{id: "msg-3", sessionID: "ses-1", created: 3000, data: `{"role":"assistant","modelID":"gpt-5","path":{"cwd":"/repo/demo"},"tokens":{"input":30,"output":5}}`},
+		},
+		[]openCodeRow{
+			// A single write outweighs the two reads of another language.
+			{id: "prt-1", sessionID: "msg-1", data: `{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"main.go","content":"package main"}}}`},
+			{id: "prt-2", sessionID: "msg-1", data: `{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"a.py"}}}`},
+			{id: "prt-3", sessionID: "msg-1", data: `{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"b.py"}}}`},
+			// Reads alone still name the language.
+			{id: "prt-4", sessionID: "msg-2", data: `{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"lib.rs"}}}`},
+			// A turn that touched nothing has no language to report.
+			{id: "prt-5", sessionID: "msg-3", data: `{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hello"}}}`},
+		})
+
+	entries, err := loadDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageprovider.SortEntries(entries)
+	if len(entries) != 3 {
+		t.Fatalf("len(entries) = %d, want 3", len(entries))
+	}
+	if entries[0].Language != "Go" {
+		t.Fatalf("language = %q, want Go (the written file outweighs the read ones)", entries[0].Language)
+	}
+	if entries[1].Language != "Rust" {
+		t.Fatalf("language = %q, want Rust (from the read file)", entries[1].Language)
+	}
+	if entries[2].Language != usage.UnknownLanguage {
+		t.Fatalf("language = %q, want %q for a turn that touched no file",
+			entries[2].Language, usage.UnknownLanguage)
+	}
+}
+
+// TestOpenCodeReadsSessionsWithoutModelColumn covers databases written by an
+// OpenCode release from before the session gained a model column. Asking for a
+// column that does not exist fails the whole query, and losing the session row
+// would take the project directory down with it.
+func TestOpenCodeReadsSessionsWithoutModelColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := agentdb.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, version TEXT)`,
+		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)`,
+		`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)`,
+		`INSERT INTO session (id, directory) VALUES ('ses-1', '/repo/legacy')`,
+		`INSERT INTO message (id, session_id, time_created, data) VALUES ('msg-1', 'ses-1', 1000,
+			'{"role":"assistant","modelID":"gpt-5","tokens":{"input":10,"output":5}}')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := loadDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Project != "legacy" {
+		t.Fatalf("project = %q, want legacy (the session row must survive)", entries[0].Project)
+	}
+	if entries[0].Model != "gpt-5" {
+		t.Fatalf("model = %q, want gpt-5", entries[0].Model)
+	}
+}
+
+// TestOpenCodeFallsBackToSessionModel covers a turn whose message does not name
+// the model. The tokens must still be billed — losing a turn's usage is worse
+// than not knowing which model produced it.
+func TestOpenCodeFallsBackToSessionModel(t *testing.T) {
+	path := writeOpenCodeDB(t,
+		[]openCodeRow{{id: "ses-1", sessionID: "/repo/demo",
+			data: `{"id":"claude-sonnet-4","providerID":"anthropic","variant":"default"}`}},
+		[]openCodeRow{
+			// No modelID anywhere on the message.
+			{id: "msg-1", sessionID: "ses-1", created: 1000, data: `{"role":"assistant","tokens":{"input":10,"output":5}}`},
+			// The nested form user messages use.
+			{id: "msg-2", sessionID: "ses-1", created: 2000, data: `{"role":"assistant","model":{"modelID":"gpt-5","providerID":"openai"},"tokens":{"input":20,"output":5}}`},
+		}, nil)
+
+	entries, err := loadDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2 (a missing model must not drop the tokens)", len(entries))
+	}
+	usageprovider.SortEntries(entries)
+	if entries[0].Model != "claude-sonnet-4" {
+		t.Fatalf("model = %q, want the session's model", entries[0].Model)
+	}
+	if entries[1].Model != "gpt-5" {
+		t.Fatalf("model = %q, want the nested modelID", entries[1].Model)
 	}
 }
