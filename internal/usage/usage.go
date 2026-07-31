@@ -59,6 +59,13 @@ type TokenUsage struct {
 	TotalTokens              uint64 `json:"total_tokens"`
 }
 
+// FileChange records the diff one event applied to a single file.
+type FileChange struct {
+	Path         string `json:"path"`
+	LinesAdded   uint64 `json:"lines_added,omitempty"`
+	LinesRemoved uint64 `json:"lines_removed,omitempty"`
+}
+
 type Entry struct {
 	Provider    Provider  `json:"provider"`
 	ID          string    `json:"id,omitempty"`
@@ -88,6 +95,14 @@ type Entry struct {
 	Editor     string         `json:"editor,omitempty"`
 	Category   string         `json:"category,omitempty"`
 	IsWrite    *bool          `json:"is_write,omitempty"`
+	// LinesAdded/LinesRemoved count the source lines the agent added and
+	// removed in this event's file modifications, for providers that record
+	// diffs. Zero means "no diff recorded", not "no change".
+	LinesAdded   uint64 `json:"lines_added,omitempty"`
+	LinesRemoved uint64 `json:"lines_removed,omitempty"`
+	// Files breaks the same modifications down per file. Entity is always
+	// the most-changed path in here; LinesAdded/LinesRemoved are the totals.
+	Files []FileChange `json:"files,omitempty"`
 	Raw        map[string]any `json:"raw,omitempty"`
 	Usage      TokenUsage     `json:"usage"`
 }

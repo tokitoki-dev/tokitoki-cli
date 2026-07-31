@@ -121,6 +121,111 @@ func TestReadUsageFilePrefersLineCWDOverEncodedDir(t *testing.T) {
 	}
 }
 
+func TestReadUsageFileAttributesPatchesToIssuingEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	// Entry msg-1 issues two edits; small.go changes 2 lines, big.go 3. The
+	// entity is the most-changed file, the line counts are the sum.
+	writeFile(t, path, `
+{"timestamp":"2026-05-21T01:02:03Z","cwd":"/repo/app","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","timestamp":"2026-05-21T01:02:04Z","toolUseResult":{"filePath":"/repo/app/small.go","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["+added","-removed"," context"]}]}}
+{"type":"user","timestamp":"2026-05-21T01:02:05Z","toolUseResult":{"filePath":"/repo/app/big.go","structuredPatch":[{"oldStart":1,"oldLines":0,"newStart":1,"newLines":3,"lines":["+a","+b","+c"]}]}}
+{"timestamp":"2026-05-21T01:02:06Z","cwd":"/repo/app","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+
+	first := entries[0]
+	if first.LinesAdded != 4 || first.LinesRemoved != 1 {
+		t.Fatalf("lines = +%d/-%d, want +4/-1", first.LinesAdded, first.LinesRemoved)
+	}
+	if first.Entity != "/repo/app/big.go" {
+		t.Fatalf("entity = %q, want most-changed file big.go", first.Entity)
+	}
+	if !first.IsWrite {
+		t.Fatal("isWrite = false, want true")
+	}
+
+	second := entries[1]
+	if second.IsWrite || second.LinesAdded != 0 || second.Entity != "" {
+		t.Fatalf("second entry inherited patch data: %+v", second)
+	}
+
+	if len(first.Files) != 2 {
+		t.Fatalf("files = %+v, want small.go and big.go", first.Files)
+	}
+	for _, file := range first.Files {
+		switch file.Path {
+		case "/repo/app/small.go":
+			if file.LinesAdded != 1 || file.LinesRemoved != 1 {
+				t.Fatalf("small.go = +%d/-%d, want +1/-1", file.LinesAdded, file.LinesRemoved)
+			}
+		case "/repo/app/big.go":
+			if file.LinesAdded != 3 || file.LinesRemoved != 0 {
+				t.Fatalf("big.go = +%d/-%d, want +3/-0", file.LinesAdded, file.LinesRemoved)
+			}
+		default:
+			t.Fatalf("unexpected file %q", file.Path)
+		}
+	}
+
+	converted := ConvertEntries(entries)
+	if converted[0].Entity != "/repo/app/big.go" || converted[0].EntityType != "file" {
+		t.Fatalf("converted entity = %q/%q, want big.go/file", converted[0].Entity, converted[0].EntityType)
+	}
+	if len(converted[0].Files) != 2 {
+		t.Fatalf("converted files = %+v, want 2", converted[0].Files)
+	}
+	if converted[0].IsWrite == nil || !*converted[0].IsWrite {
+		t.Fatal("converted isWrite not set")
+	}
+	if converted[0].LinesAdded != 4 || converted[0].LinesRemoved != 1 {
+		t.Fatalf("converted lines = +%d/-%d, want +4/-1", converted[0].LinesAdded, converted[0].LinesRemoved)
+	}
+	if converted[1].IsWrite != nil || converted[1].EntityType != "" {
+		t.Fatalf("converted second entry inherited patch data: %+v", converted[1])
+	}
+}
+
+func TestReadUsageFileHoldsPatchesBeforeFirstEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"type":"user","timestamp":"2026-05-21T01:02:02Z","toolUseResult":{"filePath":"/repo/app/a.go","structuredPatch":[{"lines":["+x"]}]}}
+{"timestamp":"2026-05-21T01:02:03Z","cwd":"/repo/app","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].LinesAdded != 1 || entries[0].Entity != "/repo/app/a.go" || !entries[0].IsWrite {
+		t.Fatalf("pending patch not attached: %+v", entries[0])
+	}
+}
+
+func TestParsePatchLineIgnoresNonPatchToolResults(t *testing.T) {
+	lines := [][]byte{
+		[]byte(`{"toolUseResult":"plain text mentioning structuredPatch"}`),
+		[]byte(`{"toolUseResult":{"filePath":"/a.go","structuredPatch":[]}}`),
+		[]byte(`{"message":{"content":"structuredPatch"}}`),
+	}
+	for _, line := range lines {
+		if _, ok := parsePatchLine(line); ok {
+			t.Fatalf("parsePatchLine(%s) ok = true, want false", line)
+		}
+	}
+}
+
 func TestReadUsageFileCapturesGitBranch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
 	mkdirAll(t, filepath.Dir(path))
@@ -331,4 +436,41 @@ func containsPathSegment(path, segment string) bool {
 		}
 	}
 	return false
+}
+
+func TestApplyPatchAccumulatesSameFile(t *testing.T) {
+	entry := LoadedEntry{}
+	applyPatch(&entry, patchStats{file: "/repo/a.go", added: 2, removed: 1})
+	applyPatch(&entry, patchStats{file: "/repo/b.go", added: 1})
+	applyPatch(&entry, patchStats{file: "/repo/a.go", added: 1})
+
+	if len(entry.Files) != 2 {
+		t.Fatalf("files = %+v, want 2", entry.Files)
+	}
+	if entry.Files[0].Path != "/repo/a.go" || entry.Files[0].LinesAdded != 3 || entry.Files[0].LinesRemoved != 1 {
+		t.Fatalf("a.go = %+v, want +3/-1", entry.Files[0])
+	}
+	if entry.Entity != "/repo/a.go" {
+		t.Fatalf("entity = %q, want cumulative most-changed a.go", entry.Entity)
+	}
+	if entry.LinesAdded != 4 || entry.LinesRemoved != 1 {
+		t.Fatalf("totals = +%d/-%d, want +4/-1", entry.LinesAdded, entry.LinesRemoved)
+	}
+}
+
+func TestParsePatchLineCountsCreatedFileContent(t *testing.T) {
+	line := []byte(`{"toolUseResult":{"type":"create","filePath":"/repo/new.go","content":"package main\n\nfunc main() {}\n","structuredPatch":[]}}`)
+	stats, ok := parsePatchLine(line)
+	if !ok {
+		t.Fatal("parsePatchLine ok = false, want true")
+	}
+	if stats.file != "/repo/new.go" || stats.added != 3 || stats.removed != 0 {
+		t.Fatalf("stats = %+v, want new.go +3/-0", stats)
+	}
+
+	empty := []byte(`{"toolUseResult":{"type":"create","filePath":"/repo/empty.go","content":"","structuredPatch":[]}}`)
+	stats, ok = parsePatchLine(empty)
+	if !ok || stats.added != 0 {
+		t.Fatalf("empty create = %+v ok=%v, want +0 ok=true", stats, ok)
+	}
 }

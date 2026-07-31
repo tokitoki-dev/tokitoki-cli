@@ -211,7 +211,7 @@ func testUsageEntry(id string) usage.Entry {
 	}
 }
 
-func TestOpenRekeysCodexEventsToBasenameIDs(t *testing.T) {
+func TestOpenRekeysCodexEventsToSemanticIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.db")
 	db, err := Open(path)
 	if err != nil {
@@ -295,5 +295,17 @@ func TestOpenRekeysCodexEventsToBasenameIDs(t *testing.T) {
 	}
 	if pruned != 1 {
 		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+}
+
+func TestOpenStampsFreshDatabaseAtCurrentVersion(t *testing.T) {
+	db := openTestDB(t)
+
+	var version int
+	if err := db.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != eventSchemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
 	}
 }

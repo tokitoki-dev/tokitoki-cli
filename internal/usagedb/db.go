@@ -67,23 +67,48 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open usage db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	fresh, err := isFreshDatabase(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("inspect usage db: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate usage db: %w", err)
 	}
-	if err := migrate(db); err != nil {
+	// A fresh database is born at the current version: the schema constant
+	// already describes the final shape, so the migration chain only ever
+	// runs against databases created by an older binary.
+	if fresh {
+		err = stampVersion(db)
+	} else {
+		err = migrate(db)
+	}
+	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate usage db: %w", err)
 	}
 	return &DB{db: db}, nil
 }
 
+func isFreshDatabase(db *sql.DB) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'usage_events'`).Scan(&count)
+	return count == 0, err
+}
+
+func stampVersion(db *sql.DB) error {
+	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, eventSchemaVersion))
+	return err
+}
+
 // eventSchemaVersion tracks one-time data repairs, recorded in the SQLite
-// user_version pragma. Version 1 rekeys codex events whose ids hashed the
-// source file's full path: archiving a session moves its file from sessions/
-// into archived_sessions/, which changed every id and double-counted the
-// whole session.
-const eventSchemaVersion = 1
+// user_version pragma. Versions 1 and 2 both rekey codex events: v1 dropped
+// the source file's full path from the id (archiving moves the file), v2
+// dropped file position entirely in favor of session + timestamp + tokens.
+// The rekey recomputes from payload, so any older version jumps straight to
+// the current scheme in one pass.
+const eventSchemaVersion = 2
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -93,13 +118,12 @@ func migrate(db *sql.DB) error {
 	if version >= eventSchemaVersion {
 		return nil
 	}
-	if version < 1 {
+	if version < 2 {
 		if err := rekeyCodexEvents(db); err != nil {
 			return err
 		}
 	}
-	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, eventSchemaVersion))
-	return err
+	return stampVersion(db)
 }
 
 func rekeyCodexEvents(db *sql.DB) error {

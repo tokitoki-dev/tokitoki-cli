@@ -73,3 +73,38 @@ func TestUploadUsesBaseURLEnvironment(t *testing.T) {
 		t.Fatalf("response = %+v, want accepted event", resp)
 	}
 }
+
+func TestRelativeEntityHidesMachineLayout(t *testing.T) {
+	tests := []struct {
+		projectPath string
+		entity      string
+		want        string
+	}{
+		{"/Users/me/repo", "/Users/me/repo/pkg/a.go", "pkg/a.go"},
+		{"/Users/me/repo", "/Users/me/repo/a.go", "a.go"},
+		{"/Users/me/repo", "/Users/me/elsewhere/b.go", "b.go"},
+		{"", "/Users/me/repo/c.go", "c.go"},
+		{"/Users/me/repo", "", ""},
+	}
+	for _, tt := range tests {
+		if got := relativeEntity(tt.projectPath, tt.entity); got != tt.want {
+			t.Fatalf("relativeEntity(%q, %q) = %q, want %q", tt.projectPath, tt.entity, got, tt.want)
+		}
+	}
+}
+
+func TestRelativeFilesStripsMachineLayout(t *testing.T) {
+	files := relativeFiles("/Users/me/repo", []usage.FileChange{
+		{Path: "/Users/me/repo/pkg/a.go", LinesAdded: 2},
+		{Path: "/Users/me/other/b.go", LinesRemoved: 1},
+	})
+	if files[0].Path != "pkg/a.go" || files[0].LinesAdded != 2 {
+		t.Fatalf("files[0] = %+v, want pkg/a.go +2", files[0])
+	}
+	if files[1].Path != "b.go" || files[1].LinesRemoved != 1 {
+		t.Fatalf("files[1] = %+v, want b.go -1", files[1])
+	}
+	if relativeFiles("/p", nil) != nil {
+		t.Fatal("relativeFiles(nil) should be nil")
+	}
+}

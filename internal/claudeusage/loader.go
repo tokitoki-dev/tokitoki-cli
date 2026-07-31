@@ -72,22 +72,27 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 }
 
 type LoadedEntry struct {
-	Data                UsageEntry `json:"data"`
-	ID                  string     `json:"id,omitempty"`
-	SourceFile          string     `json:"source_file,omitempty"`
-	SourceLine          int        `json:"source_line,omitempty"`
-	SourceStart         int64      `json:"source_start,omitempty"`
-	SourceEnd           int64      `json:"source_end,omitempty"`
-	Timestamp           time.Time  `json:"timestamp"`
-	Date                string     `json:"date"`
-	Project             string     `json:"project"`
-	SessionID           string     `json:"session_id"`
-	ProjectPath         string     `json:"project_path"`
-	Model               string     `json:"model,omitempty"`
-	Language            string     `json:"language"`
-	Client              string     `json:"client,omitempty"`
-	Branch              string     `json:"branch,omitempty"`
-	UsageLimitResetTime *time.Time `json:"usage_limit_reset_time,omitempty"`
+	Data                UsageEntry         `json:"data"`
+	ID                  string             `json:"id,omitempty"`
+	SourceFile          string             `json:"source_file,omitempty"`
+	SourceLine          int                `json:"source_line,omitempty"`
+	SourceStart         int64              `json:"source_start,omitempty"`
+	SourceEnd           int64              `json:"source_end,omitempty"`
+	Timestamp           time.Time          `json:"timestamp"`
+	Date                string             `json:"date"`
+	Project             string             `json:"project"`
+	SessionID           string             `json:"session_id"`
+	ProjectPath         string             `json:"project_path"`
+	Model               string             `json:"model,omitempty"`
+	Language            string             `json:"language"`
+	Client              string             `json:"client,omitempty"`
+	Branch              string             `json:"branch,omitempty"`
+	Entity              string             `json:"entity,omitempty"`
+	IsWrite             bool               `json:"is_write,omitempty"`
+	LinesAdded          uint64             `json:"lines_added,omitempty"`
+	LinesRemoved        uint64             `json:"lines_removed,omitempty"`
+	Files               []usage.FileChange `json:"files,omitempty"`
+	UsageLimitResetTime *time.Time         `json:"usage_limit_reset_time,omitempty"`
 }
 
 type DailyProjectSummary struct {
@@ -112,23 +117,38 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 	converted := make([]usage.Entry, 0, len(entries))
 	for _, entry := range entries {
 		tokens := entry.Data.Message.Usage
+		var isWrite *bool
+		if entry.IsWrite {
+			t := true
+			isWrite = &t
+		}
+		entityType := ""
+		if entry.Entity != "" {
+			entityType = "file"
+		}
 		converted = append(converted, usage.Entry{
-			Provider:    usage.ProviderClaude,
-			ID:          entry.ID,
-			SourceFile:  entry.SourceFile,
-			SourceLine:  entry.SourceLine,
-			SourceStart: entry.SourceStart,
-			SourceEnd:   entry.SourceEnd,
-			Timestamp:   entry.Timestamp,
-			Date:        entry.Date,
-			Project:     entry.Project,
-			ProjectPath: entry.ProjectPath,
-			SessionID:   entry.SessionID,
-			Model:       entry.Model,
-			Language:    usage.NormalizeLanguage(entry.Language),
-			OS:          usage.NormalizeOS(runtime.GOOS),
-			Client:      entry.Client,
-			Branch:      entry.Branch,
+			Provider:     usage.ProviderClaude,
+			ID:           entry.ID,
+			SourceFile:   entry.SourceFile,
+			SourceLine:   entry.SourceLine,
+			SourceStart:  entry.SourceStart,
+			SourceEnd:    entry.SourceEnd,
+			Timestamp:    entry.Timestamp,
+			Date:         entry.Date,
+			Project:      entry.Project,
+			ProjectPath:  entry.ProjectPath,
+			SessionID:    entry.SessionID,
+			Model:        entry.Model,
+			Language:     usage.NormalizeLanguage(entry.Language),
+			OS:           usage.NormalizeOS(runtime.GOOS),
+			Client:       entry.Client,
+			Branch:       entry.Branch,
+			Entity:       entry.Entity,
+			EntityType:   entityType,
+			IsWrite:      isWrite,
+			LinesAdded:   entry.LinesAdded,
+			LinesRemoved: entry.LinesRemoved,
+			Files:        entry.Files,
 			Usage: usage.TokenUsage{
 				InputTokens:              tokens.InputTokens,
 				OutputTokens:             tokens.OutputTokens,
@@ -223,6 +243,10 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 
 	sessionID := ExtractSessionID(path)
 	entries := make([]LoadedEntry, 0)
+	// A file-modification diff belongs to the assistant message that issued
+	// the edit, which precedes its tool result in the transcript. Diffs seen
+	// before the first usage entry are held and attached to it.
+	pending := make([]patchStats, 0)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
 	offset := int64(0)
@@ -233,14 +257,23 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 			start := offset
 			offset += int64(len(line))
 			line = bytes.TrimRight(line, "\r\n")
-			entry, ok := parseUsageLine(line, sessionID)
-			if ok {
+			if entry, ok := parseUsageLine(line, sessionID); ok {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
 				entry.SourceStart = start
 				entry.SourceEnd = offset
 				entry.ID = stableEntryID(entry)
 				entries = append(entries, entry)
+				for _, patch := range pending {
+					applyPatch(&entries[len(entries)-1], patch)
+				}
+				pending = pending[:0]
+			} else if patch, ok := parsePatchLine(line); ok {
+				if len(entries) == 0 {
+					pending = append(pending, patch)
+				} else {
+					applyPatch(&entries[len(entries)-1], patch)
+				}
 			}
 		}
 		if readErr == nil {
@@ -252,6 +285,105 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 		return nil, readErr
 	}
 	return entries, nil
+}
+
+type patchStats struct {
+	file    string
+	added   uint64
+	removed uint64
+}
+
+// applyPatch accumulates one diff into the entry's totals and per-file
+// breakdown. The entity is always the most-changed file so far.
+func applyPatch(entry *LoadedEntry, patch patchStats) {
+	entry.LinesAdded += patch.added
+	entry.LinesRemoved += patch.removed
+	entry.IsWrite = true
+	if patch.file == "" {
+		return
+	}
+
+	index := -1
+	for i := range entry.Files {
+		if entry.Files[i].Path == patch.file {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		entry.Files = append(entry.Files, usage.FileChange{Path: patch.file})
+		index = len(entry.Files) - 1
+	}
+	entry.Files[index].LinesAdded += patch.added
+	entry.Files[index].LinesRemoved += patch.removed
+
+	best := index
+	for i := range entry.Files {
+		if entry.Files[i].LinesAdded+entry.Files[i].LinesRemoved > entry.Files[best].LinesAdded+entry.Files[best].LinesRemoved {
+			best = i
+		}
+	}
+	entry.Entity = entry.Files[best].Path
+}
+
+func parsePatchLine(line []byte) (patchStats, bool) {
+	if !bytes.Contains(line, []byte(`"structuredPatch"`)) {
+		return patchStats{}, false
+	}
+
+	var envelope struct {
+		ToolUseResult json.RawMessage `json:"toolUseResult"`
+	}
+	if err := json.Unmarshal(line, &envelope); err != nil || len(envelope.ToolUseResult) == 0 {
+		return patchStats{}, false
+	}
+	var result struct {
+		Type            string `json:"type"`
+		FilePath        string `json:"filePath"`
+		Content         string `json:"content"`
+		StructuredPatch []struct {
+			Lines []string `json:"lines"`
+		} `json:"structuredPatch"`
+	}
+	if err := json.Unmarshal(envelope.ToolUseResult, &result); err != nil {
+		return patchStats{}, false
+	}
+
+	// Creating a file records no diff hunks, only the full content: every
+	// content line is an added line.
+	if len(result.StructuredPatch) == 0 {
+		if result.Type != "create" || result.FilePath == "" {
+			return patchStats{}, false
+		}
+		return patchStats{file: result.FilePath, added: countLines(result.Content)}, true
+	}
+
+	stats := patchStats{file: result.FilePath}
+	for _, hunk := range result.StructuredPatch {
+		for _, hunkLine := range hunk.Lines {
+			if len(hunkLine) == 0 {
+				continue
+			}
+			switch hunkLine[0] {
+			case '+':
+				stats.added++
+			case '-':
+				stats.removed++
+			}
+		}
+	}
+	return stats, true
+}
+
+func countLines(content string) uint64 {
+	if content == "" {
+		return 0
+	}
+	lines := uint64(strings.Count(content, "\n"))
+	if !strings.HasSuffix(content, "\n") {
+		lines++
+	}
+	return lines
 }
 
 // projectFromCWD derives the project path and name from a transcript line's
@@ -740,4 +872,3 @@ func pathParts(path string) []string {
 	})
 	return parts
 }
-

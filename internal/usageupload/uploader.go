@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -54,12 +55,12 @@ type DevicePayload struct {
 }
 
 type Event struct {
-	ID                       string         `json:"id"`
-	Provider                 string         `json:"provider"`
-	SourceType               string         `json:"source_type,omitempty"`
-	SourceProvider           string         `json:"source_provider,omitempty"`
-	EventKind                string         `json:"event_kind,omitempty"`
-	Timestamp                string         `json:"timestamp"`
+	ID             string `json:"id"`
+	Provider       string `json:"provider"`
+	SourceType     string `json:"source_type,omitempty"`
+	SourceProvider string `json:"source_provider,omitempty"`
+	EventKind      string `json:"event_kind,omitempty"`
+	Timestamp      string `json:"timestamp"`
 	// The machine's IANA zone ("Asia/Tokyo"), omitted when it cannot be
 	// resolved — see usage.MachineTimezone. Never a fixed abbreviation like
 	// "JST": those are ambiguous across regions and cannot be re-expanded.
@@ -70,28 +71,31 @@ type Event struct {
 	// Australia/Lord_Howe — is a pure function of the two. Sending it as well
 	// would be a second copy of a derived value, and the copy is what goes
 	// stale when tzdata is corrected.
-	Timezone string `json:"timezone,omitempty"`
-	SessionID                string         `json:"session_id,omitempty"`
-	Project                  string         `json:"project"`
-	ProjectPathHash          string         `json:"project_path_hash,omitempty"`
-	Model                    string         `json:"model,omitempty"`
-	Language                 string         `json:"language"`
-	OS                       string         `json:"os,omitempty"`
-	Client                   string         `json:"client,omitempty"`
-	Entity                   string         `json:"entity,omitempty"`
-	EntityType               string         `json:"entity_type,omitempty"`
-	Branch                   string         `json:"branch,omitempty"`
-	Editor                   string         `json:"editor,omitempty"`
-	Category                 string         `json:"category,omitempty"`
-	IsWrite                  *bool          `json:"is_write,omitempty"`
-	Raw                      map[string]any `json:"raw,omitempty"`
-	InputTokens              uint64         `json:"input_tokens,omitempty"`
-	OutputTokens             uint64         `json:"output_tokens,omitempty"`
-	CachedInputTokens        uint64         `json:"cached_input_tokens,omitempty"`
-	CacheCreationInputTokens uint64         `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64         `json:"cache_read_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64         `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64         `json:"total_tokens,omitempty"`
+	Timezone                 string             `json:"timezone,omitempty"`
+	SessionID                string             `json:"session_id,omitempty"`
+	Project                  string             `json:"project"`
+	ProjectPathHash          string             `json:"project_path_hash,omitempty"`
+	Model                    string             `json:"model,omitempty"`
+	Language                 string             `json:"language"`
+	OS                       string             `json:"os,omitempty"`
+	Client                   string             `json:"client,omitempty"`
+	Entity                   string             `json:"entity,omitempty"`
+	EntityType               string             `json:"entity_type,omitempty"`
+	Branch                   string             `json:"branch,omitempty"`
+	Editor                   string             `json:"editor,omitempty"`
+	Category                 string             `json:"category,omitempty"`
+	IsWrite                  *bool              `json:"is_write,omitempty"`
+	LinesAdded               uint64             `json:"lines_added,omitempty"`
+	LinesRemoved             uint64             `json:"lines_removed,omitempty"`
+	Files                    []usage.FileChange `json:"files,omitempty"`
+	Raw                      map[string]any     `json:"raw,omitempty"`
+	InputTokens              uint64             `json:"input_tokens,omitempty"`
+	OutputTokens             uint64             `json:"output_tokens,omitempty"`
+	CachedInputTokens        uint64             `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens uint64             `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     uint64             `json:"cache_read_input_tokens,omitempty"`
+	ReasoningOutputTokens    uint64             `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens              uint64             `json:"total_tokens,omitempty"`
 }
 
 type Response struct {
@@ -295,12 +299,15 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Language:                 usage.NormalizeLanguage(entry.Language),
 		OS:                       entry.OS,
 		Client:                   entry.Client,
-		Entity:                   entry.Entity,
+		Entity:                   relativeEntity(entry.ProjectPath, entry.Entity),
 		EntityType:               entry.EntityType,
 		Branch:                   entry.Branch,
 		Editor:                   entry.Editor,
 		Category:                 entry.Category,
 		IsWrite:                  entry.IsWrite,
+		LinesAdded:               entry.LinesAdded,
+		LinesRemoved:             entry.LinesRemoved,
+		Files:                    relativeFiles(entry.ProjectPath, entry.Files),
 		Raw:                      entry.Raw,
 		InputTokens:              entry.Usage.InputTokens,
 		OutputTokens:             entry.Usage.OutputTokens,
@@ -329,4 +336,34 @@ func hashProjectPath(path string) string {
 	}
 	sum := sha256.Sum256([]byte(path))
 	return hex.EncodeToString(sum[:])
+}
+
+// relativeEntity strips the local filesystem prefix from an entity path for
+// the same reason the project path is uploaded as a hash: the server sees the
+// file's place inside the project, never the machine's directory layout.
+func relativeEntity(projectPath, entity string) string {
+	entity = strings.TrimSpace(entity)
+	if entity == "" {
+		return ""
+	}
+	if projectPath = strings.TrimSpace(projectPath); projectPath != "" {
+		if rel, err := filepath.Rel(projectPath, entity); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(entity)
+}
+
+// relativeFiles applies the same machine-layout stripping to the per-file
+// breakdown that relativeEntity applies to the entity.
+func relativeFiles(projectPath string, files []usage.FileChange) []usage.FileChange {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]usage.FileChange, len(files))
+	for i, file := range files {
+		out[i] = file
+		out[i].Path = relativeEntity(projectPath, file.Path)
+	}
+	return out
 }

@@ -40,20 +40,74 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	if entry.Language != "Unknown" {
 		t.Fatalf("language = %q, want Unknown", entry.Language)
 	}
-	// input_tokens (40) is the full prompt incl. cache; we report non-cached
-	// input (40 - 8 = 32) and move the cached portion to cache read, matching
-	// ccusage's codex token accounting.
-	if entry.Usage.InputTokens != 32 {
-		t.Fatalf("input tokens = %d, want non-cached input (40-8)", entry.Usage.InputTokens)
+	// Usage comes from the cumulative counter (first event: the counter
+	// itself), with input_tokens split into non-cached (100-20) and cache
+	// read (20). last_token_usage only feeds the id.
+	if entry.Usage.InputTokens != 80 {
+		t.Fatalf("input tokens = %d, want non-cached input (100-20)", entry.Usage.InputTokens)
 	}
-	if entry.Usage.CacheReadInputTokens != 8 {
-		t.Fatalf("cache read tokens = %d, want 8 (cached portion)", entry.Usage.CacheReadInputTokens)
+	if entry.Usage.CacheReadInputTokens != 20 {
+		t.Fatalf("cache read tokens = %d, want 20 (cached portion)", entry.Usage.CacheReadInputTokens)
 	}
-	if entry.Usage.ReasoningOutputTokens != 2 {
-		t.Fatalf("reasoning output tokens = %d, want 2", entry.Usage.ReasoningOutputTokens)
+	if entry.Usage.ReasoningOutputTokens != 3 {
+		t.Fatalf("reasoning output tokens = %d, want 3", entry.Usage.ReasoningOutputTokens)
 	}
-	if entry.Usage.TotalTokens != 45 {
-		t.Fatalf("total tokens = %d, want 45", entry.Usage.TotalTokens)
+	if entry.Usage.TotalTokens != 110 {
+		t.Fatalf("total tokens = %d, want 110", entry.Usage.TotalTokens)
+	}
+}
+
+func TestReadUsageFileUsesCumulativeDeltas(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":25,"cached_input_tokens":4,"output_tokens":12,"reasoning_output_tokens":1,"total_tokens":37},"total_token_usage":{"input_tokens":35,"cached_input_tokens":4,"output_tokens":17,"reasoning_output_tokens":1,"total_tokens":52}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second event is a duplicate emission (counter unchanged) and must
+	// vanish; the third is the counter delta, not its last_token_usage.
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2 (duplicate skipped)", len(entries))
+	}
+	if entries[0].Usage.TotalTokens != 15 {
+		t.Fatalf("first total = %d, want 15", entries[0].Usage.TotalTokens)
+	}
+	second := entries[1].Usage
+	if second.InputTokens != 21 || second.CacheReadInputTokens != 4 || second.OutputTokens != 12 || second.TotalTokens != 37 {
+		t.Fatalf("second usage = %+v, want delta 21/4/12/37", second)
+	}
+	if entries[0].ID == entries[1].ID {
+		t.Fatal("distinct events share an id")
+	}
+}
+
+func TestReadUsageFileFallsBackToLastUsageOnCounterReset(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150},"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":8,"cached_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":0,"total_tokens":11},"total_token_usage":{"input_tokens":8,"cached_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":0,"total_tokens":11}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	// The counter went backwards (reset): the event keeps its own
+	// last_token_usage instead of a bogus delta.
+	if entries[1].Usage.TotalTokens != 11 {
+		t.Fatalf("post-reset total = %d, want 11", entries[1].Usage.TotalTokens)
 	}
 }
 
@@ -147,30 +201,161 @@ func writeFile(t *testing.T, path, data string) {
 	}
 }
 
-func TestStableEntryIDSurvivesArchiveMove(t *testing.T) {
+func TestStableEntryIDIndependentOfFileLocation(t *testing.T) {
+	// The id comes from the event (session + time + tokens), never from
+	// storage: archiving moves the file, and a rename must not matter either.
 	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
 {"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":15}}}}
 `
 	dir := t.TempDir()
-	before := filepath.Join(dir, "sessions", "2026", "06", "04", "rollout-x.jsonl")
-	after := filepath.Join(dir, "archived_sessions", "rollout-x.jsonl")
-	mkdirAll(t, filepath.Dir(before))
-	mkdirAll(t, filepath.Dir(after))
-	writeFile(t, before, content)
-	writeFile(t, after, content)
+	paths := []string{
+		filepath.Join(dir, "sessions", "2026", "06", "04", "rollout-x.jsonl"),
+		filepath.Join(dir, "archived_sessions", "rollout-x.jsonl"),
+		filepath.Join(dir, "archived_sessions", "renamed-y.jsonl"),
+	}
+	ids := make([]string, 0, len(paths))
+	for _, path := range paths {
+		mkdirAll(t, filepath.Dir(path))
+		writeFile(t, path, content)
+		entries, err := ReadUsageFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("entries(%s) = %d, want 1", path, len(entries))
+		}
+		ids = append(ids, entries[0].ID)
+	}
+	if ids[0] != ids[1] || ids[0] != ids[2] {
+		t.Fatalf("id depends on file location: %v", ids)
+	}
+}
 
-	beforeEntries, err := ReadUsageFile(before)
+func TestReadUsageFileAttributesConfirmedPatches(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: /repo/app/main.go\n@@\n-old line\n+new line\n+extra line\n*** Add File: /repo/app/new.go\n+package app\n*** End Patch"}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":"Exit code: 0\nOutput:\nSuccess. Updated the following files:\nM /repo/app/main.go\nA /repo/app/new.go\n"}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+{"timestamp":"2026-06-04T01:02:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":25}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	afterEntries, err := ReadUsageFile(after)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+
+	first := entries[0]
+	if first.LinesAdded != 3 || first.LinesRemoved != 1 {
+		t.Fatalf("lines = +%d/-%d, want +3/-1", first.LinesAdded, first.LinesRemoved)
+	}
+	if first.Entity != "/repo/app/main.go" || first.EntityType != "file" {
+		t.Fatalf("entity = %q/%q, want most-changed main.go/file", first.Entity, first.EntityType)
+	}
+	if first.IsWrite == nil || !*first.IsWrite {
+		t.Fatal("isWrite not set")
+	}
+	if len(first.Files) != 2 {
+		t.Fatalf("files = %+v, want main.go and new.go", first.Files)
+	}
+
+	second := entries[1]
+	if second.IsWrite != nil || len(second.Files) != 0 {
+		t.Fatalf("second entry inherited patches: %+v", second)
+	}
+}
+
+func TestReadUsageFileIgnoresFailedPatches(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: /repo/app/main.go\n+x\n*** End Patch"}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":"Exit code: 1\napply_patch: context mismatch"}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(beforeEntries) != 1 || len(afterEntries) != 1 {
-		t.Fatalf("entries = %d/%d, want 1/1", len(beforeEntries), len(afterEntries))
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
 	}
-	if beforeEntries[0].ID != afterEntries[0].ID {
-		t.Fatalf("id changed across archive move: %q vs %q", beforeEntries[0].ID, afterEntries[0].ID)
+	if entries[0].IsWrite != nil || entries[0].LinesAdded != 0 {
+		t.Fatalf("failed patch was counted: %+v", entries[0])
+	}
+}
+
+func TestReadUsageFileParsesHeredocPatchInShellCall(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"command\":[\"bash\",\"-lc\",\"apply_patch <<'EOF'\\n*** Begin Patch\\n*** Delete File: /repo/app/dead.go\\n*** End Patch\\nEOF\"]}"}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"Exit code: 0\nSuccess. Updated the following files:\nD /repo/app/dead.go\n"}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].IsWrite == nil || len(entries[0].Files) != 1 || entries[0].Files[0].Path != "/repo/app/dead.go" {
+		t.Fatalf("heredoc patch not captured: %+v", entries[0])
+	}
+}
+
+func TestReadUsageFileConfirmsPatchViaPatchApplyEnd(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/main.go\n+x\n*** Move to: src/renamed.go\n*** End Patch"}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"c1","success":true,"stdout":"Success."}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.IsWrite == nil || entry.LinesAdded != 1 {
+		t.Fatalf("patch_apply_end confirmation not applied: %+v", entry)
+	}
+	// Relative path resolved against cwd, and Move to wins as the final path.
+	if len(entry.Files) != 1 || entry.Files[0].Path != "/repo/app/src/renamed.go" {
+		t.Fatalf("files = %+v, want /repo/app/src/renamed.go", entry.Files)
+	}
+}
+
+func TestReadUsageFileRejectsPatchApplyEndFailure(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/main.go\n+x\n*** End Patch"}}
+{"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"c1","success":false,"stderr":"invalid patch"}}
+{"timestamp":"2026-06-04T01:02:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].IsWrite != nil {
+		t.Fatalf("failed patch counted: %+v", entries[0])
 	}
 }
