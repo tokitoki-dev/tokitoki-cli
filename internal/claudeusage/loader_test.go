@@ -272,8 +272,8 @@ func TestReadUsageFileReportsUnknownProjectWithoutCWD(t *testing.T) {
 
 func TestProjectFromCWDRejectsUnusableValues(t *testing.T) {
 	for _, cwd := range []string{"", "   ", "relative/path", "/"} {
-		if _, _, ok := projectFromCWD(cwd); ok {
-			t.Fatalf("projectFromCWD(%q) ok = true, want false", cwd)
+		if _, _, ok := usage.ProjectFromCWD(cwd); ok {
+			t.Fatalf("usage.ProjectFromCWD(%q) ok = true, want false", cwd)
 		}
 	}
 }

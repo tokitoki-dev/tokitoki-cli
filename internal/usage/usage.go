@@ -3,6 +3,7 @@ package usage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -64,6 +65,87 @@ type FileChange struct {
 	Path         string `json:"path"`
 	LinesAdded   uint64 `json:"lines_added,omitempty"`
 	LinesRemoved uint64 `json:"lines_removed,omitempty"`
+}
+
+// ProjectFromCWD derives the project path and name from a working directory an
+// agent recorded. It reports false for values that cannot name a project
+// (empty, relative, or the filesystem root), so callers keep their fallback.
+func ProjectFromCWD(cwd string) (string, string, bool) {
+	clean := strings.TrimSpace(cwd)
+	if clean == "" || !filepath.IsAbs(clean) {
+		return "", "", false
+	}
+	clean = filepath.Clean(clean)
+	name := filepath.Base(clean)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		return "", "", false
+	}
+	return clean, name, true
+}
+
+// CountLines counts the source lines in a blob of file content. A trailing
+// newline does not add a line, so "a\nb\n" and "a\nb" both count as 2.
+func CountLines(content string) uint64 {
+	if content == "" {
+		return 0
+	}
+	lines := uint64(strings.Count(content, "\n"))
+	if !strings.HasSuffix(content, "\n") {
+		lines++
+	}
+	return lines
+}
+
+// ResolvePath makes a file path recorded by an agent absolute, interpreting a
+// relative one against the working directory the agent ran in.
+func ResolvePath(cwd, path string) string {
+	path = strings.TrimSpace(path)
+	switch {
+	case path == "":
+		return ""
+	case filepath.IsAbs(path):
+		return filepath.Clean(path)
+	case strings.TrimSpace(cwd) == "":
+		return path
+	default:
+		return filepath.Join(cwd, path)
+	}
+}
+
+// ApplyFileChange folds one file's diff into an entry: it accumulates the
+// per-file totals, keeps the entry totals in sync, and re-points Entity at the
+// most-changed file. Every provider that records diffs funnels through here so
+// "Entity is the biggest change" holds identically everywhere.
+func (e *Entry) ApplyFileChange(change FileChange) {
+	e.LinesAdded += change.LinesAdded
+	e.LinesRemoved += change.LinesRemoved
+	write := true
+	e.IsWrite = &write
+	if change.Path == "" {
+		return
+	}
+
+	found := false
+	for i := range e.Files {
+		if e.Files[i].Path == change.Path {
+			e.Files[i].LinesAdded += change.LinesAdded
+			e.Files[i].LinesRemoved += change.LinesRemoved
+			found = true
+			break
+		}
+	}
+	if !found {
+		e.Files = append(e.Files, change)
+	}
+
+	best, bestWeight := "", uint64(0)
+	for _, file := range e.Files {
+		if weight := file.LinesAdded + file.LinesRemoved; weight >= bestWeight {
+			best, bestWeight = file.Path, weight
+		}
+	}
+	e.Entity = best
+	e.EntityType = "file"
 }
 
 type Entry struct {

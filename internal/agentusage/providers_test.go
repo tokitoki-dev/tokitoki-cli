@@ -323,13 +323,13 @@ func TestProvidersLoadEntries(t *testing.T) {
 			provider: func() ([]usage.Entry, error) {
 				dir := t.TempDir()
 				path := filepath.Join(dir, "storage", "message", "session-a", "msg-1.json")
-				writeFile(t, path, `{"id":"msg-1","sessionID":"session-a","providerID":"anthropic","modelID":"claude-sonnet-4-20250514","time":{"created":1767312000000},"tokens":{"input":100,"output":50,"cache":{"read":10,"write":20}},"cost":0}`)
+				writeFile(t, path, `{"id":"msg-1","sessionID":"session-a","providerID":"anthropic","modelID":"claude-sonnet-4-20250514","path":{"cwd":"/repo/demo"},"time":{"created":1767312000000},"tokens":{"input":100,"output":50,"cache":{"read":10,"write":20}},"cost":0}`)
 				return OpenCodeProvider{}.WithPaths([]string{dir}).Entries()
 			},
 			want:      usage.ProviderOpenCode,
 			model:     "claude-sonnet-4-20250514",
 			sessionID: "session-a",
-			project:   "opencode",
+			project:   "demo",
 			tokens: usage.TokenUsage{
 				InputTokens:              100,
 				OutputTokens:             50,

@@ -355,7 +355,7 @@ func parsePatchLine(line []byte) (patchStats, bool) {
 		if result.Type != "create" || result.FilePath == "" {
 			return patchStats{}, false
 		}
-		return patchStats{file: result.FilePath, added: countLines(result.Content)}, true
+		return patchStats{file: result.FilePath, added: usage.CountLines(result.Content)}, true
 	}
 
 	stats := patchStats{file: result.FilePath}
@@ -373,33 +373,6 @@ func parsePatchLine(line []byte) (patchStats, bool) {
 		}
 	}
 	return stats, true
-}
-
-func countLines(content string) uint64 {
-	if content == "" {
-		return 0
-	}
-	lines := uint64(strings.Count(content, "\n"))
-	if !strings.HasSuffix(content, "\n") {
-		lines++
-	}
-	return lines
-}
-
-// projectFromCWD derives the project path and name from a transcript line's
-// cwd field. It reports false for values that cannot name a project (empty,
-// relative, or the filesystem root), so callers keep their fallback.
-func projectFromCWD(cwd string) (string, string, bool) {
-	clean := strings.TrimSpace(cwd)
-	if clean == "" || !filepath.IsAbs(clean) {
-		return "", "", false
-	}
-	clean = filepath.Clean(clean)
-	name := filepath.Base(clean)
-	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
-		return "", "", false
-	}
-	return clean, name, true
 }
 
 // ExtractSessionID derives the session id from a usage file's location under
@@ -460,7 +433,7 @@ func parseUsageLine(line []byte, sessionID string) (LoadedEntry, bool) {
 	project := usage.UnknownProject
 	projectPath := ""
 	if data.CWD != nil {
-		if path, name, ok := projectFromCWD(*data.CWD); ok {
+		if path, name, ok := usage.ProjectFromCWD(*data.CWD); ok {
 			projectPath = path
 			project = name
 		}

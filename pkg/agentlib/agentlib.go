@@ -479,7 +479,12 @@ func DefaultProviderDirs() map[Provider][]string {
 		ProviderKilo:     {filepath.Join(home, ".local", "share", "kilo")},
 		ProviderHermes:   {filepath.Join(home, ".hermes")},
 		ProviderCodebuff: {filepath.Join(home, ".config", "manicode"), filepath.Join(home, ".config", "manicode-dev"), filepath.Join(home, ".config", "manicode-staging")},
-		ProviderOpenCode: {filepath.Join(home, ".local", "share", "opencode")},
+		ProviderOpenCode: {
+			filepath.Join(home, ".local", "share", "opencode"),
+			filepath.Join(home, "Library", "Application Support", "opencode"),
+			filepath.Join(home, "AppData", "Local", "opencode"),
+			filepath.Join(home, "AppData", "Roaming", "opencode"),
+		},
 		ProviderGoose: {
 			filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"),
 			filepath.Join(home, "Library", "Application Support", "goose", "sessions", "sessions.db"),
