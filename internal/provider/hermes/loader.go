@@ -4,12 +4,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadEntries(paths []string) ([]usage.Entry, error) {
-	dbPaths := shared.SqliteDBPaths(paths, "state.db", nil)
+	dbPaths := agentdb.SqliteDBPaths(paths, "state.db", nil)
 	entries := make([]usage.Entry, 0)
 	for _, dbPath := range dbPaths {
 		dbEntries, err := loadDatabase(dbPath)
@@ -18,12 +21,12 @@ func loadEntries(paths []string) ([]usage.Entry, error) {
 		}
 		entries = append(entries, dbEntries...)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
 func loadDatabase(path string) ([]usage.Entry, error) {
-	db, err := shared.OpenSQLite(path)
+	db, err := agentdb.OpenSQLite(path)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +47,7 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 	entries := make([]usage.Entry, 0)
 	for rows.Next() {
 		var sessionID, model, provider, startedAt, messageCount, input, output, cacheRead, cacheWrite, reasoning, estimatedCost, actualCost any
-		if !shared.ScanAny(rows, &sessionID, &model, &provider, &startedAt, &messageCount, &input, &output, &cacheRead, &cacheWrite, &reasoning, &estimatedCost, &actualCost) {
+		if !agentdb.ScanAny(rows, &sessionID, &model, &provider, &startedAt, &messageCount, &input, &output, &cacheRead, &cacheWrite, &reasoning, &estimatedCost, &actualCost) {
 			continue
 		}
 		entry, ok := rowEntry(path, sessionID, model, startedAt, input, output, cacheRead, cacheWrite, reasoning)
@@ -56,8 +59,8 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 }
 
 func rowEntry(path string, sessionRaw, modelRaw, startedAt, input, output, cacheRead, cacheWrite, reasoning any) (usage.Entry, bool) {
-	sessionID := shared.SqlString(sessionRaw)
-	model := strings.TrimSpace(shared.SqlString(modelRaw))
+	sessionID := agentdb.SqlString(sessionRaw)
+	model := strings.TrimSpace(agentdb.SqlString(modelRaw))
 	if sessionID == "" || model == "" {
 		return usage.Entry{}, false
 	}
@@ -66,33 +69,33 @@ func rowEntry(path string, sessionRaw, modelRaw, startedAt, input, output, cache
 		return usage.Entry{}, false
 	}
 	tokens := usage.TokenUsage{
-		InputTokens:              shared.SqlUint(input),
-		OutputTokens:             shared.SqlUint(output),
-		CacheCreationInputTokens: shared.SqlUint(cacheWrite),
-		CacheReadInputTokens:     shared.SqlUint(cacheRead),
-		ReasoningOutputTokens:    shared.SqlUint(reasoning),
+		InputTokens:              agentdb.SqlUint(input),
+		OutputTokens:             agentdb.SqlUint(output),
+		CacheCreationInputTokens: agentdb.SqlUint(cacheWrite),
+		CacheReadInputTokens:     agentdb.SqlUint(cacheRead),
+		ReasoningOutputTokens:    agentdb.SqlUint(reasoning),
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = shared.TotalUsage(tokens)
+		tokens.TotalTokens = usageprovider.TotalUsage(tokens)
 	}
-	if !shared.NonZero(tokens) {
+	if !usageprovider.NonZero(tokens) {
 		return usage.Entry{}, false
 	}
-	entry := shared.BaseEntry(usage.ProviderHermes, timestamp, "hermes", "Hermes", sessionID, model, "Hermes Agent", tokens)
-	shared.SetSource(&entry, path, 0, 0, 0)
-	entry.ID = shared.StableEntryID(entry, "hermes:"+sessionID)
+	entry := usageprovider.BaseEntry(usage.ProviderHermes, timestamp, "hermes", "Hermes", sessionID, model, "Hermes Agent", tokens)
+	usageprovider.SetSource(&entry, path, 0, 0, 0)
+	entry.ID = usageprovider.StableEntryID(entry, "hermes:"+sessionID)
 	return entry, true
 }
 
 func timestamp(value any) (time.Time, bool) {
-	if parsed, ok := shared.ParseTimestamp(value); ok {
+	if parsed, ok := agentdata.ParseTimestamp(value); ok {
 		return parsed, true
 	}
-	if number, ok := shared.SqlFloat(value); ok {
-		return shared.TimestampFromFloat(number)
+	if number, ok := agentdb.SqlFloat(value); ok {
+		return agentdata.TimestampFromFloat(number)
 	}
-	if text := shared.SqlString(value); text != "" {
-		return shared.ParseTimestampString(text)
+	if text := agentdb.SqlString(value); text != "" {
+		return agentdata.ParseTimestampString(text)
 	}
 	return time.Time{}, false
 }

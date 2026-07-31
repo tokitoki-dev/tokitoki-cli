@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -14,11 +14,11 @@ func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "projects", "project-a", "chats", "chat-a.jsonl")
-		shared.WriteFile(t, path, `{"type":"assistant","timestamp":"2026-01-02T00:00:00.000Z","sessionId":"session-a","model":"qwen3-coder","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"thoughtsTokenCount":5,"cachedContentTokenCount":3,"totalTokenCount":38}}`+"\n")
+		providertest.WriteFile(t, path, `{"type":"assistant","timestamp":"2026-01-02T00:00:00.000Z","sessionId":"session-a","model":"qwen3-coder","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"thoughtsTokenCount":5,"cachedContentTokenCount":3,"totalTokenCount":38}}`+"\n")
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderQwen,
 		Model:     "qwen3-coder",
 		SessionID: "session-a",

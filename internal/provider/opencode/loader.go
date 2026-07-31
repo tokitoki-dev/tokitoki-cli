@@ -10,7 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -40,7 +43,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		}
 		for _, entry := range rootEntries {
 			if entry.ID == "" {
-				entry.ID = shared.StableEntryID(entry)
+				entry.ID = usageprovider.StableEntryID(entry)
 			}
 			if _, exists := entriesByID[entry.ID]; !exists {
 				entriesByID[entry.ID] = entry
@@ -51,7 +54,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 	for _, entry := range entriesByID {
 		entries = append(entries, entry)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
@@ -87,9 +90,9 @@ func loadRoot(root string, filter usage.FileFilter) ([]usage.Entry, error) {
 
 	// Older OpenCode releases wrote one JSON file per message instead of the
 	// database. Their users keep those files, so keep reading them.
-	files := shared.CollectExt(filepath.Join(root, "storage", "message"), ".json")
+	files := agentdata.CollectExt(filepath.Join(root, "storage", "message"), ".json")
 	sort.Strings(files)
-	files = shared.FilterFiles(files, filter)
+	files = agentdata.FilterFiles(files, filter)
 	for _, file := range files {
 		stem := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
 		if seenIDs[stableMessageID(stem)] {
@@ -109,7 +112,7 @@ func loadRoot(root string, filter usage.FileFilter) ([]usage.Entry, error) {
 			entries = append(entries, entry)
 		}
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
@@ -123,7 +126,7 @@ func dbPaths(root string) []string {
 	}
 	paths := make([]string, 0, len(matches))
 	for _, candidate := range matches {
-		if shared.ExistingSQLiteFile(candidate) {
+		if agentdb.ExistingSQLiteFile(candidate) {
 			paths = append(paths, candidate)
 		}
 	}
@@ -132,7 +135,7 @@ func dbPaths(root string) []string {
 }
 
 func loadDatabase(path string) ([]usage.Entry, error) {
-	db, err := shared.OpenSQLite(path)
+	db, err := agentdb.OpenSQLite(path)
 	if err != nil {
 		return nil, err
 	}
@@ -198,13 +201,13 @@ func queryMessages(db *sql.DB) []*message {
 		if err := rows.Scan(&id, &sessionID, &created, &data); err != nil {
 			continue
 		}
-		record := shared.DecodeJSONObjectString(data)
+		record := agentdata.DecodeJSONObjectString(data)
 		if record == nil {
 			continue
 		}
 		messages = append(messages, &message{
-			id:        shared.FirstNonEmpty(shared.StringField(record, "id"), id),
-			sessionID: shared.FirstNonEmpty(shared.StringField(record, "sessionID"), sessionID),
+			id:        agentdata.FirstNonEmpty(agentdata.StringField(record, "id"), id),
+			sessionID: agentdata.FirstNonEmpty(agentdata.StringField(record, "sessionID"), sessionID),
 			created:   created,
 			data:      record,
 		})
@@ -232,7 +235,7 @@ func attachParts(db *sql.DB, messages []*message) {
 		if len(targets) == 0 {
 			continue
 		}
-		record := shared.DecodeJSONObjectString(data)
+		record := agentdata.DecodeJSONObjectString(data)
 		if record == nil {
 			continue
 		}
@@ -250,7 +253,7 @@ func sessionEntries(source string, session session, messages []*message) []usage
 		// running counters would make the next assistant message look like a
 		// fresh session and bill it for the whole context again.
 		reported := tokens(message.data)
-		if !shared.NonZero(reported) {
+		if !usageprovider.NonZero(reported) {
 			continue
 		}
 		billed, ok := billTokens(reported, previous)
@@ -273,17 +276,17 @@ func sessionEntries(source string, session session, messages []*message) []usage
 // are what the model produced on this turn alone. billTokens is what
 // turns this mixture into one turn's cost.
 func tokens(record map[string]any) usage.TokenUsage {
-	block := shared.ObjectAt(record["tokens"])
+	block := agentdata.ObjectAt(record["tokens"])
 	if block == nil {
 		return usage.TokenUsage{}
 	}
-	cache := shared.ObjectAt(block["cache"])
+	cache := agentdata.ObjectAt(block["cache"])
 	return usage.TokenUsage{
-		InputTokens:              shared.UintField(block, "input"),
-		OutputTokens:             shared.UintField(block, "output"),
-		ReasoningOutputTokens:    shared.UintField(block, "reasoning"),
-		CacheCreationInputTokens: shared.UintField(cache, "write"),
-		CacheReadInputTokens:     shared.UintField(cache, "read"),
+		InputTokens:              agentdata.UintField(block, "input"),
+		OutputTokens:             agentdata.UintField(block, "output"),
+		ReasoningOutputTokens:    agentdata.UintField(block, "reasoning"),
+		CacheCreationInputTokens: agentdata.UintField(cache, "write"),
+		CacheReadInputTokens:     agentdata.UintField(cache, "read"),
 	}
 }
 
@@ -299,10 +302,10 @@ func billTokens(reported, previous usage.TokenUsage) (usage.TokenUsage, bool) {
 		OutputTokens:             reported.OutputTokens,
 		ReasoningOutputTokens:    reported.ReasoningOutputTokens,
 	}
-	if !shared.NonZero(billed) {
+	if !usageprovider.NonZero(billed) {
 		return usage.TokenUsage{}, false
 	}
-	return shared.ApplyTotalFallback(billed, 0), true
+	return usageprovider.ApplyTotalFallback(billed, 0), true
 }
 
 // growth returns how much a running counter advanced. A counter that shrank
@@ -316,21 +319,21 @@ func growth(current, previous uint64) uint64 {
 
 func newEntry(source string, session session, message *message, tokens usage.TokenUsage) (usage.Entry, bool) {
 	record := message.data
-	model := shared.StringField(record, "modelID")
+	model := agentdata.StringField(record, "modelID")
 	if model == "" {
 		return usage.Entry{}, false
 	}
 
 	timestamp := time.UnixMilli(message.created).UTC()
-	if parsed, ok := shared.ParseTimestamp(shared.ObjectAt(record["time"])["created"]); ok {
+	if parsed, ok := agentdata.ParseTimestamp(agentdata.ObjectAt(record["time"])["created"]); ok {
 		timestamp = parsed
 	}
 
 	// The message records the directory the agent actually ran in; the session
 	// directory covers messages written before that field existed.
-	cwd := shared.FirstNonEmpty(
-		shared.StringField(shared.ObjectAt(record["path"]), "cwd"),
-		shared.StringField(shared.ObjectAt(record["path"]), "root"),
+	cwd := agentdata.FirstNonEmpty(
+		agentdata.StringField(agentdata.ObjectAt(record["path"]), "cwd"),
+		agentdata.StringField(agentdata.ObjectAt(record["path"]), "root"),
 		session.directory,
 	)
 	project, projectPath := usage.UnknownProject, ""
@@ -338,12 +341,12 @@ func newEntry(source string, session session, message *message, tokens usage.Tok
 		project, projectPath = name, path
 	}
 
-	sessionID := shared.FirstNonEmpty(message.sessionID, usage.UnknownProject)
-	entry := shared.BaseEntry(usage.ProviderOpenCode, timestamp, project, projectPath, sessionID, model, "OpenCode", tokens)
-	shared.SetSource(&entry, source, 0, 0, 0)
+	sessionID := agentdata.FirstNonEmpty(message.sessionID, usage.UnknownProject)
+	entry := usageprovider.BaseEntry(usage.ProviderOpenCode, timestamp, project, projectPath, sessionID, model, "OpenCode", tokens)
+	usageprovider.SetSource(&entry, source, 0, 0, 0)
 	entry.ID = stableMessageID(message.id)
 	if entry.ID == "" {
-		entry.ID = shared.StableEntryID(entry)
+		entry.ID = usageprovider.StableEntryID(entry)
 	}
 
 	for _, part := range message.parts {
@@ -359,18 +362,18 @@ func newEntry(source string, session session, message *message, tokens usage.Tok
 // worktree, which lists files nobody edited (.DS_Store, build output) and
 // carries no line counts, so treating it as agent work invents writes.
 func partChanges(part map[string]any, cwd string) []usage.FileChange {
-	if shared.StringField(part, "type") != "tool" {
+	if agentdata.StringField(part, "type") != "tool" {
 		return nil
 	}
 
-	state := shared.ObjectAt(part["state"])
-	if shared.StringField(state, "status") != "completed" {
+	state := agentdata.ObjectAt(part["state"])
+	if agentdata.StringField(state, "status") != "completed" {
 		return nil
 	}
-	input := shared.ObjectAt(state["input"])
-	metadata := shared.ObjectAt(state["metadata"])
+	input := agentdata.ObjectAt(state["input"])
+	metadata := agentdata.ObjectAt(state["metadata"])
 
-	switch shared.StringField(part, "tool") {
+	switch agentdata.StringField(part, "tool") {
 	case "edit":
 		return editChanges(input, metadata, cwd)
 	case "write":
@@ -385,12 +388,12 @@ func partChanges(part map[string]any, cwd string) []usage.FileChange {
 // editChanges prefers the diff OpenCode computed. Without it the
 // replaced and replacing strings still bound the change.
 func editChanges(input, metadata map[string]any, cwd string) []usage.FileChange {
-	path := usage.ResolvePath(cwd, shared.StringField(input, "filePath"))
+	path := usage.ResolvePath(cwd, agentdata.StringField(input, "filePath"))
 
-	if diff := shared.ObjectAt(metadata["filediff"]); diff != nil {
-		added := shared.UintField(diff, "additions")
-		removed := shared.UintField(diff, "deletions")
-		if diffPath := shared.FirstNonEmpty(shared.StringField(diff, "filePath"), shared.StringField(diff, "file")); diffPath != "" {
+	if diff := agentdata.ObjectAt(metadata["filediff"]); diff != nil {
+		added := agentdata.UintField(diff, "additions")
+		removed := agentdata.UintField(diff, "deletions")
+		if diffPath := agentdata.FirstNonEmpty(agentdata.StringField(diff, "filePath"), agentdata.StringField(diff, "file")); diffPath != "" {
 			path = usage.ResolvePath(cwd, diffPath)
 		}
 		if added != 0 || removed != 0 {
@@ -398,8 +401,8 @@ func editChanges(input, metadata map[string]any, cwd string) []usage.FileChange 
 		}
 	}
 
-	added := usage.CountLines(shared.StringField(input, "newString"))
-	removed := usage.CountLines(shared.StringField(input, "oldString"))
+	added := usage.CountLines(agentdata.StringField(input, "newString"))
+	removed := usage.CountLines(agentdata.StringField(input, "oldString"))
 	if path == "" && added == 0 && removed == 0 {
 		return nil
 	}
@@ -410,14 +413,14 @@ func editChanges(input, metadata map[string]any, cwd string) []usage.FileChange 
 // an existing file replaces lines this record does not describe, so only the
 // added side is known.
 func writeChanges(input, metadata map[string]any, cwd string) []usage.FileChange {
-	path := usage.ResolvePath(cwd, shared.FirstNonEmpty(
-		shared.StringField(input, "filePath"),
-		shared.StringField(metadata, "filepath"),
+	path := usage.ResolvePath(cwd, agentdata.FirstNonEmpty(
+		agentdata.StringField(input, "filePath"),
+		agentdata.StringField(metadata, "filepath"),
 	))
 	if path == "" {
 		return nil
 	}
-	return []usage.FileChange{{Path: path, LinesAdded: usage.CountLines(shared.StringField(input, "content"))}}
+	return []usage.FileChange{{Path: path, LinesAdded: usage.CountLines(agentdata.StringField(input, "content"))}}
 }
 
 // applyPatchChanges prefers the per-file summary OpenCode attaches and
@@ -426,18 +429,18 @@ func applyPatchChanges(input, metadata map[string]any, cwd string) []usage.FileC
 	if files, ok := metadata["files"].([]any); ok && len(files) > 0 {
 		changes := make([]usage.FileChange, 0, len(files))
 		for _, raw := range files {
-			file := shared.ObjectAt(raw)
+			file := agentdata.ObjectAt(raw)
 			if file == nil {
 				continue
 			}
-			path := usage.ResolvePath(cwd, shared.FirstNonEmpty(shared.StringField(file, "filePath"), shared.StringField(file, "file")))
+			path := usage.ResolvePath(cwd, agentdata.FirstNonEmpty(agentdata.StringField(file, "filePath"), agentdata.StringField(file, "file")))
 			if path == "" {
 				continue
 			}
 			changes = append(changes, usage.FileChange{
 				Path:         path,
-				LinesAdded:   shared.UintField(file, "additions"),
-				LinesRemoved: shared.UintField(file, "deletions"),
+				LinesAdded:   agentdata.UintField(file, "additions"),
+				LinesRemoved: agentdata.UintField(file, "deletions"),
 			})
 		}
 		if len(changes) > 0 {
@@ -445,10 +448,10 @@ func applyPatchChanges(input, metadata map[string]any, cwd string) []usage.FileC
 		}
 	}
 
-	patchText := shared.FirstNonEmpty(
-		shared.StringField(input, "patchText"),
-		shared.StringField(input, "patch"),
-		shared.StringField(metadata, "patch"),
+	patchText := agentdata.FirstNonEmpty(
+		agentdata.StringField(input, "patchText"),
+		agentdata.StringField(input, "patch"),
+		agentdata.StringField(metadata, "patch"),
 	)
 	return parsePatchEnvelope(patchText, cwd)
 }
@@ -521,10 +524,10 @@ func loadLegacyFile(path string) ([]usage.Entry, error) {
 	}
 
 	message := &message{
-		id:        shared.StringField(record, "id"),
-		sessionID: shared.StringField(record, "sessionID"),
+		id:        agentdata.StringField(record, "id"),
+		sessionID: agentdata.StringField(record, "sessionID"),
 		data:      record,
-		parts:     readLegacyParts(path, shared.StringField(record, "id")),
+		parts:     readLegacyParts(path, agentdata.StringField(record, "id")),
 	}
 	// One file holds one message, so there is no predecessor to subtract from:
 	// billing against a zero baseline charges it for everything it reports.
@@ -548,7 +551,7 @@ func readLegacyParts(messagePath, messageID string) []map[string]any {
 		return nil
 	}
 	storage := filepath.Dir(filepath.Dir(filepath.Dir(messagePath)))
-	files := shared.CollectExt(filepath.Join(storage, "part", messageID), ".json")
+	files := agentdata.CollectExt(filepath.Join(storage, "part", messageID), ".json")
 	sort.Strings(files)
 
 	parts := make([]map[string]any, 0, len(files))

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -14,9 +14,9 @@ func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "state.db")
-		db := shared.OpenTestSQLite(t, dbPath)
+		db := providertest.OpenTestSQLite(t, dbPath)
 		defer db.Close()
-		shared.ExecSQL(t, db, `CREATE TABLE sessions (
+		providertest.ExecSQL(t, db, `CREATE TABLE sessions (
 			id TEXT PRIMARY KEY,
 			model TEXT,
 			billing_provider TEXT,
@@ -30,7 +30,7 @@ func TestLoadsEntry(t *testing.T) {
 			estimated_cost_usd REAL,
 			actual_cost_usd REAL
 		)`)
-		shared.ExecSQL(t, db, `INSERT INTO sessions (
+		providertest.ExecSQL(t, db, `INSERT INTO sessions (
 			id, model, billing_provider, started_at, message_count, input_tokens,
 			output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
 			estimated_cost_usd, actual_cost_usd
@@ -40,7 +40,7 @@ func TestLoadsEntry(t *testing.T) {
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderHermes,
 		Model:     "gpt-5.5",
 		SessionID: "session-a",

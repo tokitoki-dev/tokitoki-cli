@@ -1,4 +1,7 @@
-package shared
+// Package providertest holds the fixtures and assertions provider packages
+// share in their tests. It lives apart from usageprovider so no production
+// package ever links in the testing package.
+package providertest
 
 import (
 	"database/sql"
@@ -6,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -68,7 +72,7 @@ func OpenTestSQLite(t *testing.T, path string) *sql.DB {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := OpenSQLite(path)
+	db, err := agentdb.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}

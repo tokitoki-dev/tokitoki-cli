@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -14,11 +14,11 @@ func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "storage", "message", "session-a", "msg-1.json")
-		shared.WriteFile(t, path, `{"id":"msg-1","sessionID":"session-a","providerID":"anthropic","modelID":"claude-sonnet-4-20250514","path":{"cwd":"/repo/demo"},"time":{"created":1767312000000},"tokens":{"input":100,"output":50,"cache":{"read":10,"write":20}},"cost":0}`)
+		providertest.WriteFile(t, path, `{"id":"msg-1","sessionID":"session-a","providerID":"anthropic","modelID":"claude-sonnet-4-20250514","path":{"cwd":"/repo/demo"},"time":{"created":1767312000000},"tokens":{"input":100,"output":50,"cache":{"read":10,"write":20}},"cost":0}`)
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderOpenCode,
 		Model:     "claude-sonnet-4-20250514",
 		SessionID: "session-a",

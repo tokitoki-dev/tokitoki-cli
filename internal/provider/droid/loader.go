@@ -7,17 +7,19 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, root := range paths {
-		files = append(files, shared.CollectFiles(root, isSettingsFile)...)
+		files = append(files, agentdata.CollectFiles(root, isSettingsFile)...)
 	}
 	sort.Strings(files)
-	files = shared.FilterFiles(shared.UniqueStrings(files), filter)
+	files = agentdata.FilterFiles(agentdata.UniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
@@ -29,7 +31,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 			entries = append(entries, entry)
 		}
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
@@ -38,28 +40,28 @@ func isSettingsFile(path string) bool {
 }
 
 func parseSettingsFile(path string) (usage.Entry, bool, error) {
-	settings, err := shared.ReadJSONObject(path)
+	settings, err := agentdata.ReadJSONObject(path)
 	if err != nil || settings == nil {
 		return usage.Entry{}, false, err
 	}
-	usageBlock := shared.ObjectAt(settings["tokenUsage"])
+	usageBlock := agentdata.ObjectAt(settings["tokenUsage"])
 	if usageBlock == nil {
 		return usage.Entry{}, false, nil
 	}
 	tokens := usage.TokenUsage{
-		InputTokens:              shared.UintField(usageBlock, "inputTokens"),
-		OutputTokens:             shared.UintField(usageBlock, "outputTokens"),
-		CacheCreationInputTokens: shared.UintField(usageBlock, "cacheCreationTokens"),
-		CacheReadInputTokens:     shared.UintField(usageBlock, "cacheReadTokens"),
-		ReasoningOutputTokens:    shared.UintField(usageBlock, "thinkingTokens"),
+		InputTokens:              agentdata.UintField(usageBlock, "inputTokens"),
+		OutputTokens:             agentdata.UintField(usageBlock, "outputTokens"),
+		CacheCreationInputTokens: agentdata.UintField(usageBlock, "cacheCreationTokens"),
+		CacheReadInputTokens:     agentdata.UintField(usageBlock, "cacheReadTokens"),
+		ReasoningOutputTokens:    agentdata.UintField(usageBlock, "thinkingTokens"),
 	}
-	tokens = shared.ApplyTotalFallback(tokens, shared.UintField(usageBlock, "totalTokens"))
-	if !shared.NonZero(tokens) {
+	tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(usageBlock, "totalTokens"))
+	if !usageprovider.NonZero(tokens) {
 		return usage.Entry{}, false, nil
 	}
 
-	provider := normalizeDroidProvider(shared.StringField(settings, "providerLock"))
-	model := normalizeDroidModel(shared.StringField(settings, "model"))
+	provider := normalizeDroidProvider(agentdata.StringField(settings, "providerLock"))
+	model := normalizeDroidModel(agentdata.StringField(settings, "model"))
 	if model == "" {
 		model, _ = sidecarModel(path)
 	}
@@ -70,17 +72,17 @@ func parseSettingsFile(path string) (usage.Entry, bool, error) {
 		model = "unknown"
 	}
 
-	timestamp, ok := shared.ParseTimestamp(settings["providerLockTimestamp"])
+	timestamp, ok := agentdata.ParseTimestamp(settings["providerLockTimestamp"])
 	if !ok {
-		timestamp = shared.FileModifiedTime(path)
+		timestamp = agentdata.FileModifiedTime(path)
 	}
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".settings.json")
 	if sessionID == "" {
 		sessionID = "unknown"
 	}
-	entry := shared.BaseEntry(usage.ProviderDroid, timestamp, "droid", "Droid", sessionID, model, "Droid", tokens)
-	shared.SetSource(&entry, path, 1, 0, 0)
-	entry.ID = shared.StableEntryID(entry, sessionID)
+	entry := usageprovider.BaseEntry(usage.ProviderDroid, timestamp, "droid", "Droid", sessionID, model, "Droid", tokens)
+	usageprovider.SetSource(&entry, path, 1, 0, 0)
+	entry.ID = usageprovider.StableEntryID(entry, sessionID)
 	return entry, true, nil
 }
 

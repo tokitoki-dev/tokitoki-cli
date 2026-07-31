@@ -1,4 +1,6 @@
-package shared
+// Package agentdata reads the JSON, JSONL and on-disk layouts that local AI
+// agents write their logs in.
+package agentdata
 
 import (
 	"bufio"
@@ -9,7 +11,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -208,10 +209,10 @@ func UintValue(value any) uint64 {
 			return parsed
 		}
 		if parsed, err := strconv.ParseFloat(typed.String(), 64); err == nil {
-			return floatToUint(parsed)
+			return FloatToUint(parsed)
 		}
 	case float64:
-		return floatToUint(typed)
+		return FloatToUint(typed)
 	case int:
 		if typed > 0 {
 			return uint64(typed)
@@ -227,14 +228,14 @@ func UintValue(value any) uint64 {
 			return parsed
 		}
 		if parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
-			return floatToUint(parsed)
+			return FloatToUint(parsed)
 		}
 	}
 	return 0
 }
 
-func floatToUint(value float64) uint64 {
-	if !isFinite(value) || value <= 0 {
+func FloatToUint(value float64) uint64 {
+	if !IsFinite(value) || value <= 0 {
 		return 0
 	}
 	if value > float64(^uint64(0)) {
@@ -250,21 +251,6 @@ func UintField(object map[string]any, keys ...string) uint64 {
 		}
 	}
 	return 0
-}
-
-func floatValue(value any) (float64, bool) {
-	switch typed := value.(type) {
-	case json.Number:
-		parsed, err := strconv.ParseFloat(typed.String(), 64)
-		return parsed, err == nil && isFinite(parsed)
-	case float64:
-		return typed, isFinite(typed)
-	case string:
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
-		return parsed, err == nil && isFinite(parsed)
-	default:
-		return 0, false
-	}
 }
 
 func ParseTimestamp(value any) (time.Time, bool) {
@@ -302,7 +288,7 @@ func ParseTimestampString(raw string) (time.Time, bool) {
 }
 
 func TimestampFromFloat(value float64) (time.Time, bool) {
-	if !isFinite(value) || value <= 0 {
+	if !IsFinite(value) || value <= 0 {
 		return time.Time{}, false
 	}
 	if value < 100_000_000_000 {
@@ -311,7 +297,7 @@ func TimestampFromFloat(value float64) (time.Time, bool) {
 	return time.UnixMilli(int64(value)), true
 }
 
-func isFinite(value float64) bool {
+func IsFinite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
@@ -365,95 +351,6 @@ func FileModifiedTime(path string) time.Time {
 	return modified
 }
 
-func formatDate(timestamp time.Time) string {
-	return timestamp.In(time.Local).Format("2006-01-02")
-}
-
-func TotalUsage(tokens usage.TokenUsage) uint64 {
-	return tokens.InputTokens +
-		tokens.OutputTokens +
-		tokens.CacheCreationInputTokens +
-		tokens.CacheReadInputTokens +
-		tokens.CachedInputTokens +
-		tokens.ReasoningOutputTokens
-}
-
-func ApplyTotalFallback(tokens usage.TokenUsage, total uint64) usage.TokenUsage {
-	sum := TotalUsage(tokens)
-	if sum == 0 && total > 0 {
-		tokens.OutputTokens = total
-		tokens.TotalTokens = total
-		return tokens
-	}
-	if total > sum {
-		tokens.ReasoningOutputTokens += total - sum
-		tokens.TotalTokens = total
-		return tokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = sum
-	}
-	return tokens
-}
-
-func NonZero(tokens usage.TokenUsage) bool {
-	return TotalUsage(tokens) > 0 || tokens.TotalTokens > 0
-}
-
-func BaseEntry(provider usage.Provider, timestamp time.Time, project, projectPath, sessionID, model, client string, tokens usage.TokenUsage) usage.Entry {
-	return usage.Entry{
-		Provider:    provider,
-		Timestamp:   timestamp,
-		Date:        formatDate(timestamp),
-		Project:     project,
-		ProjectPath: projectPath,
-		SessionID:   sessionID,
-		Model:       model,
-		Language:    usage.UnknownLanguage,
-		OS:          usage.NormalizeOS(runtime.GOOS),
-		Client:      client,
-		Usage:       tokens,
-	}
-}
-
-func SetSource(entry *usage.Entry, source string, line int, start, end int64) {
-	entry.SourceFile = source
-	entry.SourceLine = line
-	entry.SourceStart = start
-	entry.SourceEnd = end
-}
-
-func StableEntryID(entry usage.Entry, extra ...string) string {
-	parts := []string{
-		string(entry.Provider),
-		entry.SourceFile,
-		strconv.Itoa(entry.SourceLine),
-		entry.Timestamp.Format(time.RFC3339Nano),
-		entry.Project,
-		entry.ProjectPath,
-		entry.SessionID,
-		entry.Model,
-		strconv.FormatUint(entry.Usage.InputTokens, 10),
-		strconv.FormatUint(entry.Usage.OutputTokens, 10),
-		strconv.FormatUint(entry.Usage.CacheCreationInputTokens, 10),
-		strconv.FormatUint(entry.Usage.CacheReadInputTokens, 10),
-		strconv.FormatUint(entry.Usage.CachedInputTokens, 10),
-		strconv.FormatUint(entry.Usage.ReasoningOutputTokens, 10),
-		strconv.FormatUint(entry.Usage.TotalTokens, 10),
-	}
-	parts = append(parts, extra...)
-	return usage.StableID(parts...)
-}
-
-func SortEntries(entries []usage.Entry) {
-	sort.Slice(entries, func(i, j int) bool {
-		if !entries[i].Timestamp.Equal(entries[j].Timestamp) {
-			return entries[i].Timestamp.Before(entries[j].Timestamp)
-		}
-		return entries[i].ID < entries[j].ID
-	})
-}
-
 func UniqueStrings(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -469,4 +366,14 @@ func UniqueStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func DecodeJSONObjectString(data string) map[string]any {
+	decoder := json.NewDecoder(bytes.NewReader([]byte(data)))
+	decoder.UseNumber()
+	var record map[string]any
+	if err := decoder.Decode(&record); err != nil {
+		return nil
+	}
+	return record
 }

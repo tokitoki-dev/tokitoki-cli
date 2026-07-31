@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -14,13 +14,13 @@ func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agents", "main", "sessions", "abc.jsonl")
-		shared.WriteFile(t, path,
+		providertest.WriteFile(t, path,
 			`{"type":"model_change","provider":"openai-codex","modelId":"gpt-5.2"}`+"\n"+
 				`{"type":"message","message":{"role":"assistant","usage":{"input":1660,"output":55,"cacheRead":108928},"timestamp":1769753935279}}`+"\n")
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderOpenClaw,
 		Model:     "[openclaw] gpt-5.2",
 		SessionID: "abc",

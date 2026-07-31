@@ -5,17 +5,19 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, path := range paths {
-		files = append(files, shared.CollectFiles(path, isSessionFile)...)
+		files = append(files, agentdata.CollectFiles(path, isSessionFile)...)
 	}
 	sort.Strings(files)
-	files = shared.FilterFiles(files, filter)
+	files = agentdata.FilterFiles(files, filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
@@ -25,7 +27,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		}
 		entries = append(entries, fileEntries...)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
@@ -40,7 +42,7 @@ func isSessionFile(path string) bool {
 }
 
 func parseSessionFile(path string) ([]usage.Entry, error) {
-	lines, err := shared.ReadJSONLines(path)
+	lines, err := agentdata.ReadJSONLines(path)
 	if err != nil {
 		return nil, err
 	}
@@ -51,70 +53,70 @@ func parseSessionFile(path string) ([]usage.Entry, error) {
 	for _, line := range lines {
 		record := line.Value
 		if isModelChange(record) {
-			source := shared.ObjectAt(record["data"])
+			source := agentdata.ObjectAt(record["data"])
 			if source == nil {
 				source = record
 			}
-			if model := shared.FirstStringField(source, "modelId", "model"); model != "" {
+			if model := agentdata.FirstStringField(source, "modelId", "model"); model != "" {
 				currentModel = model
 			}
-			if provider := shared.StringField(source, "provider"); provider != "" {
+			if provider := agentdata.StringField(source, "provider"); provider != "" {
 				currentProvider = provider
 			}
 			continue
 		}
-		if shared.StringField(record, "type") != "message" {
+		if agentdata.StringField(record, "type") != "message" {
 			continue
 		}
-		message := shared.ObjectAt(record["message"])
-		if shared.StringField(message, "role") != "assistant" {
+		message := agentdata.ObjectAt(record["message"])
+		if agentdata.StringField(message, "role") != "assistant" {
 			continue
 		}
-		usageBlock := shared.ObjectAt(message["usage"])
+		usageBlock := agentdata.ObjectAt(message["usage"])
 		if usageBlock == nil {
 			continue
 		}
-		timestamp, ok := shared.ParseTimestamp(message["timestamp"])
+		timestamp, ok := agentdata.ParseTimestamp(message["timestamp"])
 		if !ok {
-			timestamp, ok = shared.ParseTimestamp(record["timestamp"])
+			timestamp, ok = agentdata.ParseTimestamp(record["timestamp"])
 		}
 		if !ok {
-			timestamp = shared.FileModifiedTime(path)
+			timestamp = agentdata.FileModifiedTime(path)
 		}
-		model := shared.FirstStringField(message, "modelId", "model")
+		model := agentdata.FirstStringField(message, "modelId", "model")
 		if model == "" {
 			model = currentModel
 		}
 		if model == "" {
 			model = "unknown"
 		}
-		provider := shared.StringField(message, "provider")
+		provider := agentdata.StringField(message, "provider")
 		if provider == "" {
 			provider = currentProvider
 		}
 		tokens := usage.TokenUsage{
-			InputTokens:              shared.UintField(usageBlock, "input"),
-			OutputTokens:             shared.UintField(usageBlock, "output"),
-			CacheCreationInputTokens: shared.UintField(usageBlock, "cacheWrite"),
-			CacheReadInputTokens:     shared.UintField(usageBlock, "cacheRead"),
+			InputTokens:              agentdata.UintField(usageBlock, "input"),
+			OutputTokens:             agentdata.UintField(usageBlock, "output"),
+			CacheCreationInputTokens: agentdata.UintField(usageBlock, "cacheWrite"),
+			CacheReadInputTokens:     agentdata.UintField(usageBlock, "cacheRead"),
 		}
-		tokens = shared.ApplyTotalFallback(tokens, shared.UintField(usageBlock, "totalTokens"))
-		if !shared.NonZero(tokens) {
+		tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(usageBlock, "totalTokens"))
+		if !usageprovider.NonZero(tokens) {
 			continue
 		}
-		entry := shared.BaseEntry(usage.ProviderOpenClaw, timestamp, "openclaw", "OpenClaw", sessionID, "[openclaw] "+model, "OpenClaw", tokens)
-		shared.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = shared.StableEntryID(entry, provider)
+		entry := usageprovider.BaseEntry(usage.ProviderOpenClaw, timestamp, "openclaw", "OpenClaw", sessionID, "[openclaw] "+model, "OpenClaw", tokens)
+		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
+		entry.ID = usageprovider.StableEntryID(entry, provider)
 		entries = append(entries, entry)
 	}
 	return entries, nil
 }
 
 func isModelChange(record map[string]any) bool {
-	if shared.StringField(record, "type") == "model_change" {
+	if agentdata.StringField(record, "type") == "model_change" {
 		return true
 	}
-	return shared.StringField(record, "type") == "custom" && shared.StringField(record, "customType") == "model-snapshot"
+	return agentdata.StringField(record, "type") == "custom" && agentdata.StringField(record, "customType") == "model-snapshot"
 }
 
 func openClawSessionID(path string) string {

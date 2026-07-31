@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -28,14 +31,14 @@ func loadEntries(paths []string) ([]usage.Entry, error) {
 			entries = append(entries, entry)
 		}
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
 func dbPaths(paths []string) []string {
 	dbPaths := make([]string, 0)
 	for _, root := range paths {
-		if shared.ExistingSQLiteFile(root) {
+		if agentdb.ExistingSQLiteFile(root) {
 			dbPaths = append(dbPaths, root)
 			continue
 		}
@@ -44,17 +47,17 @@ func dbPaths(paths []string) []string {
 			filepath.Join(root, "sessions", "sessions.db"),
 			filepath.Join(root, "data", "sessions", "sessions.db"),
 		} {
-			if shared.ExistingSQLiteFile(candidate) {
+			if agentdb.ExistingSQLiteFile(candidate) {
 				dbPaths = append(dbPaths, candidate)
 			}
 		}
 	}
 	sort.Strings(dbPaths)
-	return shared.UniqueStrings(dbPaths)
+	return agentdata.UniqueStrings(dbPaths)
 }
 
 func loadDatabase(path string) ([]usage.Entry, error) {
-	db, err := shared.OpenSQLite(path)
+	db, err := agentdb.OpenSQLite(path)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +78,7 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 	entries := make([]usage.Entry, 0)
 	for rows.Next() {
 		var id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput any
-		if !shared.ScanAny(rows, &id, &modelConfig, &providerName, &createdAt, &total, &input, &output, &accumulatedTotal, &accumulatedInput, &accumulatedOutput) {
+		if !agentdb.ScanAny(rows, &id, &modelConfig, &providerName, &createdAt, &total, &input, &output, &accumulatedTotal, &accumulatedInput, &accumulatedOutput) {
 			continue
 		}
 		if entry, ok := rowEntry(path, id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput); ok {
@@ -86,18 +89,18 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 }
 
 func rowEntry(path string, id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput any) (usage.Entry, bool) {
-	sessionID := shared.SqlString(id)
-	model := modelName(shared.SqlString(modelConfig))
+	sessionID := agentdb.SqlString(id)
+	model := modelName(agentdb.SqlString(modelConfig))
 	if sessionID == "" || model == "" {
 		return usage.Entry{}, false
 	}
-	timestamp, ok := timestamp(shared.SqlString(createdAt))
+	timestamp, ok := timestamp(agentdb.SqlString(createdAt))
 	if !ok {
 		return usage.Entry{}, false
 	}
-	inputTokens := firstPositive(shared.SqlUint(accumulatedInput), shared.SqlUint(input))
-	outputTokens := firstPositive(shared.SqlUint(accumulatedOutput), shared.SqlUint(output))
-	totalTokens := firstPositive(shared.SqlUint(accumulatedTotal), shared.SqlUint(total), inputTokens+outputTokens)
+	inputTokens := firstPositive(agentdb.SqlUint(accumulatedInput), agentdb.SqlUint(input))
+	outputTokens := firstPositive(agentdb.SqlUint(accumulatedOutput), agentdb.SqlUint(output))
+	totalTokens := firstPositive(agentdb.SqlUint(accumulatedTotal), agentdb.SqlUint(total), inputTokens+outputTokens)
 	tokens := usage.TokenUsage{
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
@@ -105,19 +108,19 @@ func rowEntry(path string, id, modelConfig, providerName, createdAt, total, inpu
 	if totalTokens > inputTokens+outputTokens {
 		tokens.ReasoningOutputTokens = totalTokens - inputTokens - outputTokens
 	}
-	tokens.TotalTokens = shared.TotalUsage(tokens)
-	if !shared.NonZero(tokens) {
+	tokens.TotalTokens = usageprovider.TotalUsage(tokens)
+	if !usageprovider.NonZero(tokens) {
 		return usage.Entry{}, false
 	}
-	entry := shared.BaseEntry(usage.ProviderGoose, timestamp, "goose", "Goose", sessionID, model, "Goose", tokens)
-	shared.SetSource(&entry, path, 0, 0, 0)
-	entry.ID = shared.StableEntryID(entry, "goose:"+sessionID+":"+shared.SqlString(providerName))
+	entry := usageprovider.BaseEntry(usage.ProviderGoose, timestamp, "goose", "Goose", sessionID, model, "Goose", tokens)
+	usageprovider.SetSource(&entry, path, 0, 0, 0)
+	entry.ID = usageprovider.StableEntryID(entry, "goose:"+sessionID+":"+agentdb.SqlString(providerName))
 	return entry, true
 }
 
 func modelName(config string) string {
-	record := shared.DecodeJSONObjectString(config)
-	return shared.StringField(record, "model_name")
+	record := agentdata.DecodeJSONObjectString(config)
+	return agentdata.StringField(record, "model_name")
 }
 
 func timestamp(value string) (time.Time, bool) {
@@ -125,14 +128,14 @@ func timestamp(value string) (time.Time, bool) {
 	if value == "" {
 		return time.Time{}, false
 	}
-	if timestamp, ok := shared.ParseTimestampString(value); ok {
+	if timestamp, ok := agentdata.ParseTimestampString(value); ok {
 		return timestamp, true
 	}
 	if len(value) == 19 && value[4] == '-' && value[7] == '-' && (value[10] == ' ' || value[10] == 'T') {
-		return shared.ParseTimestampString(value[:10] + "T" + value[11:] + "Z")
+		return agentdata.ParseTimestampString(value[:10] + "T" + value[11:] + "Z")
 	}
 	if len(value) == 10 && value[4] == '-' && value[7] == '-' {
-		return shared.ParseTimestampString(value + "T00:00:00Z")
+		return agentdata.ParseTimestampString(value + "T00:00:00Z")
 	}
 	return time.Time{}, false
 }

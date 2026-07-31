@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 )
 
 // TestFileFilterSkipsRejectedFiles proves the scanner can skip source files
@@ -12,7 +12,7 @@ import (
 func TestFileFilterSkipsRejectedFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "copilot.jsonl")
-	shared.WriteFile(t, path, `{"type":"span","traceId":"trace-1","spanId":"span-1","name":"chat claude-sonnet-4","endTime":[1775934264,967317833],"attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"claude-sonnet-4","gen_ai.conversation.id":"conv-1","gen_ai.usage.input_tokens":19452,"gen_ai.usage.output_tokens":281}}}`+"\n")
+	providertest.WriteFile(t, path, `{"type":"span","traceId":"trace-1","spanId":"span-1","name":"chat claude-sonnet-4","endTime":[1775934264,967317833],"attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"claude-sonnet-4","gen_ai.conversation.id":"conv-1","gen_ai.usage.input_tokens":19452,"gen_ai.usage.output_tokens":281}}}`+"\n")
 
 	rejected := make([]string, 0)
 	provider := Provider{}.WithPaths([]string{dir}).(Provider).

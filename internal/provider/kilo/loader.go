@@ -4,12 +4,15 @@ import (
 	"errors"
 	"os"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadEntries(paths []string) ([]usage.Entry, error) {
-	dbPaths := shared.SqliteDBPaths(paths, "kilo.db", nil)
+	dbPaths := agentdb.SqliteDBPaths(paths, "kilo.db", nil)
 	entries := make([]usage.Entry, 0)
 	for _, dbPath := range dbPaths {
 		dbEntries, err := loadDatabase(dbPath)
@@ -18,12 +21,12 @@ func loadEntries(paths []string) ([]usage.Entry, error) {
 		}
 		entries = append(entries, dbEntries...)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
 func loadDatabase(path string) ([]usage.Entry, error) {
-	db, err := shared.OpenSQLite(path)
+	db, err := agentdb.OpenSQLite(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -52,38 +55,38 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 }
 
 func messageEntry(dbPath, rowID, rowSessionID, data string) (usage.Entry, bool) {
-	record := shared.DecodeJSONObjectString(data)
-	if record == nil || shared.StringField(record, "role") != "assistant" {
+	record := agentdata.DecodeJSONObjectString(data)
+	if record == nil || agentdata.StringField(record, "role") != "assistant" {
 		return usage.Entry{}, false
 	}
-	tokenBlock := shared.ObjectAt(record["tokens"])
+	tokenBlock := agentdata.ObjectAt(record["tokens"])
 	if tokenBlock == nil {
 		return usage.Entry{}, false
 	}
-	cache := shared.ObjectAt(tokenBlock["cache"])
+	cache := agentdata.ObjectAt(tokenBlock["cache"])
 	tokens := usage.TokenUsage{
-		InputTokens:              shared.UintField(tokenBlock, "input"),
-		OutputTokens:             shared.UintField(tokenBlock, "output"),
-		CacheCreationInputTokens: shared.UintField(cache, "write"),
-		CacheReadInputTokens:     shared.UintField(cache, "read"),
-		ReasoningOutputTokens:    shared.UintField(tokenBlock, "reasoning"),
+		InputTokens:              agentdata.UintField(tokenBlock, "input"),
+		OutputTokens:             agentdata.UintField(tokenBlock, "output"),
+		CacheCreationInputTokens: agentdata.UintField(cache, "write"),
+		CacheReadInputTokens:     agentdata.UintField(cache, "read"),
+		ReasoningOutputTokens:    agentdata.UintField(tokenBlock, "reasoning"),
 	}
-	tokens = shared.ApplyTotalFallback(tokens, shared.UintField(tokenBlock, "total"))
-	if !shared.NonZero(tokens) {
+	tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(tokenBlock, "total"))
+	if !usageprovider.NonZero(tokens) {
 		return usage.Entry{}, false
 	}
-	model := shared.StringField(record, "modelID")
+	model := agentdata.StringField(record, "modelID")
 	if model == "" {
 		return usage.Entry{}, false
 	}
-	timestamp, ok := shared.ParseTimestamp(shared.ObjectAt(record["time"])["created"])
+	timestamp, ok := agentdata.ParseTimestamp(agentdata.ObjectAt(record["time"])["created"])
 	if !ok {
 		return usage.Entry{}, false
 	}
-	sessionID := shared.FirstNonEmpty(shared.StringField(record, "session_id"), rowSessionID, "unknown")
-	messageID := shared.FirstNonEmpty(shared.StringField(record, "id"), rowID)
-	entry := shared.BaseEntry(usage.ProviderKilo, timestamp, "kilo", "Kilo", sessionID, model, "Kilo", tokens)
-	shared.SetSource(&entry, dbPath, 0, 0, 0)
-	entry.ID = shared.StableEntryID(entry, messageID)
+	sessionID := agentdata.FirstNonEmpty(agentdata.StringField(record, "session_id"), rowSessionID, "unknown")
+	messageID := agentdata.FirstNonEmpty(agentdata.StringField(record, "id"), rowID)
+	entry := usageprovider.BaseEntry(usage.ProviderKilo, timestamp, "kilo", "Kilo", sessionID, model, "Kilo", tokens)
+	usageprovider.SetSource(&entry, dbPath, 0, 0, 0)
+	entry.ID = usageprovider.StableEntryID(entry, messageID)
 	return entry, true
 }

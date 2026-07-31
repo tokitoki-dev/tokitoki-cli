@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -14,10 +14,10 @@ func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "kilo.db")
-		db := shared.OpenTestSQLite(t, dbPath)
+		db := providertest.OpenTestSQLite(t, dbPath)
 		defer db.Close()
-		shared.ExecSQL(t, db, "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT)")
-		shared.ExecSQL(t, db, `INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)`,
+		providertest.ExecSQL(t, db, "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT)")
+		providertest.ExecSQL(t, db, `INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)`,
 			"row-1",
 			"session-a",
 			`{"id":"msg-1","role":"assistant","providerID":"anthropic","modelID":"claude-sonnet-4-20250514","time":{"created":1767312000000},"tokens":{"input":100,"output":50,"reasoning":5,"cache":{"read":10,"write":20}}}`,
@@ -25,7 +25,7 @@ func TestLoadsEntry(t *testing.T) {
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderKilo,
 		Model:     "claude-sonnet-4-20250514",
 		SessionID: "session-a",

@@ -1,12 +1,12 @@
 package opencode
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
 // openCodeDB builds a database shaped like the one OpenCode writes: a session
@@ -26,7 +26,7 @@ func writeOpenCodeDB(t *testing.T, sessions, messages, parts []openCodeRow) stri
 
 func writeOpenCodeDBAt(t *testing.T, path string, sessions, messages, parts []openCodeRow) string {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := agentdb.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestOpenCodeBillsRunningInputAndPerTurnOutput(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2", len(entries))
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 
 	first, second := entries[0], entries[1]
 	if first.Usage.InputTokens != 1000 || first.Usage.OutputTokens != 50 || first.Usage.ReasoningOutputTokens != 20 {
@@ -121,7 +121,7 @@ func TestOpenCodeIgnoresZeroTokenMessages(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2 (the user turn bills nothing)", len(entries))
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	if got := entries[1].Usage.InputTokens; got != 200 {
 		t.Fatalf("input after a user turn = %d, want 200 (the user turn must not reset the counter)", got)
 	}
@@ -141,7 +141,7 @@ func TestOpenCodeRestartsBillingAfterCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2", len(entries))
 	}
@@ -165,7 +165,7 @@ func TestOpenCodeProjectComesFromMessageCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	if len(entries) != 3 {
 		t.Fatalf("len(entries) = %d, want 3", len(entries))
 	}

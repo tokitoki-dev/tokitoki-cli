@@ -1,19 +1,18 @@
 package droid
 
 import (
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
 
 // Provider loads Droid usage entries.
-type Provider struct{ shared.Base }
+type Provider struct{ usageprovider.Base }
 
 var _ usageprovider.Provider = Provider{}
 
 // WithPaths returns a Droid provider configured with data roots.
 func (p Provider) WithPaths(paths []string) usageprovider.Provider {
-	p.Base = shared.NewBase(paths)
+	p.Base = usageprovider.NewBase(paths)
 	return p
 }
 
@@ -33,5 +32,5 @@ func (p Provider) Entries() ([]usage.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return shared.SortEntriesByTimestampDesc(entries), nil
+	return usageprovider.SortEntriesByTimestampDesc(entries), nil
 }

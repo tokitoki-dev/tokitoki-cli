@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -13,15 +13,15 @@ import (
 func TestLoadsEntry(t *testing.T) {
 	entries, err := func() ([]usage.Entry, error) {
 		dir := t.TempDir()
-		shared.WriteFile(t, filepath.Join(dir, "config.json"), `{"model":"kimi-k2"}`)
+		providertest.WriteFile(t, filepath.Join(dir, "config.json"), `{"model":"kimi-k2"}`)
 		path := filepath.Join(dir, "sessions", "group", "session-a", "wire.jsonl")
-		shared.WriteFile(t, path,
+		providertest.WriteFile(t, path,
 			`{"type":"metadata","protocol_version":"1.3"}`+"\n"+
 				`{"timestamp":1770983427.123,"message":{"type":"StatusUpdate","payload":{"token_usage":{"input_other":100,"output":50,"input_cache_read":10,"input_cache_creation":20},"message_id":"msg-1"}}}`+"\n")
 		return Provider{}.WithPaths([]string{dir}).Entries()
 	}()
 
-	shared.AssertSingleEntry(t, entries, err, shared.WantEntry{
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
 		Provider:  usage.ProviderKimi,
 		Model:     "kimi-k2",
 		SessionID: "session-a",

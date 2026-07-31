@@ -5,17 +5,19 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, path := range paths {
-		files = append(files, shared.CollectExt(path, ".jsonl")...)
+		files = append(files, agentdata.CollectExt(path, ".jsonl")...)
 	}
 	sort.Strings(files)
-	files = shared.FilterFiles(files, filter)
+	files = agentdata.FilterFiles(files, filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
@@ -25,12 +27,12 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		}
 		entries = append(entries, fileEntries...)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
 func parseSessionFile(path string) ([]usage.Entry, error) {
-	lines, err := shared.ReadJSONLines(path, `"usage"`, `"message"`)
+	lines, err := agentdata.ReadJSONLines(path, `"usage"`, `"message"`)
 	if err != nil {
 		return nil, err
 	}
@@ -38,38 +40,38 @@ func parseSessionFile(path string) ([]usage.Entry, error) {
 	sessionID := sessionID(path)
 	entries := make([]usage.Entry, 0)
 	for _, line := range lines {
-		if typ := shared.StringField(line.Value, "type"); typ != "" && typ != "message" {
+		if typ := agentdata.StringField(line.Value, "type"); typ != "" && typ != "message" {
 			continue
 		}
-		message := shared.ObjectAt(line.Value["message"])
-		if shared.StringField(message, "role") != "assistant" {
+		message := agentdata.ObjectAt(line.Value["message"])
+		if agentdata.StringField(message, "role") != "assistant" {
 			continue
 		}
-		usageBlock := shared.ObjectAt(message["usage"])
+		usageBlock := agentdata.ObjectAt(message["usage"])
 		if usageBlock == nil {
 			continue
 		}
-		timestamp, ok := shared.ParseTimestamp(line.Value["timestamp"])
+		timestamp, ok := agentdata.ParseTimestamp(line.Value["timestamp"])
 		if !ok {
 			continue
 		}
 		tokens := usage.TokenUsage{
-			InputTokens:              shared.UintField(usageBlock, "input"),
-			OutputTokens:             shared.UintField(usageBlock, "output"),
-			CacheCreationInputTokens: shared.UintField(usageBlock, "cacheWrite"),
-			CacheReadInputTokens:     shared.UintField(usageBlock, "cacheRead"),
+			InputTokens:              agentdata.UintField(usageBlock, "input"),
+			OutputTokens:             agentdata.UintField(usageBlock, "output"),
+			CacheCreationInputTokens: agentdata.UintField(usageBlock, "cacheWrite"),
+			CacheReadInputTokens:     agentdata.UintField(usageBlock, "cacheRead"),
 		}
-		tokens = shared.ApplyTotalFallback(tokens, shared.UintField(usageBlock, "totalTokens"))
-		if !shared.NonZero(tokens) {
+		tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(usageBlock, "totalTokens"))
+		if !usageprovider.NonZero(tokens) {
 			continue
 		}
-		model := shared.StringField(message, "model")
+		model := agentdata.StringField(message, "model")
 		if model != "" {
 			model = "[pi] " + model
 		}
-		entry := shared.BaseEntry(usage.ProviderPi, timestamp, project, project, sessionID, model, "pi-agent", tokens)
-		shared.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = shared.StableEntryID(entry)
+		entry := usageprovider.BaseEntry(usage.ProviderPi, timestamp, project, project, sessionID, model, "pi-agent", tokens)
+		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
+		entry.ID = usageprovider.StableEntryID(entry)
 		entries = append(entries, entry)
 	}
 	return entries, nil

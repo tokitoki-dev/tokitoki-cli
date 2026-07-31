@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -29,7 +31,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		files = append(files, collectChatFiles(root)...)
 	}
 	sort.Strings(files)
-	files = shared.FilterFiles(shared.UniqueStrings(files), filter)
+	files = agentdata.FilterFiles(agentdata.UniqueStrings(files), filter)
 
 	entriesByID := make(map[string]usage.Entry)
 	for _, file := range files {
@@ -45,7 +47,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 	for _, entry := range entriesByID {
 		entries = append(entries, entry)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
@@ -64,7 +66,7 @@ func collectChatFiles(root string) []string {
 	if filepath.Base(root) != "projects" {
 		projectRoot = filepath.Join(root, "projects")
 	}
-	return shared.CollectFiles(projectRoot, func(path string) bool {
+	return agentdata.CollectFiles(projectRoot, func(path string) bool {
 		return filepath.Base(path) == "chat-messages.json"
 	})
 }
@@ -82,10 +84,10 @@ func parseChatFile(path string) ([]usage.Entry, error) {
 	}
 	sessionID, chatID := sessionContext(path)
 	chatTimestamp, hasChatTimestamp := parseChatTimestamp(chatID)
-	fileTimestamp := shared.FileModifiedTime(path)
+	fileTimestamp := agentdata.FileModifiedTime(path)
 	entries := make([]usage.Entry, 0)
 	for index, raw := range messages {
-		message := shared.ObjectAt(raw)
+		message := agentdata.ObjectAt(raw)
 		if !isAssistant(message) {
 			continue
 		}
@@ -98,9 +100,9 @@ func parseChatFile(path string) ([]usage.Entry, error) {
 			ReasoningOutputTokens:    parsedUsage.extraTotalTokens,
 		}
 		if tokens.TotalTokens == 0 {
-			tokens.TotalTokens = shared.TotalUsage(tokens)
+			tokens.TotalTokens = usageprovider.TotalUsage(tokens)
 		}
-		if !shared.NonZero(tokens) {
+		if !usageprovider.NonZero(tokens) {
 			continue
 		}
 		model := parsedUsage.model
@@ -115,9 +117,9 @@ func parseChatFile(path string) ([]usage.Entry, error) {
 		if !ok {
 			timestamp = fileTimestamp
 		}
-		entry := shared.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens)
-		shared.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = shared.StableEntryID(entry, dedupKey(message, sessionID, timestamp, model, tokens, index))
+		entry := usageprovider.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens)
+		usageprovider.SetSource(&entry, path, index+1, 0, 0)
+		entry.ID = usageprovider.StableEntryID(entry, dedupKey(message, sessionID, timestamp, model, tokens, index))
 		entries = append(entries, entry)
 	}
 	return entries, nil
@@ -142,17 +144,17 @@ func sessionContext(path string) (string, string) {
 }
 
 func isAssistant(message map[string]any) bool {
-	role := shared.FirstStringField(message, "variant", "role")
+	role := agentdata.FirstStringField(message, "variant", "role")
 	return role == "ai" || role == "agent" || role == "assistant"
 }
 
 func extractUsage(message map[string]any) tokenUsage {
 	var usage tokenUsage
-	metadata := shared.ObjectAt(message["metadata"])
+	metadata := agentdata.ObjectAt(message["metadata"])
 	if metadata != nil {
-		usage.model = shared.StringField(metadata, "model")
+		usage.model = agentdata.StringField(metadata, "model")
 		mergeCodebuffUsage(&usage, parseUsageObject(metadata["usage"]))
-		mergeCodebuffUsage(&usage, parseUsageObject(shared.ObjectAt(metadata["codebuff"])["usage"]))
+		mergeCodebuffUsage(&usage, parseUsageObject(agentdata.ObjectAt(metadata["codebuff"])["usage"]))
 		if runState := runStateUsage(metadata); runState != nil {
 			mergeCodebuffUsage(&usage, *runState)
 		}
@@ -161,27 +163,27 @@ func extractUsage(message map[string]any) tokenUsage {
 }
 
 func runStateUsage(metadata map[string]any) *tokenUsage {
-	history := shared.ArrayAt(shared.ObjectAt(shared.ObjectAt(shared.ObjectAt(metadata["runState"])["sessionState"])["mainAgentState"])["messageHistory"])
+	history := agentdata.ArrayAt(agentdata.ObjectAt(agentdata.ObjectAt(agentdata.ObjectAt(metadata["runState"])["sessionState"])["mainAgentState"])["messageHistory"])
 	if len(history) == 0 {
 		return nil
 	}
 	var usage tokenUsage
 	found := false
 	for i := len(history) - 1; i >= 0; i-- {
-		entry := shared.ObjectAt(history[i])
-		if shared.StringField(entry, "role") != "assistant" {
+		entry := agentdata.ObjectAt(history[i])
+		if agentdata.StringField(entry, "role") != "assistant" {
 			continue
 		}
-		providerOptions := shared.ObjectAt(entry["providerOptions"])
+		providerOptions := agentdata.ObjectAt(entry["providerOptions"])
 		if providerOptions == nil {
 			continue
 		}
 		entryUsage := parseUsageObject(providerOptions["usage"])
-		codebuff := shared.ObjectAt(providerOptions["codebuff"])
+		codebuff := agentdata.ObjectAt(providerOptions["codebuff"])
 		if codebuff != nil {
 			mergeCodebuffUsage(&entryUsage, parseUsageObject(codebuff["usage"]))
 			if entryUsage.model == "" {
-				entryUsage.model = shared.StringField(codebuff, "model")
+				entryUsage.model = agentdata.StringField(codebuff, "model")
 			}
 		}
 		if usageHasTokens(entryUsage) || entryUsage.model != "" {
@@ -196,26 +198,26 @@ func runStateUsage(metadata map[string]any) *tokenUsage {
 }
 
 func parseUsageObject(value any) tokenUsage {
-	record := shared.ObjectAt(value)
+	record := agentdata.ObjectAt(value)
 	if record == nil {
 		return tokenUsage{}
 	}
 	parsed := tokenUsage{
-		model:                    shared.StringField(record, "model"),
+		model:                    agentdata.StringField(record, "model"),
 		inputTokens:              firstUint(record, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens"),
 		outputTokens:             firstUint(record, "outputTokens", "output_tokens", "completionTokens", "completion_tokens"),
 		cacheReadInputTokens:     firstUint(record, "cacheReadInputTokens", "cache_read_input_tokens"),
 		cacheCreationInputTokens: firstUint(record, "cacheCreationInputTokens", "cache_creation_input_tokens", "cacheCreationTokens", "cache_creation_tokens", "cachedTokensCreated", "cached_tokens_created"),
 	}
-	parsed.cacheReadInputTokens = maxUint64(parsed.cacheReadInputTokens, firstUint(shared.ObjectAt(record["promptTokensDetails"]), "cachedTokens"))
-	parsed.cacheReadInputTokens = maxUint64(parsed.cacheReadInputTokens, firstUint(shared.ObjectAt(record["prompt_tokens_details"]), "cached_tokens"))
+	parsed.cacheReadInputTokens = maxUint64(parsed.cacheReadInputTokens, firstUint(agentdata.ObjectAt(record["promptTokensDetails"]), "cachedTokens"))
+	parsed.cacheReadInputTokens = maxUint64(parsed.cacheReadInputTokens, firstUint(agentdata.ObjectAt(record["prompt_tokens_details"]), "cached_tokens"))
 	tokens := usage.TokenUsage{
 		InputTokens:              parsed.inputTokens,
 		OutputTokens:             parsed.outputTokens,
 		CacheCreationInputTokens: parsed.cacheCreationInputTokens,
 		CacheReadInputTokens:     parsed.cacheReadInputTokens,
 	}
-	tokens = shared.ApplyTotalFallback(tokens, firstUint(record, "totalTokens", "total_tokens", "total"))
+	tokens = usageprovider.ApplyTotalFallback(tokens, firstUint(record, "totalTokens", "total_tokens", "total"))
 	parsed.inputTokens = tokens.InputTokens
 	parsed.outputTokens = tokens.OutputTokens
 	parsed.cacheCreationInputTokens = tokens.CacheCreationInputTokens
@@ -250,13 +252,13 @@ func usageHasTokens(value tokenUsage) bool {
 }
 
 func messageTimestamp(message map[string]any) (time.Time, bool) {
-	if timestamp, ok := shared.ParseTimestamp(message["timestamp"]); ok {
+	if timestamp, ok := agentdata.ParseTimestamp(message["timestamp"]); ok {
 		return timestamp, true
 	}
-	if timestamp, ok := shared.ParseTimestamp(message["createdAt"]); ok {
+	if timestamp, ok := agentdata.ParseTimestamp(message["createdAt"]); ok {
 		return timestamp, true
 	}
-	return shared.ParseTimestamp(shared.ObjectAt(message["metadata"])["timestamp"])
+	return agentdata.ParseTimestamp(agentdata.ObjectAt(message["metadata"])["timestamp"])
 }
 
 func parseChatTimestamp(chatID string) (time.Time, bool) {
@@ -269,21 +271,21 @@ func parseChatTimestamp(chatID string) (time.Time, bool) {
 			clock = clock[:index] + ":" + clock[index+1:]
 		}
 	}
-	return shared.ParseTimestampString(date + "T" + clock)
+	return agentdata.ParseTimestampString(date + "T" + clock)
 }
 
 func dedupKey(message map[string]any, sessionID string, timestamp time.Time, model string, tokens usage.TokenUsage, index int) string {
-	if id := shared.StringField(message, "id"); id != "" {
+	if id := agentdata.StringField(message, "id"); id != "" {
 		return "codebuff:" + sessionID + ":" + id
 	}
-	return shared.StableEntryID(shared.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens), strconv.Itoa(index))
+	return usageprovider.StableEntryID(usageprovider.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens), strconv.Itoa(index))
 }
 
 func firstUint(record map[string]any, keys ...string) uint64 {
 	if record == nil {
 		return 0
 	}
-	return shared.UintField(record, keys...)
+	return agentdata.UintField(record, keys...)
 }
 
 func maxUint64(a, b uint64) uint64 {

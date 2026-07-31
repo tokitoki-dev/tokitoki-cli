@@ -7,7 +7,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/shared"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
+
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -20,13 +22,13 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 			}
 			continue
 		}
-		files = append(files, shared.CollectExt(filepath.Join(path, "threads"), ".json")...)
+		files = append(files, agentdata.CollectExt(filepath.Join(path, "threads"), ".json")...)
 		if filepath.Base(path) == "threads" {
-			files = append(files, shared.CollectExt(path, ".json")...)
+			files = append(files, agentdata.CollectExt(path, ".json")...)
 		}
 	}
 	sort.Strings(files)
-	files = shared.FilterFiles(shared.UniqueStrings(files), filter)
+	files = agentdata.FilterFiles(agentdata.UniqueStrings(files), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
@@ -36,22 +38,22 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		}
 		entries = append(entries, fileEntries...)
 	}
-	shared.SortEntries(entries)
+	usageprovider.SortEntries(entries)
 	return entries, nil
 }
 
 func parseThreadFile(path string) ([]usage.Entry, error) {
-	thread, err := shared.ReadJSONObject(path)
+	thread, err := agentdata.ReadJSONObject(path)
 	if err != nil || thread == nil {
 		return nil, err
 	}
-	threadID := shared.StringField(thread, "id")
+	threadID := agentdata.StringField(thread, "id")
 	if threadID == "" {
 		return nil, nil
 	}
-	messages := shared.ArrayAt(thread["messages"])
-	if ledger := shared.ObjectAt(thread["usageLedger"]); ledger != nil {
-		if events := shared.ArrayAt(ledger["events"]); len(events) > 0 {
+	messages := agentdata.ArrayAt(thread["messages"])
+	if ledger := agentdata.ObjectAt(thread["usageLedger"]); ledger != nil {
+		if events := agentdata.ArrayAt(ledger["events"]); len(events) > 0 {
 			return ledgerEntries(path, threadID, messages, events), nil
 		}
 	}
@@ -62,37 +64,37 @@ func ledgerEntries(path, threadID string, messages []any, events []any) []usage.
 	cacheTokens := cacheTokens(messages)
 	entries := make([]usage.Entry, 0)
 	for index, raw := range events {
-		event := shared.ObjectAt(raw)
+		event := agentdata.ObjectAt(raw)
 		if event == nil {
 			continue
 		}
-		timestamp, ok := shared.ParseTimestamp(event["timestamp"])
+		timestamp, ok := agentdata.ParseTimestamp(event["timestamp"])
 		if !ok {
 			continue
 		}
-		model := shared.StringField(event, "model")
+		model := agentdata.StringField(event, "model")
 		if model == "" {
 			continue
 		}
-		tokenBlock := shared.ObjectAt(event["tokens"])
+		tokenBlock := agentdata.ObjectAt(event["tokens"])
 		if tokenBlock == nil {
 			continue
 		}
 		cache := cacheTokens[int64Value(event["toMessageId"])]
 		tokens := usage.TokenUsage{
-			InputTokens:              shared.UintField(tokenBlock, "input"),
-			OutputTokens:             shared.UintField(tokenBlock, "output"),
+			InputTokens:              agentdata.UintField(tokenBlock, "input"),
+			OutputTokens:             agentdata.UintField(tokenBlock, "output"),
 			CacheCreationInputTokens: cache.cacheCreation,
 			CacheReadInputTokens:     cache.cacheRead,
 		}
-		tokens = shared.ApplyTotalFallback(tokens, shared.UintField(tokenBlock, "total"))
-		if !shared.NonZero(tokens) {
+		tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(tokenBlock, "total"))
+		if !usageprovider.NonZero(tokens) {
 			continue
 		}
-		messageID := shared.StringValue(event["id"])
-		entry := shared.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
-		shared.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = shared.StableEntryID(entry, messageID)
+		messageID := agentdata.StringValue(event["id"])
+		entry := usageprovider.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
+		usageprovider.SetSource(&entry, path, index+1, 0, 0)
+		entry.ID = usageprovider.StableEntryID(entry, messageID)
 		entries = append(entries, entry)
 	}
 	return entries
@@ -101,42 +103,42 @@ func ledgerEntries(path, threadID string, messages []any, events []any) []usage.
 func messageEntries(path, threadID string, messages []any) []usage.Entry {
 	entries := make([]usage.Entry, 0)
 	for index, raw := range messages {
-		message := shared.ObjectAt(raw)
-		if message == nil || shared.StringValue(message["role"]) != "assistant" {
+		message := agentdata.ObjectAt(raw)
+		if message == nil || agentdata.StringValue(message["role"]) != "assistant" {
 			continue
 		}
-		usageBlock := shared.ObjectAt(message["usage"])
+		usageBlock := agentdata.ObjectAt(message["usage"])
 		if usageBlock == nil {
 			continue
 		}
-		timestamp, ok := shared.ParseTimestamp(usageBlock["timestamp"])
+		timestamp, ok := agentdata.ParseTimestamp(usageBlock["timestamp"])
 		if !ok {
-			timestamp, ok = shared.ParseTimestamp(message["timestamp"])
+			timestamp, ok = agentdata.ParseTimestamp(message["timestamp"])
 		}
 		if !ok {
 			continue
 		}
-		model := shared.StringField(usageBlock, "model")
+		model := agentdata.StringField(usageBlock, "model")
 		if model == "" {
-			model = shared.StringValue(message["model"])
+			model = agentdata.StringValue(message["model"])
 		}
 		if model == "" {
 			continue
 		}
 		tokens := usage.TokenUsage{
-			InputTokens:              shared.UintField(usageBlock, "inputTokens"),
-			OutputTokens:             shared.UintField(usageBlock, "outputTokens"),
-			CacheCreationInputTokens: shared.UintField(usageBlock, "cacheCreationInputTokens"),
-			CacheReadInputTokens:     shared.UintField(usageBlock, "cacheReadInputTokens"),
+			InputTokens:              agentdata.UintField(usageBlock, "inputTokens"),
+			OutputTokens:             agentdata.UintField(usageBlock, "outputTokens"),
+			CacheCreationInputTokens: agentdata.UintField(usageBlock, "cacheCreationInputTokens"),
+			CacheReadInputTokens:     agentdata.UintField(usageBlock, "cacheReadInputTokens"),
 		}
-		tokens = shared.ApplyTotalFallback(tokens, shared.UintField(usageBlock, "totalTokens"))
-		if !shared.NonZero(tokens) {
+		tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(usageBlock, "totalTokens"))
+		if !usageprovider.NonZero(tokens) {
 			continue
 		}
-		messageID := shared.StringValue(message["messageId"])
-		entry := shared.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
-		shared.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = shared.StableEntryID(entry, messageID)
+		messageID := agentdata.StringValue(message["messageId"])
+		entry := usageprovider.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
+		usageprovider.SetSource(&entry, path, index+1, 0, 0)
+		entry.ID = usageprovider.StableEntryID(entry, messageID)
 		entries = append(entries, entry)
 	}
 	return entries
@@ -150,18 +152,18 @@ type cache struct {
 func cacheTokens(messages []any) map[int64]cache {
 	tokens := make(map[int64]cache)
 	for _, raw := range messages {
-		message := shared.ObjectAt(raw)
-		if message == nil || shared.StringValue(message["role"]) != "assistant" {
+		message := agentdata.ObjectAt(raw)
+		if message == nil || agentdata.StringValue(message["role"]) != "assistant" {
 			continue
 		}
 		id := int64Value(message["messageId"])
 		if id == 0 {
 			continue
 		}
-		usageBlock := shared.ObjectAt(message["usage"])
+		usageBlock := agentdata.ObjectAt(message["usage"])
 		tokens[id] = cache{
-			cacheCreation: shared.UintField(usageBlock, "cacheCreationInputTokens"),
-			cacheRead:     shared.UintField(usageBlock, "cacheReadInputTokens"),
+			cacheCreation: agentdata.UintField(usageBlock, "cacheCreationInputTokens"),
+			cacheRead:     agentdata.UintField(usageBlock, "cacheReadInputTokens"),
 		}
 	}
 	return tokens
