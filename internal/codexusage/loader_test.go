@@ -146,3 +146,31 @@ func writeFile(t *testing.T, path, data string) {
 		t.Fatal(err)
 	}
 }
+
+func TestStableEntryIDSurvivesArchiveMove(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":15}}}}
+`
+	dir := t.TempDir()
+	before := filepath.Join(dir, "sessions", "2026", "06", "04", "rollout-x.jsonl")
+	after := filepath.Join(dir, "archived_sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(before))
+	mkdirAll(t, filepath.Dir(after))
+	writeFile(t, before, content)
+	writeFile(t, after, content)
+
+	beforeEntries, err := ReadUsageFile(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEntries, err := ReadUsageFile(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeEntries) != 1 || len(afterEntries) != 1 {
+		t.Fatalf("entries = %d/%d, want 1/1", len(beforeEntries), len(afterEntries))
+	}
+	if beforeEntries[0].ID != afterEntries[0].ID {
+		t.Fatalf("id changed across archive move: %q vs %q", beforeEntries[0].ID, afterEntries[0].ID)
+	}
+}

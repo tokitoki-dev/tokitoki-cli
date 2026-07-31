@@ -100,5 +100,5 @@ func qwenProject(path string) string {
 			return parts[i+1]
 		}
 	}
-	return "unknown"
+	return usage.UnknownProject
 }

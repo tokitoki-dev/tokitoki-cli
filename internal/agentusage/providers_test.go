@@ -182,7 +182,7 @@ func TestProvidersLoadEntries(t *testing.T) {
 			want:      usage.ProviderPi,
 			model:     "[pi] gpt-5",
 			sessionID: "session-a",
-			project:   "unknown",
+			project:   usage.UnknownProject,
 			tokens: usage.TokenUsage{
 				OutputTokens: 333,
 				TotalTokens:  333,

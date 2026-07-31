@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func TestUsageFilesLimitsDiscoveryToProjectFilter(t *testing.T) {
@@ -59,57 +61,115 @@ func TestProjectPathSegmentRejectsUnsafeValues(t *testing.T) {
 	}
 }
 
-func TestExtractSessionParts(t *testing.T) {
+func TestExtractSessionID(t *testing.T) {
 	tests := []struct {
-		name            string
-		path            string
-		wantSessionID   string
-		wantProjectPath string
+		name          string
+		path          string
+		wantSessionID string
 	}{
 		{
-			name:            "modern",
-			path:            "/home/me/.claude/projects/project-a/session-a.jsonl",
-			wantSessionID:   "session-a",
-			wantProjectPath: "project-a",
+			name:          "modern",
+			path:          "/home/me/.claude/projects/project-a/session-a.jsonl",
+			wantSessionID: "session-a",
 		},
 		{
-			name:            "nested",
-			path:            "/home/me/.claude/projects/project-a/session-a/chat.jsonl",
-			wantSessionID:   "session-a",
-			wantProjectPath: "project-a",
+			name:          "nested",
+			path:          "/home/me/.claude/projects/project-a/session-a/chat.jsonl",
+			wantSessionID: "session-a",
 		},
 		{
-			name:            "subagent",
-			path:            "/home/me/.claude/projects/project-a/session-a/subagents/worker.jsonl",
-			wantSessionID:   "session-a",
-			wantProjectPath: "project-a",
+			name:          "subagent",
+			path:          "/home/me/.claude/projects/project-a/session-a/subagents/worker.jsonl",
+			wantSessionID: "session-a",
 		},
 		{
-			name:            "encoded absolute project path",
-			path:            "/home/me/.claude/projects/-Users-eren-workspace-LABX-relink/session-a.jsonl",
-			wantSessionID:   "session-a",
-			wantProjectPath: filepath.Join(string(filepath.Separator), "Users", "eren", "workspace", "LABX", "relink"),
+			name:          "encoded absolute project path",
+			path:          "/home/me/.claude/projects/-Users-eren-workspace-LABX-relink/session-a.jsonl",
+			wantSessionID: "session-a",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sessionID, projectPath := ExtractSessionParts(tt.path)
-			if sessionID != tt.wantSessionID {
+			if sessionID := ExtractSessionID(tt.path); sessionID != tt.wantSessionID {
 				t.Fatalf("sessionID = %q, want %q", sessionID, tt.wantSessionID)
-			}
-			if projectPath != tt.wantProjectPath {
-				t.Fatalf("projectPath = %q, want %q", projectPath, tt.wantProjectPath)
 			}
 		})
 	}
 }
 
-func TestExtractProjectNormalizesEncodedClaudePath(t *testing.T) {
-	path := "/home/me/.claude/projects/-Users-eren-workspace-LABX-relink/session-a.jsonl"
+func TestReadUsageFilePrefersLineCWDOverEncodedDir(t *testing.T) {
+	// The encoded directory name is ambiguous: decoding it yields
+	// "/Users/eren/workspace/tracklm/tracklm/nextjs". The line's cwd is the
+	// truth and must win.
+	path := filepath.Join(t.TempDir(), "projects", "-Users-eren-workspace-tracklm-tracklm-nextjs", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","cwd":"/Users/eren/workspace/tracklm/tracklm-nextjs","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}`)
 
-	if got := ExtractProject(path); got != "relink" {
-		t.Fatalf("ExtractProject() = %q, want relink", got)
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Project != "tracklm-nextjs" {
+		t.Fatalf("project = %q, want tracklm-nextjs", entries[0].Project)
+	}
+	if entries[0].ProjectPath != "/Users/eren/workspace/tracklm/tracklm-nextjs" {
+		t.Fatalf("projectPath = %q, want /Users/eren/workspace/tracklm/tracklm-nextjs", entries[0].ProjectPath)
+	}
+}
+
+func TestReadUsageFileCapturesGitBranch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","gitBranch":"feature/login","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Branch != "feature/login" {
+		t.Fatalf("branch = %q, want feature/login", entries[0].Branch)
+	}
+
+	converted := ConvertEntries(entries)
+	if converted[0].Branch != "feature/login" {
+		t.Fatalf("converted branch = %q, want feature/login", converted[0].Branch)
+	}
+}
+
+func TestReadUsageFileReportsUnknownProjectWithoutCWD(t *testing.T) {
+	// The encoded directory name is not decodable ("/", "-", "_" and "." all
+	// become "-"), so a line without cwd has no project.
+	path := filepath.Join(t.TempDir(), "projects", "-Users-eren-workspace-LABX-relink", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Project != usage.UnknownProject {
+		t.Fatalf("project = %q, want %q", entries[0].Project, usage.UnknownProject)
+	}
+	if entries[0].ProjectPath != "" {
+		t.Fatalf("projectPath = %q, want empty", entries[0].ProjectPath)
+	}
+}
+
+func TestProjectFromCWDRejectsUnusableValues(t *testing.T) {
+	for _, cwd := range []string{"", "   ", "relative/path", "/"} {
+		if _, _, ok := projectFromCWD(cwd); ok {
+			t.Fatalf("projectFromCWD(%q) ok = true, want false", cwd)
+		}
 	}
 }
 
@@ -136,7 +196,7 @@ func TestReadUsageFileParsesUsageLines(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, `
 {"type":"user","message":{"content":"hello"}}
-{"sessionId":"session-a","timestamp":"2026-05-21T01:02:03Z","version":"1.2.3","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"speed":"fast"}}}
+{"sessionId":"session-a","timestamp":"2026-05-21T01:02:03Z","version":"1.2.3","requestId":"req-1","cwd":"/repo/project-a","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"speed":"fast"}}}
 `)
 
 	entries, err := ReadUsageFile(path)

@@ -26,6 +26,8 @@ type UsageEntry struct {
 	Timestamp         string       `json:"timestamp"`
 	Version           *string      `json:"version"`
 	Entrypoint        *string      `json:"entrypoint"`
+	CWD               *string      `json:"cwd"`
+	GitBranch         *string      `json:"gitBranch"`
 	Message           UsageMessage `json:"message"`
 	CostUSD           *float64     `json:"costUSD"`
 	RequestID         *string      `json:"requestId"`
@@ -84,6 +86,7 @@ type LoadedEntry struct {
 	Model               string     `json:"model,omitempty"`
 	Language            string     `json:"language"`
 	Client              string     `json:"client,omitempty"`
+	Branch              string     `json:"branch,omitempty"`
 	UsageLimitResetTime *time.Time `json:"usage_limit_reset_time,omitempty"`
 }
 
@@ -125,6 +128,7 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			Language:    usage.NormalizeLanguage(entry.Language),
 			OS:          usage.NormalizeOS(runtime.GOOS),
 			Client:      entry.Client,
+			Branch:      entry.Branch,
 			Usage: usage.TokenUsage{
 				InputTokens:              tokens.InputTokens,
 				OutputTokens:             tokens.OutputTokens,
@@ -217,8 +221,7 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 	}
 	defer file.Close()
 
-	project := ExtractProject(path)
-	sessionID, projectPath := ExtractSessionParts(path)
+	sessionID := ExtractSessionID(path)
 	entries := make([]LoadedEntry, 0)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
@@ -230,7 +233,7 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 			start := offset
 			offset += int64(len(line))
 			line = bytes.TrimRight(line, "\r\n")
-			entry, ok := parseUsageLine(line, project, sessionID, projectPath)
+			entry, ok := parseUsageLine(line, sessionID)
 			if ok {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
@@ -251,26 +254,26 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 	return entries, nil
 }
 
-func ExtractProject(path string) string {
-	parts := pathParts(path)
-	for i, part := range parts {
-		if part != "projects" {
-			continue
-		}
-		if i+1 >= len(parts) || strings.TrimSpace(parts[i+1]) == "" {
-			return "unknown"
-		}
-		projectPath := normalizeClaudeProjectPathParts([]string{parts[i+1]})
-		project := filepath.Base(filepath.Clean(projectPath))
-		if strings.TrimSpace(project) == "" || project == "." || project == string(filepath.Separator) {
-			return "unknown"
-		}
-		return project
+// projectFromCWD derives the project path and name from a transcript line's
+// cwd field. It reports false for values that cannot name a project (empty,
+// relative, or the filesystem root), so callers keep their fallback.
+func projectFromCWD(cwd string) (string, string, bool) {
+	clean := strings.TrimSpace(cwd)
+	if clean == "" || !filepath.IsAbs(clean) {
+		return "", "", false
 	}
-	return "unknown"
+	clean = filepath.Clean(clean)
+	name := filepath.Base(clean)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		return "", "", false
+	}
+	return clean, name, true
 }
 
-func ExtractSessionParts(path string) (string, string) {
+// ExtractSessionID derives the session id from a usage file's location under
+// the projects directory: projects/<project>/<session>.jsonl for sessions and
+// projects/<project>/<session>/subagents/<agent>.jsonl for subagents.
+func ExtractSessionID(path string) string {
 	parts := pathParts(path)
 	relative := parts
 	for i, part := range parts {
@@ -288,55 +291,18 @@ func ExtractSessionParts(path string) (string, string) {
 		}
 	}
 	if len(relative) == 2 && fileSessionID != "" {
-		return fileSessionID, normalizeClaudeProjectPathParts(relative[:1])
+		return fileSessionID
 	}
 	if len(relative) >= 4 && relative[len(relative)-2] == "subagents" {
-		sessionID := relative[len(relative)-3]
-		return sessionID, normalizeClaudeProjectPathParts(relative[:len(relative)-3])
+		return relative[len(relative)-3]
 	}
-
-	sessionID := "unknown"
 	if len(relative) >= 2 {
-		sessionID = relative[len(relative)-2]
+		return relative[len(relative)-2]
 	}
-	projectPath := "Unknown Project"
-	if len(relative) > 2 {
-		projectPath = normalizeClaudeProjectPathParts(relative[:len(relative)-2])
-	}
-	return sessionID, projectPath
+	return "unknown"
 }
 
-func normalizeClaudeProjectPathParts(parts []string) string {
-	if len(parts) == 0 {
-		return "Unknown Project"
-	}
-	if decoded, ok := decodeClaudeProjectDir(parts[0]); ok {
-		if len(parts) == 1 {
-			return decoded
-		}
-		joined := append([]string{decoded}, parts[1:]...)
-		return filepath.Join(joined...)
-	}
-	projectPath := strings.Join(parts, string(filepath.Separator))
-	if strings.TrimSpace(projectPath) == "" {
-		return "Unknown Project"
-	}
-	return projectPath
-}
-
-func decodeClaudeProjectDir(segment string) (string, bool) {
-	segment = strings.TrimSpace(segment)
-	if !strings.HasPrefix(segment, "-") || len(segment) == 1 {
-		return "", false
-	}
-	decoded := string(filepath.Separator) + strings.ReplaceAll(strings.TrimPrefix(segment, "-"), "-", string(filepath.Separator))
-	if filepath.Clean(decoded) == string(filepath.Separator) {
-		return "", false
-	}
-	return filepath.Clean(decoded), true
-}
-
-func parseUsageLine(line []byte, project, sessionID, projectPath string) (LoadedEntry, bool) {
+func parseUsageLine(line []byte, sessionID string) (LoadedEntry, bool) {
 	if !bytes.Contains(line, []byte(`"usage":{`)) {
 		return LoadedEntry{}, false
 	}
@@ -356,6 +322,18 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		return LoadedEntry{}, false
 	}
 
+	// The transcript line's cwd is the only trustworthy project source: the
+	// directory name under ~/.claude/projects encodes "/", "-", "_" and "."
+	// identically, so decoding it is guesswork. No cwd means no project.
+	project := usage.UnknownProject
+	projectPath := ""
+	if data.CWD != nil {
+		if path, name, ok := projectFromCWD(*data.CWD); ok {
+			projectPath = path
+			project = name
+		}
+	}
+
 	model := ""
 	if data.Message.Model != nil && *data.Message.Model != "<synthetic>" {
 		model = *data.Message.Model
@@ -369,6 +347,11 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		client = usage.NormalizeClient(usage.ProviderClaude, *data.Entrypoint)
 	}
 
+	branch := ""
+	if data.GitBranch != nil {
+		branch = strings.TrimSpace(*data.GitBranch)
+	}
+
 	return LoadedEntry{
 		Data:                data,
 		Timestamp:           timestamp,
@@ -379,6 +362,7 @@ func parseUsageLine(line []byte, project, sessionID, projectPath string) (Loaded
 		Model:               model,
 		Language:            languageFromContent(data.Message.Content),
 		Client:              client,
+		Branch:              branch,
 		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
 	}, true
 }

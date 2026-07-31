@@ -112,7 +112,7 @@ func ReadUsageFile(path string) ([]usage.Entry, error) {
 				entry.SourceLine = lineNumber
 				entry.SourceStart = start
 				entry.SourceEnd = offset
-				entry.ID = stableEntryID(entry)
+				entry.ID = StableEntryID(entry)
 				entries = append(entries, entry)
 			}
 		}
@@ -328,10 +328,14 @@ func candidatesFromText(text string, weight int) []langdetect.Candidate {
 	return candidates
 }
 
-func stableEntryID(entry usage.Entry) string {
+// StableEntryID computes the deterministic id of a codex usage entry. The
+// source file is keyed by its basename: archiving a session moves the file
+// from sessions/ into archived_sessions/ without renaming it, and the id must
+// survive that move or every archived session double-counts.
+func StableEntryID(entry usage.Entry) string {
 	return usage.StableID(
 		string(usage.ProviderCodex),
-		entry.SourceFile,
+		filepath.Base(entry.SourceFile),
 		strconv.Itoa(entry.SourceLine),
 		entry.Timestamp.Format(time.RFC3339Nano),
 		entry.Model,
@@ -346,11 +350,11 @@ func stableEntryID(entry usage.Entry) string {
 func projectName(path string) string {
 	clean := strings.TrimSpace(path)
 	if clean == "" {
-		return "unknown"
+		return usage.UnknownProject
 	}
 	base := filepath.Base(filepath.Clean(clean))
 	if base == "." || base == string(filepath.Separator) || base == "" {
-		return "unknown"
+		return usage.UnknownProject
 	}
 	return base
 }

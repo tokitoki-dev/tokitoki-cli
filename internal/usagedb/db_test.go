@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -207,5 +208,92 @@ func testUsageEntry(id string) usage.Entry {
 			OutputTokens: 2,
 			TotalTokens:  3,
 		},
+	}
+}
+
+func TestOpenRekeysCodexEventsToBasenameIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacyID := func(entry usage.Entry) string {
+		return usage.StableID(
+			string(usage.ProviderCodex),
+			entry.SourceFile,
+			"1",
+			entry.Timestamp.Format(time.RFC3339Nano),
+			entry.Model,
+			"1", "0", "2", "0", "3",
+		)
+	}
+
+	// The same event ingested twice: once from the live path, once after the
+	// file was archived. Full-path ids made them distinct rows.
+	live := testUsageEntry("")
+	live.SourceFile = "/home/me/.codex/sessions/2026/06/04/rollout-x.jsonl"
+	live.ID = legacyID(live)
+	archived := live
+	archived.SourceFile = "/home/me/.codex/archived_sessions/rollout-x.jsonl"
+	archived.ID = legacyID(archived)
+	if live.ID == archived.ID {
+		t.Fatal("test premise broken: legacy ids should differ across paths")
+	}
+	if _, err := db.InsertEvents([]usage.Entry{live, archived}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkEventsUploaded([]string{live.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// Pretend this database was written by a pre-migration binary.
+	if _, err := db.db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	rows, err := reopened.db.Query(`SELECT id, status FROM usage_events`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type row struct{ id, status string }
+	got := make([]row, 0)
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.status); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1 (duplicates collapsed)", len(got))
+	}
+	if got[0].id != codexusage.StableEntryID(live) {
+		t.Fatalf("id = %q, want basename-keyed id %q", got[0].id, codexusage.StableEntryID(live))
+	}
+	if got[0].status != "uploaded" {
+		t.Fatalf("status = %q, want uploaded (uploaded copy must win)", got[0].status)
+	}
+
+	// The rewritten payload must carry the new id so future uploads use it.
+	pruned, err := reopened.PruneUploaded(time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
 	}
 }

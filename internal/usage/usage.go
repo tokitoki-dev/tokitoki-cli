@@ -30,6 +30,20 @@ const (
 
 const UnknownLanguage = "Unknown"
 
+// UnknownProject is the single spelling every provider uses when a project
+// name cannot be determined.
+const UnknownProject = "Unknown"
+
+// NormalizeProject maps empty and legacy "unknown" spellings to
+// UnknownProject so undetermined projects look the same everywhere.
+func NormalizeProject(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, "unknown") {
+		return UnknownProject
+	}
+	return name
+}
+
 // FileFilter reports whether a source file must be parsed. Returning false
 // means the file's events are already ingested and parsing it again would be
 // wasted work. A nil FileFilter parses everything.

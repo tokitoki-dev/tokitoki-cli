@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	_ "modernc.org/sqlite"
 )
@@ -70,7 +71,123 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate usage db: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate usage db: %w", err)
+	}
 	return &DB{db: db}, nil
+}
+
+// eventSchemaVersion tracks one-time data repairs, recorded in the SQLite
+// user_version pragma. Version 1 rekeys codex events whose ids hashed the
+// source file's full path: archiving a session moves its file from sessions/
+// into archived_sessions/, which changed every id and double-counted the
+// whole session.
+const eventSchemaVersion = 1
+
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version >= eventSchemaVersion {
+		return nil
+	}
+	if version < 1 {
+		if err := rekeyCodexEvents(db); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, eventSchemaVersion))
+	return err
+}
+
+func rekeyCodexEvents(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, payload, status FROM usage_events`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type keeper struct {
+		oldID   string
+		payload string
+		rank    int
+	}
+	keepers := make(map[string]keeper)
+	drop := make([]string, 0)
+	for rows.Next() {
+		var id, payload, status string
+		if err := rows.Scan(&id, &payload, &status); err != nil {
+			return err
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
+		}
+		if entry.Provider != usage.ProviderCodex {
+			continue
+		}
+		newID := codexusage.StableEntryID(entry)
+		candidate := keeper{oldID: id, payload: payload, rank: statusRank(status)}
+		current, exists := keepers[newID]
+		switch {
+		case !exists:
+			keepers[newID] = candidate
+		case candidate.rank > current.rank:
+			// Rows collapsing onto one id are the same event ingested twice
+			// from the file's pre- and post-archive paths; the uploaded copy
+			// wins so the duplicate is never re-uploaded.
+			drop = append(drop, current.oldID)
+			keepers[newID] = candidate
+		default:
+			drop = append(drop, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, id := range drop {
+		if _, err := tx.Exec(`DELETE FROM usage_events WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	for newID, kept := range keepers {
+		if kept.oldID == newID {
+			continue
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(kept.payload), &entry); err != nil {
+			continue
+		}
+		entry.ID = newID
+		payload, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE usage_events SET id = ?, payload = ? WHERE id = ?`, newID, string(payload), kept.oldID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func statusRank(status string) int {
+	switch status {
+	case "uploaded":
+		return 3
+	case "rejected":
+		return 2
+	default: // pending, failed
+		return 1
+	}
 }
 
 func (s *DB) Close() error {
@@ -101,6 +218,7 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 			return 0, fmt.Errorf("usage event id is required")
 		}
 		entry.Language = usage.NormalizeLanguage(entry.Language)
+		entry.Project = usage.NormalizeProject(entry.Project)
 		payload, err := json.Marshal(entry)
 		if err != nil {
 			return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
