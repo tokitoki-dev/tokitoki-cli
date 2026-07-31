@@ -9,10 +9,22 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/agentusage"
-	"github.com/tokitoki-dev/tokitoki-cli/internal/claudeusage"
-	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/amp"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/claude"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codebuff"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codex"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/copilot"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/droid"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/gemini"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/goose"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/hermes"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/kilo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/kimi"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/openclaw"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/opencode"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/pi"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/qwen"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
@@ -42,21 +54,21 @@ type ProviderResult struct {
 // DefaultProviders returns the built-in usage providers.
 func DefaultProviders() []usageprovider.Provider {
 	return []usageprovider.Provider{
-		claudeusage.Provider{},
-		codexusage.Provider{},
-		agentusage.CopilotProvider{},
-		agentusage.GeminiProvider{},
-		agentusage.KimiProvider{},
-		agentusage.QwenProvider{},
-		agentusage.OpenClawProvider{},
-		agentusage.PiProvider{},
-		agentusage.AmpProvider{},
-		agentusage.DroidProvider{},
-		agentusage.KiloProvider{},
-		agentusage.HermesProvider{},
-		agentusage.CodebuffProvider{},
-		agentusage.OpenCodeProvider{},
-		agentusage.GooseProvider{},
+		claude.Provider{},
+		codex.Provider{},
+		copilot.Provider{},
+		gemini.Provider{},
+		kimi.Provider{},
+		qwen.Provider{},
+		openclaw.Provider{},
+		pi.Provider{},
+		amp.Provider{},
+		droid.Provider{},
+		kilo.Provider{},
+		hermes.Provider{},
+		codebuff.Provider{},
+		opencode.Provider{},
+		goose.Provider{},
 	}
 }
 

@@ -1,0 +1,847 @@
+package claude
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+)
+
+var ErrNoDataDirs = errors.New("no valid Claude data directories found")
+
+type UsageEntry struct {
+	SessionID         *string      `json:"sessionId"`
+	Timestamp         string       `json:"timestamp"`
+	Version           *string      `json:"version"`
+	Entrypoint        *string      `json:"entrypoint"`
+	CWD               *string      `json:"cwd"`
+	GitBranch         *string      `json:"gitBranch"`
+	Message           UsageMessage `json:"message"`
+	CostUSD           *float64     `json:"costUSD"`
+	RequestID         *string      `json:"requestId"`
+	IsAPIErrorMessage *bool        `json:"isApiErrorMessage"`
+}
+
+type UsageMessage struct {
+	Usage   TokenUsage      `json:"usage"`
+	Model   *string         `json:"model"`
+	ID      *string         `json:"id"`
+	Content json.RawMessage `json:"content"`
+}
+
+type TokenUsage struct {
+	InputTokens              uint64 `json:"input_tokens"`
+	OutputTokens             uint64 `json:"output_tokens"`
+	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens"`
+	Speed                    *Speed `json:"speed"`
+}
+
+type Speed string
+
+const (
+	SpeedStandard Speed = "standard"
+	SpeedFast     Speed = "fast"
+)
+
+func (s *Speed) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	speed := Speed(value)
+	switch speed {
+	case SpeedStandard, SpeedFast:
+		*s = speed
+		return nil
+	default:
+		return fmt.Errorf("unsupported Claude usage speed %q", value)
+	}
+}
+
+type LoadedEntry struct {
+	Data                UsageEntry         `json:"data"`
+	ID                  string             `json:"id,omitempty"`
+	SourceFile          string             `json:"source_file,omitempty"`
+	SourceLine          int                `json:"source_line,omitempty"`
+	SourceStart         int64              `json:"source_start,omitempty"`
+	SourceEnd           int64              `json:"source_end,omitempty"`
+	Timestamp           time.Time          `json:"timestamp"`
+	Date                string             `json:"date"`
+	Project             string             `json:"project"`
+	SessionID           string             `json:"session_id"`
+	ProjectPath         string             `json:"project_path"`
+	Model               string             `json:"model,omitempty"`
+	Language            string             `json:"language"`
+	Client              string             `json:"client,omitempty"`
+	Branch              string             `json:"branch,omitempty"`
+	Entity              string             `json:"entity,omitempty"`
+	IsWrite             bool               `json:"is_write,omitempty"`
+	LinesAdded          uint64             `json:"lines_added,omitempty"`
+	LinesRemoved        uint64             `json:"lines_removed,omitempty"`
+	Files               []usage.FileChange `json:"files,omitempty"`
+	UsageLimitResetTime *time.Time         `json:"usage_limit_reset_time,omitempty"`
+}
+
+type DailyProjectSummary struct {
+	Date                     string `json:"date"`
+	Project                  string `json:"project"`
+	InputTokens              uint64 `json:"input_tokens"`
+	OutputTokens             uint64 `json:"output_tokens"`
+	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens"`
+	TotalTokens              uint64 `json:"total_tokens"`
+}
+
+func UsageEntriesFromFile(path string) ([]usage.Entry, error) {
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ConvertEntries(entries), nil
+}
+
+func ConvertEntries(entries []LoadedEntry) []usage.Entry {
+	converted := make([]usage.Entry, 0, len(entries))
+	for _, entry := range entries {
+		tokens := entry.Data.Message.Usage
+		var isWrite *bool
+		if entry.IsWrite {
+			t := true
+			isWrite = &t
+		}
+		entityType := ""
+		if entry.Entity != "" {
+			entityType = "file"
+		}
+		converted = append(converted, usage.Entry{
+			Provider:     usage.ProviderClaude,
+			ID:           entry.ID,
+			SourceFile:   entry.SourceFile,
+			SourceLine:   entry.SourceLine,
+			SourceStart:  entry.SourceStart,
+			SourceEnd:    entry.SourceEnd,
+			Timestamp:    entry.Timestamp,
+			Date:         entry.Date,
+			Project:      entry.Project,
+			ProjectPath:  entry.ProjectPath,
+			SessionID:    entry.SessionID,
+			Model:        entry.Model,
+			Language:     usage.NormalizeLanguage(entry.Language),
+			OS:           usage.NormalizeOS(runtime.GOOS),
+			Client:       entry.Client,
+			Branch:       entry.Branch,
+			Entity:       entry.Entity,
+			EntityType:   entityType,
+			IsWrite:      isWrite,
+			LinesAdded:   entry.LinesAdded,
+			LinesRemoved: entry.LinesRemoved,
+			Files:        entry.Files,
+			Usage: usage.TokenUsage{
+				InputTokens:              tokens.InputTokens,
+				OutputTokens:             tokens.OutputTokens,
+				CacheCreationInputTokens: tokens.CacheCreationInputTokens,
+				CacheReadInputTokens:     tokens.CacheReadInputTokens,
+				TotalTokens:              tokenTotal(tokens),
+			},
+		})
+	}
+	return converted
+}
+
+func SummarizeDailyProjects(entries []LoadedEntry) []DailyProjectSummary {
+	type key struct {
+		date    string
+		project string
+	}
+	indexes := map[key]int{}
+	summaries := make([]DailyProjectSummary, 0)
+	for _, entry := range entries {
+		key := key{date: entry.Date, project: entry.Project}
+		index, ok := indexes[key]
+		if !ok {
+			index = len(summaries)
+			indexes[key] = index
+			summaries = append(summaries, DailyProjectSummary{
+				Date:    entry.Date,
+				Project: entry.Project,
+			})
+		}
+		usage := entry.Data.Message.Usage
+		summary := &summaries[index]
+		summary.InputTokens += usage.InputTokens
+		summary.OutputTokens += usage.OutputTokens
+		summary.CacheCreationInputTokens += usage.CacheCreationInputTokens
+		summary.CacheReadInputTokens += usage.CacheReadInputTokens
+		summary.TotalTokens += tokenTotal(usage)
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].Project != summaries[j].Project {
+			return summaries[i].Project < summaries[j].Project
+		}
+		return summaries[i].Date < summaries[j].Date
+	})
+	return summaries
+}
+
+func LoadEntriesFromPaths(paths []string, projectFilter string, fileFilter usage.FileFilter) ([]LoadedEntry, error) {
+	files := UsageFiles(paths, projectFilter)
+	entries := make([]LoadedEntry, 0)
+	for _, file := range files {
+		if fileFilter != nil && !fileFilter(file) {
+			continue
+		}
+		fileEntries, err := ReadUsageFile(file)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range fileEntries {
+			if projectFilter != "" && entry.Project != projectFilter {
+				continue
+			}
+			entries = appendDeduped(entries, entry)
+		}
+	}
+	return entries, nil
+}
+
+func UsageFiles(paths []string, projectFilter string) []string {
+	files := make([]string, 0)
+	for _, path := range paths {
+		projectsDir := filepath.Join(path, "projects")
+		if isProjectPathSegment(projectFilter) {
+			collectUsageFiles(filepath.Join(projectsDir, projectFilter), &files)
+			continue
+		}
+		collectUsageFiles(projectsDir, &files)
+	}
+	sort.Strings(files)
+	return files
+}
+
+func ReadUsageFile(path string) ([]LoadedEntry, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	sessionID := ExtractSessionID(path)
+	entries := make([]LoadedEntry, 0)
+	// A file-modification diff belongs to the assistant message that issued
+	// the edit, which precedes its tool result in the transcript. Diffs seen
+	// before the first usage entry are held and attached to it.
+	pending := make([]patchStats, 0)
+	reader := bufio.NewReader(file)
+	lineNumber := 0
+	offset := int64(0)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			lineNumber++
+			start := offset
+			offset += int64(len(line))
+			line = bytes.TrimRight(line, "\r\n")
+			if entry, ok := parseUsageLine(line, sessionID); ok {
+				entry.SourceFile = path
+				entry.SourceLine = lineNumber
+				entry.SourceStart = start
+				entry.SourceEnd = offset
+				entry.ID = stableEntryID(entry)
+				entries = append(entries, entry)
+				for _, patch := range pending {
+					applyPatch(&entries[len(entries)-1], patch)
+				}
+				pending = pending[:0]
+			} else if patch, ok := parsePatchLine(line); ok {
+				if len(entries) == 0 {
+					pending = append(pending, patch)
+				} else {
+					applyPatch(&entries[len(entries)-1], patch)
+				}
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		return nil, readErr
+	}
+	return entries, nil
+}
+
+type patchStats struct {
+	file    string
+	added   uint64
+	removed uint64
+}
+
+// applyPatch accumulates one diff into the entry's totals and per-file
+// breakdown. The entity is always the most-changed file so far.
+func applyPatch(entry *LoadedEntry, patch patchStats) {
+	entry.LinesAdded += patch.added
+	entry.LinesRemoved += patch.removed
+	entry.IsWrite = true
+	if patch.file == "" {
+		return
+	}
+
+	index := -1
+	for i := range entry.Files {
+		if entry.Files[i].Path == patch.file {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		entry.Files = append(entry.Files, usage.FileChange{Path: patch.file})
+		index = len(entry.Files) - 1
+	}
+	entry.Files[index].LinesAdded += patch.added
+	entry.Files[index].LinesRemoved += patch.removed
+
+	best := index
+	for i := range entry.Files {
+		if entry.Files[i].LinesAdded+entry.Files[i].LinesRemoved > entry.Files[best].LinesAdded+entry.Files[best].LinesRemoved {
+			best = i
+		}
+	}
+	entry.Entity = entry.Files[best].Path
+}
+
+func parsePatchLine(line []byte) (patchStats, bool) {
+	if !bytes.Contains(line, []byte(`"structuredPatch"`)) {
+		return patchStats{}, false
+	}
+
+	var envelope struct {
+		ToolUseResult json.RawMessage `json:"toolUseResult"`
+	}
+	if err := json.Unmarshal(line, &envelope); err != nil || len(envelope.ToolUseResult) == 0 {
+		return patchStats{}, false
+	}
+	var result struct {
+		Type            string `json:"type"`
+		FilePath        string `json:"filePath"`
+		Content         string `json:"content"`
+		StructuredPatch []struct {
+			Lines []string `json:"lines"`
+		} `json:"structuredPatch"`
+	}
+	if err := json.Unmarshal(envelope.ToolUseResult, &result); err != nil {
+		return patchStats{}, false
+	}
+
+	// Creating a file records no diff hunks, only the full content: every
+	// content line is an added line.
+	if len(result.StructuredPatch) == 0 {
+		if result.Type != "create" || result.FilePath == "" {
+			return patchStats{}, false
+		}
+		return patchStats{file: result.FilePath, added: usage.CountLines(result.Content)}, true
+	}
+
+	stats := patchStats{file: result.FilePath}
+	for _, hunk := range result.StructuredPatch {
+		for _, hunkLine := range hunk.Lines {
+			if len(hunkLine) == 0 {
+				continue
+			}
+			switch hunkLine[0] {
+			case '+':
+				stats.added++
+			case '-':
+				stats.removed++
+			}
+		}
+	}
+	return stats, true
+}
+
+// ExtractSessionID derives the session id from a usage file's location under
+// the projects directory: projects/<project>/<session>.jsonl for sessions and
+// projects/<project>/<session>/subagents/<agent>.jsonl for subagents.
+func ExtractSessionID(path string) string {
+	parts := pathParts(path)
+	relative := parts
+	for i, part := range parts {
+		if part == "projects" {
+			relative = parts[i+1:]
+			break
+		}
+	}
+
+	fileSessionID := ""
+	if len(relative) > 0 {
+		fileSessionID = strings.TrimSuffix(relative[len(relative)-1], ".jsonl")
+		if fileSessionID == relative[len(relative)-1] {
+			fileSessionID = ""
+		}
+	}
+	if len(relative) == 2 && fileSessionID != "" {
+		return fileSessionID
+	}
+	if len(relative) >= 4 && relative[len(relative)-2] == "subagents" {
+		return relative[len(relative)-3]
+	}
+	if len(relative) >= 2 {
+		return relative[len(relative)-2]
+	}
+	return "unknown"
+}
+
+func parseUsageLine(line []byte, sessionID string) (LoadedEntry, bool) {
+	if !bytes.Contains(line, []byte(`"usage":{`)) {
+		return LoadedEntry{}, false
+	}
+	if hasUnsupportedNullField(line) {
+		return LoadedEntry{}, false
+	}
+
+	var data UsageEntry
+	if err := json.Unmarshal(line, &data); err != nil {
+		return LoadedEntry{}, false
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, data.Timestamp)
+	if err != nil {
+		return LoadedEntry{}, false
+	}
+	if !isValidUsageEntry(data) {
+		return LoadedEntry{}, false
+	}
+
+	// The transcript line's cwd is the only trustworthy project source: the
+	// directory name under ~/.claude/projects encodes "/", "-", "_" and "."
+	// identically, so decoding it is guesswork. No cwd means no project.
+	project := usage.UnknownProject
+	projectPath := ""
+	if data.CWD != nil {
+		if path, name, ok := usage.ProjectFromCWD(*data.CWD); ok {
+			projectPath = path
+			project = name
+		}
+	}
+
+	model := ""
+	if data.Message.Model != nil && *data.Message.Model != "<synthetic>" {
+		model = *data.Message.Model
+		if data.Message.Usage.Speed != nil && *data.Message.Usage.Speed == SpeedFast {
+			model += "-fast"
+		}
+	}
+
+	client := ""
+	if data.Entrypoint != nil {
+		client = usage.NormalizeClient(usage.ProviderClaude, *data.Entrypoint)
+	}
+
+	branch := ""
+	if data.GitBranch != nil {
+		branch = strings.TrimSpace(*data.GitBranch)
+	}
+
+	return LoadedEntry{
+		Data:                data,
+		Timestamp:           timestamp,
+		Date:                timestamp.In(time.Local).Format("2006-01-02"),
+		Project:             project,
+		SessionID:           sessionID,
+		ProjectPath:         projectPath,
+		Model:               model,
+		Language:            languageFromContent(data.Message.Content),
+		Client:              client,
+		Branch:              branch,
+		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
+	}, true
+}
+
+type contentBlock struct {
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+	Text  string          `json:"text"`
+}
+
+func languageFromContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return langdetect.Unknown
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return languageFromPathsInText(text)
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return langdetect.Unknown
+	}
+
+	candidates := make([]langdetect.Candidate, 0)
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			candidates = append(candidates, candidatesFromToolInput(block.Input)...)
+		}
+		if block.Text != "" {
+			candidates = append(candidates, candidatesFromTextValue(block.Text, 1)...)
+		}
+	}
+
+	return langdetect.Dominant(candidates)
+}
+
+func candidatesFromToolInput(raw json.RawMessage) []langdetect.Candidate {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var input map[string]any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil
+	}
+	return candidatesFromValue(input, 3)
+}
+
+func candidatesFromValue(value any, weight int) []langdetect.Candidate {
+	candidates := make([]langdetect.Candidate, 0)
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			lowerKey := strings.ToLower(key)
+			if isPathKey(lowerKey) {
+				candidates = append(candidates, candidatesFromPathValue(child, weight)...)
+				continue
+			}
+			if isTextKey(lowerKey) {
+				candidates = append(candidates, candidatesFromTextValue(child, 1)...)
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromValue(child, weight)...)
+		}
+	}
+	return candidates
+}
+
+func candidatesFromPathValue(value any, weight int) []langdetect.Candidate {
+	switch typed := value.(type) {
+	case string:
+		if langdetect.FromPath(typed) != langdetect.Unknown {
+			return []langdetect.Candidate{{Path: typed, Weight: weight}}
+		}
+		return candidatesFromTextValue(typed, 1)
+	case []any:
+		candidates := make([]langdetect.Candidate, 0, len(typed))
+		for _, child := range typed {
+			candidates = append(candidates, candidatesFromPathValue(child, weight)...)
+		}
+		return candidates
+	default:
+		return candidatesFromValue(value, weight)
+	}
+}
+
+func candidatesFromTextValue(value any, weight int) []langdetect.Candidate {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	paths := langdetect.PathsFromText(text)
+	candidates := make([]langdetect.Candidate, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, langdetect.Candidate{Path: path, Weight: weight})
+	}
+	return candidates
+}
+
+func isPathKey(key string) bool {
+	return strings.Contains(key, "file") || strings.Contains(key, "path")
+}
+
+func isTextKey(key string) bool {
+	return strings.Contains(key, "command") || strings.Contains(key, "content") || strings.Contains(key, "query")
+}
+
+func languageFromPathsInText(text string) string {
+	paths := langdetect.PathsFromText(text)
+	return langdetect.DominantFromPaths(paths)
+}
+
+func stableEntryID(entry LoadedEntry) string {
+	requestID := ""
+	if entry.Data.RequestID != nil {
+		requestID = *entry.Data.RequestID
+	}
+	messageID := ""
+	if entry.Data.Message.ID != nil {
+		messageID = *entry.Data.Message.ID
+	}
+
+	// Deduplicate on message.id + requestId only — matching ccusage. The same
+	// message is replayed across multiple session files (e.g. sidechains), so
+	// keying on anything file/session/timestamp-specific double-counts tokens.
+	if messageID != "" {
+		return usage.StableID(
+			string(usage.ProviderClaude),
+			messageID,
+			requestID,
+		)
+	}
+
+	// No message id: can't dedupe across files. Fall back to source position so
+	// the row at least stays stable for a given file.
+	tokens := entry.Data.Message.Usage
+	return usage.StableID(
+		string(usage.ProviderClaude),
+		entry.SourceFile,
+		strconv.Itoa(entry.SourceLine),
+		entry.Data.Timestamp,
+		entry.Model,
+		strconv.FormatUint(tokens.InputTokens, 10),
+		strconv.FormatUint(tokens.OutputTokens, 10),
+		strconv.FormatUint(tokens.CacheCreationInputTokens, 10),
+		strconv.FormatUint(tokens.CacheReadInputTokens, 10),
+	)
+}
+
+func isValidUsageEntry(data UsageEntry) bool {
+	if data.Version != nil && !isSemverPrefix(*data.Version) {
+		return false
+	}
+	if data.SessionID != nil && *data.SessionID == "" {
+		return false
+	}
+	if data.RequestID != nil && *data.RequestID == "" {
+		return false
+	}
+	if data.Message.ID != nil && *data.Message.ID == "" {
+		return false
+	}
+	if data.Message.Model != nil && *data.Message.Model == "" {
+		return false
+	}
+	return true
+}
+
+func hasUnsupportedNullField(line []byte) bool {
+	offset := 0
+	for {
+		relativeIndex := bytes.Index(line[offset:], []byte(":null"))
+		if relativeIndex < 0 {
+			return false
+		}
+		nullIndex := offset + relativeIndex
+		fieldEnd := nullIndex - 1
+		if fieldEnd < 0 {
+			return false
+		}
+		if line[fieldEnd] != '"' {
+			for fieldEnd > 0 && line[fieldEnd] != '"' {
+				fieldEnd--
+			}
+		}
+		if line[fieldEnd] == '"' {
+			fieldStart := fieldEnd - 1
+			for fieldStart > 0 && line[fieldStart] != '"' {
+				fieldStart--
+			}
+			if line[fieldStart] == '"' && isUnsupportedNullableField(string(line[fieldStart+1:fieldEnd])) {
+				return true
+			}
+		}
+		offset = nullIndex + len(":null")
+	}
+}
+
+func isUnsupportedNullableField(field string) bool {
+	switch field {
+	case "id",
+		"cwd",
+		"model",
+		"speed",
+		"costUSD",
+		"version",
+		"sessionId",
+		"requestId",
+		"isApiErrorMessage",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSemverPrefix(value string) bool {
+	parts := strings.SplitN(value, ".", 3)
+	if len(parts) < 3 {
+		return false
+	}
+	for _, part := range parts[:2] {
+		if part == "" || !allDigits(part) {
+			return false
+		}
+	}
+	return parts[2] != "" && parts[2][0] >= '0' && parts[2][0] <= '9'
+}
+
+func allDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func usageLimitResetTimeFromLine(line []byte, isAPIErrorMessage *bool) *time.Time {
+	if isAPIErrorMessage == nil || !*isAPIErrorMessage {
+		return nil
+	}
+	marker := []byte("Claude AI usage limit reached")
+	markerStart := bytes.Index(line, marker)
+	if markerStart < 0 {
+		return nil
+	}
+	afterMarker := line[markerStart:]
+	pipeIndex := bytes.IndexByte(afterMarker, '|')
+	if pipeIndex < 0 {
+		return nil
+	}
+	start := markerStart + pipeIndex + 1
+	end := start
+	for end < len(line) && line[end] >= '0' && line[end] <= '9' {
+		end++
+	}
+	if start == end {
+		return nil
+	}
+	seconds, err := strconv.ParseInt(string(line[start:end]), 10, 64)
+	if err != nil || seconds <= 0 {
+		return nil
+	}
+	timestamp := time.Unix(seconds, 0).UTC()
+	return &timestamp
+}
+
+func appendDeduped(entries []LoadedEntry, candidate LoadedEntry) []LoadedEntry {
+	if candidate.Data.Message.ID == nil {
+		return append(entries, candidate)
+	}
+	for i := range entries {
+		if sameDedupeKey(entries[i], candidate) {
+			if shouldReplaceDedupedEntry(candidate, entries[i]) {
+				entries[i] = candidate
+			}
+			return entries
+		}
+	}
+	return append(entries, candidate)
+}
+
+func sameDedupeKey(a, b LoadedEntry) bool {
+	if a.Data.Message.ID == nil || b.Data.Message.ID == nil {
+		return false
+	}
+	if *a.Data.Message.ID != *b.Data.Message.ID {
+		return false
+	}
+	if a.Data.RequestID == nil || b.Data.RequestID == nil {
+		return a.Data.RequestID == b.Data.RequestID
+	}
+	return *a.Data.RequestID == *b.Data.RequestID
+}
+
+func shouldReplaceDedupedEntry(candidate, existing LoadedEntry) bool {
+	candidateTotal := tokenTotal(candidate.Data.Message.Usage)
+	existingTotal := tokenTotal(existing.Data.Message.Usage)
+	if candidateTotal != existingTotal {
+		return candidateTotal > existingTotal
+	}
+	return candidate.Data.Message.Usage.Speed != nil && existing.Data.Message.Usage.Speed == nil
+}
+
+func tokenTotal(usage TokenUsage) uint64 {
+	return usage.InputTokens +
+		usage.OutputTokens +
+		usage.CacheCreationInputTokens +
+		usage.CacheReadInputTokens
+}
+
+func collectUsageFiles(dir string, files *[]string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			collectUsageFiles(path, files)
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+			*files = append(*files, path)
+		}
+	}
+}
+
+func isProjectPathSegment(value string) bool {
+	return value != "" &&
+		value != "." &&
+		value != ".." &&
+		!strings.Contains(value, "/") &&
+		!strings.Contains(value, `\`)
+}
+
+func normalizeClaudeConfigPath(raw string) string {
+	path := expandHomePath(raw)
+	if filepath.Base(path) == "projects" && dirExists(path) {
+		return filepath.Dir(path)
+	}
+	return path
+}
+
+func expandHomePath(raw string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return raw
+	}
+	if raw == "~" {
+		return home
+	}
+	if strings.HasPrefix(raw, "~/") {
+		return filepath.Join(home, strings.TrimPrefix(raw, "~/"))
+	}
+	return raw
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func pathParts(path string) []string {
+	clean := filepath.Clean(path)
+	parts := strings.FieldsFunc(clean, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	return parts
+}

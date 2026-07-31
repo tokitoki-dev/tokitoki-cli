@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codex"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -281,8 +281,8 @@ func TestOpenRekeysCodexEventsToSemanticIDs(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("rows = %d, want 1 (duplicates collapsed)", len(got))
 	}
-	if got[0].id != codexusage.StableEntryID(live) {
-		t.Fatalf("id = %q, want basename-keyed id %q", got[0].id, codexusage.StableEntryID(live))
+	if got[0].id != codex.StableEntryID(live) {
+		t.Fatalf("id = %q, want basename-keyed id %q", got[0].id, codex.StableEntryID(live))
 	}
 	if got[0].status != "uploaded" {
 		t.Fatalf("status = %q, want uploaded (uploaded copy must win)", got[0].status)

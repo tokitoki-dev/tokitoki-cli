@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/codexusage"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codex"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	_ "modernc.org/sqlite"
 )
@@ -152,7 +152,7 @@ func rekeyCodexEvents(db *sql.DB) error {
 		if entry.Provider != usage.ProviderCodex {
 			continue
 		}
-		newID := codexusage.StableEntryID(entry)
+		newID := codex.StableEntryID(entry)
 		candidate := keeper{oldID: id, payload: payload, rank: statusRank(status)}
 		current, exists := keepers[newID]
 		switch {

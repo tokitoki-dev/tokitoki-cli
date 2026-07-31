@@ -170,13 +170,13 @@ type Entry struct {
 	// Client is the human-readable IDE or app source the request came from.
 	// VS Code plugins are normalized across providers, but standalone apps
 	// remain product-specific, e.g. "VS Code", "Codex Desktop", "Claude CLI".
-	Client     string         `json:"client,omitempty"`
-	Entity     string         `json:"entity,omitempty"`
-	EntityType string         `json:"entity_type,omitempty"`
-	Branch     string         `json:"branch,omitempty"`
-	Editor     string         `json:"editor,omitempty"`
-	Category   string         `json:"category,omitempty"`
-	IsWrite    *bool          `json:"is_write,omitempty"`
+	Client     string `json:"client,omitempty"`
+	Entity     string `json:"entity,omitempty"`
+	EntityType string `json:"entity_type,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	Editor     string `json:"editor,omitempty"`
+	Category   string `json:"category,omitempty"`
+	IsWrite    *bool  `json:"is_write,omitempty"`
 	// LinesAdded/LinesRemoved count the source lines the agent added and
 	// removed in this event's file modifications, for providers that record
 	// diffs. Zero means "no diff recorded", not "no change".
@@ -184,9 +184,9 @@ type Entry struct {
 	LinesRemoved uint64 `json:"lines_removed,omitempty"`
 	// Files breaks the same modifications down per file. Entity is always
 	// the most-changed path in here; LinesAdded/LinesRemoved are the totals.
-	Files []FileChange `json:"files,omitempty"`
-	Raw        map[string]any `json:"raw,omitempty"`
-	Usage      TokenUsage     `json:"usage"`
+	Files []FileChange   `json:"files,omitempty"`
+	Raw   map[string]any `json:"raw,omitempty"`
+	Usage TokenUsage     `json:"usage"`
 }
 
 // NormalizeOS maps a Go runtime.GOOS value to a human-readable name.
