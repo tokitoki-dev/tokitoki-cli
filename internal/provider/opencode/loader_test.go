@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/providertest"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
 )
@@ -26,10 +26,7 @@ func writeOpenCodeDB(t *testing.T, sessions, messages, parts []openCodeRow) stri
 
 func writeOpenCodeDBAt(t *testing.T, path string, sessions, messages, parts []openCodeRow) string {
 	t.Helper()
-	db, err := agentdb.OpenSQLite(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := providertest.OpenTestSQLite(t, path)
 	defer db.Close()
 
 	schema := []string{
@@ -436,10 +433,7 @@ func TestDetectsLanguageFromTouchedFiles(t *testing.T) {
 // would take the project directory down with it.
 func TestOpenCodeReadsSessionsWithoutModelColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.db")
-	db, err := agentdb.OpenSQLite(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := providertest.OpenTestSQLite(t, path)
 	for _, statement := range []string{
 		`CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, version TEXT)`,
 		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)`,

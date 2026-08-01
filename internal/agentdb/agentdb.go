@@ -35,8 +35,11 @@ func floatValue(value any) (float64, bool) {
 	}
 }
 
+// OpenSQLite opens an agent's database for scanning. Read-only is not a
+// preference but a guarantee: these files belong to running agents, and a
+// scanner that can take write locks on them can also corrupt them.
 func OpenSQLite(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}

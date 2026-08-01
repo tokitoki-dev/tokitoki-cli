@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
+
+	// Fixture databases are opened directly with database/sql; the driver
+	// registration rides in from agentdb.
+	_ "github.com/tokitoki-dev/tokitoki-cli/internal/agentdb"
 )
 
 // WantEntry describes the single entry a provider must produce from a minimal
@@ -66,14 +69,20 @@ func WriteFile(t *testing.T, path, data string) {
 	}
 }
 
-// OpenTestSQLite opens a fixture database, creating its directory.
+// OpenTestSQLite opens a fixture database, creating its directory. Fixtures
+// are built here with a writable connection; production code reads them back
+// through agentdb.OpenSQLite, which is read-only by design.
 func OpenTestSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := agentdb.OpenSQLite(path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		t.Fatal(err)
 	}
 	return db
