@@ -25,6 +25,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/opencode"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/pi"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/qwen"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/workbuddy"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageprovider"
@@ -69,6 +70,7 @@ func DefaultProviders() []usageprovider.Provider {
 		codebuff.Provider{},
 		opencode.Provider{},
 		goose.Provider{},
+		workbuddy.Provider{},
 	}
 }
 

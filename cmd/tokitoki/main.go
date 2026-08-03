@@ -565,7 +565,7 @@ Each invocation scans the provider roots you pass and uploads their usage
 events to the Tokitoki server (TOKITOKI_BASE_URL, default
 https://tokitoki.dev). By default, tokitoki scans the built-in roots for
 claude, codex, copilot, gemini, kimi, qwen, openclaw, pi, amp, droid, kilo,
-hermes, codebuff, opencode, and goose. Pass one or more
+hermes, codebuff, opencode, goose, and workbuddy. Pass one or more
 --provider-dir provider=dir values to scan an explicit provider set. The API
 key is read from ~/.tokitoki/api_key; use tokitoki set key <API_KEY> to create
 or update that file.

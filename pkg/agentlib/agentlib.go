@@ -84,6 +84,9 @@ const (
 
 	// ProviderGoose identifies Goose usage files.
 	ProviderGoose Provider = "goose"
+
+	// ProviderWorkbuddy identifies WorkBuddy usage files.
+	ProviderWorkbuddy Provider = "workbuddy"
 )
 
 var (
@@ -490,5 +493,6 @@ func DefaultProviderDirs() map[Provider][]string {
 			filepath.Join(home, "Library", "Application Support", "goose", "sessions", "sessions.db"),
 			filepath.Join(home, ".local", "share", "Block", "goose", "sessions", "sessions.db"),
 		},
+		ProviderWorkbuddy: {filepath.Join(home, ".workbuddy")},
 	}
 }
