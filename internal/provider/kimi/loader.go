@@ -14,18 +14,22 @@ import (
 
 const defaultModel = "kimi-for-coding"
 
-func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+func wireFiles(paths []string) []string {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, agentdata.CollectFiles(filepath.Join(root, "sessions"), isWireFile)...)
 	}
 	sort.Strings(files)
-	files = agentdata.FilterFiles(agentdata.UniqueStrings(files), filter)
+	return agentdata.UniqueStrings(files)
+}
+
+func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+	files := agentdata.FilterFiles(wireFiles(paths), filter)
 
 	entries := make([]usage.Entry, 0)
 	seen := make(map[string]bool)
 	for _, file := range files {
-		fileEntries, err := parseWireFile(file)
+		fileEntries, _, err := parseWireFileFrom(file, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -69,10 +73,10 @@ type record struct {
 	messageID string
 }
 
-func parseWireFile(path string) ([]usage.Entry, error) {
-	lines, err := agentdata.ReadJSONLines(path, `usage`)
+func parseWireFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
+	lines, consumed, err := agentdata.ReadJSONLinesFrom(path, start, `usage`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	configModel := configModel(path)
 	sessionID := sessionID(path)
@@ -102,7 +106,7 @@ func parseWireFile(path string) ([]usage.Entry, error) {
 		entry.ID = usageprovider.StableEntryID(entry, record.messageID)
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	return entries, consumed, nil
 }
 
 func parseStatusUpdate(value map[string]any) (record, bool) {

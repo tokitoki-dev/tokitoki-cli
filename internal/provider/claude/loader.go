@@ -232,14 +232,41 @@ func UsageFiles(paths []string, projectFilter string) []string {
 }
 
 func ReadUsageFile(path string) ([]LoadedEntry, error) {
+	entries, _, err := ReadUsageFileFrom(path, 0)
+	return entries, err
+}
+
+// ReadUsageFileFrom parses a transcript starting at byte offset start and
+// reports the offset to resume from next time.
+//
+// Transcripts are append-only and are read while Claude is still writing to
+// them, so the returned offset is the end of the last line that arrived with
+// its newline — never the end of the file. A trailing partial line is left
+// unconsumed for the next pass, when the rest of it exists.
+//
+// The offset advances past lines that fail to parse. A line the parser cannot
+// use is still a line the file has moved beyond; stopping there would turn one
+// malformed record into a permanent roadblock hiding everything after it.
+//
+// Callers resuming mid-file lose the diff-to-message association for a diff
+// written before start, which is a bounded, one-message cost. The alternative —
+// re-reading from zero to rebuild it — is the whole expense this exists to
+// avoid.
+func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
+
+	if start > 0 {
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, 0, err
+		}
+	}
 
 	sessionID := ExtractSessionID(path)
 	entries := make([]LoadedEntry, 0)
@@ -249,18 +276,31 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 	pending := make([]patchStats, 0)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
-	offset := int64(0)
+	offset := start
+	consumed := start
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		// A line that arrived without its newline is either the last line of
+		// a finished file or the front of one still being written, and the
+		// two are indistinguishable from here. It is parsed either way, so a
+		// file that simply lacks a trailing newline is not ignored, but the
+		// resume point stops short of it: if more of it arrives later, the
+		// next pass re-reads the whole line and supersedes what this one
+		// produced. Re-reading one line costs nothing; skipping a real one
+		// loses it permanently.
+		complete := readErr == nil
 		if len(line) > 0 {
 			lineNumber++
-			start := offset
+			lineStart := offset
 			offset += int64(len(line))
+			if complete {
+				consumed = offset
+			}
 			line = bytes.TrimRight(line, "\r\n")
 			if entry, ok := parseUsageLine(line, sessionID); ok {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
-				entry.SourceStart = start
+				entry.SourceStart = lineStart
 				entry.SourceEnd = offset
 				entry.ID = stableEntryID(entry)
 				entries = append(entries, entry)
@@ -276,15 +316,15 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 				}
 			}
 		}
-		if readErr == nil {
+		if complete {
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
-		return nil, readErr
+		return nil, 0, readErr
 	}
-	return entries, nil
+	return entries, consumed, nil
 }
 
 type patchStats struct {
@@ -585,40 +625,18 @@ func languageFromPathsInText(text string) string {
 	return langdetect.DominantFromPaths(paths)
 }
 
+// stableEntryID keys an entry on message.id + requestId — matching ccusage.
+// The same message is replayed across multiple session files (e.g. sidechains),
+// so keying on anything file/session/timestamp-specific double-counts tokens.
 func stableEntryID(entry LoadedEntry) string {
 	requestID := ""
 	if entry.Data.RequestID != nil {
 		requestID = *entry.Data.RequestID
 	}
-	messageID := ""
-	if entry.Data.Message.ID != nil {
-		messageID = *entry.Data.Message.ID
-	}
-
-	// Deduplicate on message.id + requestId only — matching ccusage. The same
-	// message is replayed across multiple session files (e.g. sidechains), so
-	// keying on anything file/session/timestamp-specific double-counts tokens.
-	if messageID != "" {
-		return usage.StableID(
-			string(usage.ProviderClaude),
-			messageID,
-			requestID,
-		)
-	}
-
-	// No message id: can't dedupe across files. Fall back to source position so
-	// the row at least stays stable for a given file.
-	tokens := entry.Data.Message.Usage
 	return usage.StableID(
 		string(usage.ProviderClaude),
-		entry.SourceFile,
-		strconv.Itoa(entry.SourceLine),
-		entry.Data.Timestamp,
-		entry.Model,
-		strconv.FormatUint(tokens.InputTokens, 10),
-		strconv.FormatUint(tokens.OutputTokens, 10),
-		strconv.FormatUint(tokens.CacheCreationInputTokens, 10),
-		strconv.FormatUint(tokens.CacheReadInputTokens, 10),
+		*entry.Data.Message.ID,
+		requestID,
 	)
 }
 
@@ -632,7 +650,10 @@ func isValidUsageEntry(data UsageEntry) bool {
 	if data.RequestID != nil && *data.RequestID == "" {
 		return false
 	}
-	if data.Message.ID != nil && *data.Message.ID == "" {
+	// A message id is required: it is what identifies the event. Without one
+	// there is nothing to deduplicate on, and the same message replayed across
+	// session files would be counted once per copy.
+	if data.Message.ID == nil || *data.Message.ID == "" {
 		return false
 	}
 	if data.Message.Model != nil && *data.Message.Model == "" {

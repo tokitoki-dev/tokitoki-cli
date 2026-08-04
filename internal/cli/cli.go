@@ -58,8 +58,9 @@ func (a *App) GetAPIKey() error {
 // accumulating history instead of losing it.
 //
 // Callers that coordinate multiple processes call the two phases separately —
-// Ingest under the data lock, Upload under the upload lock — so a slow drain
-// never blocks another process's ingestion.
+// Ingest under the data lock, Upload without one — so a slow drain never
+// blocks another process's ingestion. Uploads need no lock of their own:
+// concurrent drains claim different batches from the queue.
 func (a *App) Sync(ctx context.Context) error {
 	if err := a.Ingest(); err != nil {
 		return err

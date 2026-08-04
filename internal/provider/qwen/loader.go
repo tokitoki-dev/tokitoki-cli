@@ -11,7 +11,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+func chatFiles(paths []string) []string {
 	files := make([]string, 0)
 	for _, root := range paths {
 		files = append(files, agentdata.CollectFiles(filepath.Join(root, "projects"), isChatFile)...)
@@ -20,11 +20,15 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 		}
 	}
 	sort.Strings(files)
-	files = agentdata.FilterFiles(agentdata.UniqueStrings(files), filter)
+	return agentdata.UniqueStrings(files)
+}
+
+func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+	files := agentdata.FilterFiles(chatFiles(paths), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
-		fileEntries, err := parseChatFile(file)
+		fileEntries, _, err := parseChatFileFrom(file, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -47,10 +51,10 @@ func isChatFile(path string) bool {
 	return false
 }
 
-func parseChatFile(path string) ([]usage.Entry, error) {
-	lines, err := agentdata.ReadJSONLines(path, `"usageMetadata"`)
+func parseChatFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
+	lines, consumed, err := agentdata.ReadJSONLinesFrom(path, start, `"usageMetadata"`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	project := project(path)
 	fallback := agentdata.FileModifiedTime(path)
@@ -93,7 +97,7 @@ func parseChatFile(path string) ([]usage.Entry, error) {
 		entry.ID = usageprovider.StableEntryID(entry)
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	return entries, consumed, nil
 }
 
 func project(path string) string {

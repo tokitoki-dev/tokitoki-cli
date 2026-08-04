@@ -38,6 +38,15 @@ const (
 
 	// uploadedRetention is how long uploaded events are kept before pruning.
 	uploadedRetention = 30 * 24 * time.Hour
+
+	// uploadLease is how long a claimed batch stays claimed.
+	//
+	// It must outlast a healthy upload, or a batch still being sent would be
+	// reclaimed and sent twice. Callers bound an upload by DefaultUploadTimeout
+	// (2 minutes), so this leaves a wide margin above it: expiring early costs
+	// duplicate round-trips on every slow upload, while expiring late costs
+	// delay only when a process actually died. The asymmetry says round up.
+	uploadLease = 5 * time.Minute
 )
 
 type Payload struct {
@@ -130,12 +139,30 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 // Uploaded events older than uploadedRetention are pruned before sending.
 // SyncPending continues until all pending+failed events are sent or an error occurs.
 func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) error {
+	return syncPending(ctx, settings, db, 0)
+}
+
+// SyncPendingBatches drains at most maxBatches batches instead of continuing
+// until the queue is empty.
+//
+// A drain running beside a scan needs this: the scan keeps adding events, so
+// an unbounded drain follows it down to whatever arrived in the last few
+// milliseconds and spends a request on each handful. Stopping after a bounded
+// number of batches lets the queue refill into full requests between passes.
+func SyncPendingBatches(ctx context.Context, settings agent.Settings, db *usagedb.DB, maxBatches int) error {
+	return syncPending(ctx, settings, db, maxBatches)
+}
+
+func syncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB, maxBatches int) error {
 	if _, err := db.PruneUploaded(time.Now().Add(-uploadedRetention)); err != nil {
 		return err
 	}
 
-	for {
-		events, err := db.PendingEvents(time.Now(), queueBatchSize)
+	for sent := 0; maxBatches <= 0 || sent < maxBatches; sent++ {
+		// Claiming rather than reading marks this batch as ours, so a second
+		// uploader running at the same time takes a different one instead of
+		// re-sending this.
+		events, err := db.ClaimEvents(time.Now(), queueBatchSize, uploadLease)
 		if err != nil {
 			return err
 		}
@@ -190,10 +217,18 @@ func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) e
 		// If not, it's a server bug or response parsing error.
 		totalAcknowledged := len(response.Accepted) + len(response.Duplicate) + len(response.Rejected)
 		if totalAcknowledged != len(events) {
-			return fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
-				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected))
+			// Whatever went unaccounted for is still claimed. Releasing it
+			// puts it back in the queue for the next pass; left alone it would
+			// be invisible to both the pending count and the next claim until
+			// its lease expired.
+			releaseErr := db.ReleaseClaims(unacknowledged(events, response))
+			return errors.Join(fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
+				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected)), releaseErr)
 		}
 	}
+	// Reached the batch limit with events still queued; the caller drains the
+	// rest on its next pass.
+	return nil
 }
 
 // logRejections reports what the server refused. Rejections repeat: a server
@@ -211,6 +246,29 @@ func logRejections(rejected []Reject) {
 	for reason, count := range counts {
 		slog.Warn("usage events rejected by server", "reason", reason, "events", count)
 	}
+}
+
+// unacknowledged returns the ids the server said nothing about — neither
+// accepted, duplicate, nor rejected.
+func unacknowledged(events []usage.Entry, response Response) []string {
+	seen := make(map[string]bool, len(response.Accepted)+len(response.Duplicate)+len(response.Rejected))
+	for _, id := range response.Accepted {
+		seen[id] = true
+	}
+	for _, id := range response.Duplicate {
+		seen[id] = true
+	}
+	for _, rejected := range response.Rejected {
+		seen[rejected.ID] = true
+	}
+
+	missing := make([]string, 0)
+	for _, event := range events {
+		if event.ID != "" && !seen[event.ID] {
+			missing = append(missing, event.ID)
+		}
+	}
+	return missing
 }
 
 func eventIDs(events []usage.Entry) []string {

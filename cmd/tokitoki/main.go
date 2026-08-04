@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +28,10 @@ import (
 
 const (
 	defaultSyncInterval = 5 * time.Minute
+	// defaultUploadInterval paces the queue drain. It runs far more often
+	// than the scan because an empty queue costs one indexed query, and
+	// because it bounds how long a freshly scanned event waits to be sent.
+	defaultUploadInterval = 30 * time.Second
 	// updateInterval paces the service worker's self-update checks. The
 	// first check runs immediately after start, so a freshly installed or
 	// relaunched service is current within one loop iteration.
@@ -337,9 +342,10 @@ type workerFlags struct {
 	// rather than the built-in defaults. Installed units only bake explicit
 	// dirs into ExecStart: defaults must resolve from the service user's
 	// home at run time, not the installer's at install time.
-	explicitDirs bool
-	interval     time.Duration
-	checkUpdate  bool
+	explicitDirs   bool
+	interval       time.Duration
+	uploadInterval time.Duration
+	checkUpdate    bool
 }
 
 func runServiceWorker(args []string) int {
@@ -352,39 +358,113 @@ func runServiceWorker(args []string) int {
 	return runWorkerLoop(ctx, flags)
 }
 
+// runWorkerLoop scans and uploads on independent schedules.
+//
+// The two halves share nothing but the local queue: scanning writes events
+// into it, uploading drains them. Running them on one ticker meant an upload
+// could not start until a scan finished, so a cold start spent its whole scan
+// with events queued and the network idle. Apart they proceed at their own
+// pace, and the upload ticker runs faster because draining a queue that is
+// usually empty costs one indexed query.
+//
+// Neither half knows the other exists. A scan that fails does not stop queued
+// events from being sent, and an upload that fails does not stop new events
+// from being queued.
 func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	logger := defaultLogger()
-	ticker := time.NewTicker(flags.interval)
+
+	client, err := agentlib.New(agentlib.Options{Logger: logger})
+	if err != nil {
+		logger.Error("tokitoki worker failed to start", "error", err)
+		return 1
+	}
+
+	// A successful self-update replaces the binary on disk while this process
+	// still runs the old code, so it stops every loop and exits for the
+	// service manager to restart. Cancelling here is what ends the scan and
+	// upload loops too.
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		runIntervalLoop(workerCtx, flags.interval, func(context.Context) {
+			if err := client.Scan(agentlib.SyncOptions{ProviderDirs: flags.providerDirs}); err != nil {
+				logger.Error("tokitoki scan failed", "error", err)
+			}
+		})
+	}()
+
+	go func() {
+		defer wg.Done()
+		runIntervalLoop(workerCtx, flags.uploadInterval, func(runCtx context.Context) {
+			if err := client.Upload(runCtx); err != nil {
+				logger.Error("tokitoki upload failed", "error", err)
+			}
+		})
+	}()
+
+	runUpdateLoop(workerCtx, logger, flags.interval)
+	stopWorkers()
+	wg.Wait()
+	return 0
+}
+
+// runIntervalLoop runs work immediately and then every interval until ctx is
+// done. Each run is bounded by its own timeout so one slow pass cannot stall
+// the schedule forever.
+func runIntervalLoop(ctx context.Context, interval time.Duration, work func(context.Context)) {
+	// NewTicker panics on a non-positive interval. A caller that never set one
+	// wants the default cadence, not a crashed worker.
+	if interval <= 0 {
+		interval = defaultSyncInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Zero means "never checked", so the first iteration checks right away.
-	var lastUpdateCheck time.Time
-
 	for {
-		syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
-		if err := runSync(syncCtx, flags.providerDirs, os.Stdout); err != nil {
-			logger.Error("tokitoki sync failed", "error", err)
-		}
+		runCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
+		work(runCtx)
 		cancel()
 
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// runUpdateLoop checks for a new binary until ctx is done or one is
+// installed. The caller then exits so the service manager restarts into it.
+func runUpdateLoop(ctx context.Context, logger *slog.Logger, interval time.Duration) {
+	// Zero means "never checked", so the first iteration checks right away.
+	var lastUpdateCheck time.Time
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
 		if time.Since(lastUpdateCheck) >= updateInterval {
 			lastUpdateCheck = time.Now()
-			updateCtx, cancel := context.WithTimeout(ctx, updateTimeout)
-			result, err := selfupdate.Upgrade(updateCtx, logger, usageupload.BaseURL(), version)
+			checkCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+			result, err := selfupdate.Upgrade(checkCtx, logger, usageupload.BaseURL(), version)
 			cancel()
 			if err != nil {
 				logger.Warn("tokitoki self-update failed", "error", err)
 			} else if result.Updated {
 				// The binary on disk is new but this process is still the
-				// old code. Exit; the service manager restarts us as the
+				// old code. Stop; the service manager restarts us as the
 				// new version.
-				return 0
+				return
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			return 0
+			return
 		case <-ticker.C:
 		}
 	}
@@ -409,7 +489,8 @@ func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 	flags.SetOutput(os.Stderr)
 	providerDirs := newProviderDirFlags(agentlib.DefaultProviderDirs())
 	flags.Var(providerDirs, "provider-dir", "provider data directory to scan (provider=dir; repeatable)")
-	interval := flags.Duration("interval", defaultSyncInterval, "sync interval")
+	interval := flags.Duration("interval", defaultSyncInterval, "scan interval")
+	uploadInterval := flags.Duration("upload-interval", defaultUploadInterval, "queue drain interval")
 	if err := flags.Parse(args); err != nil {
 		return workerFlags{}, false
 	}
@@ -427,8 +508,9 @@ func parseWorkerFlags(name string, args []string) (workerFlags, bool) {
 		return workerFlags{}, false
 	}
 	return workerFlags{
-		providerDirs: dirs,
-		interval:     *interval,
+		providerDirs:   dirs,
+		interval:       *interval,
+		uploadInterval: *uploadInterval,
 	}, true
 }
 
@@ -456,9 +538,10 @@ func parseServiceFlags(args []string) (workerFlags, bool, bool) {
 		return workerFlags{}, false, false
 	}
 	return workerFlags{
-		providerDirs: dirs,
-		explicitDirs: providerDirs.Explicit(),
-		interval:     *interval,
+		providerDirs:   dirs,
+		explicitDirs:   providerDirs.Explicit(),
+		interval:       *interval,
+		uploadInterval: defaultUploadInterval,
 	}, !*system, true
 }
 

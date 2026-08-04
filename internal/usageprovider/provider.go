@@ -51,6 +51,36 @@ func (b Base) WithFilterSet(filter usage.FileFilter) Base {
 	return b
 }
 
+// StreamFiles walks files in order, parsing each from where the previous scan
+// stopped and handing its entries to emit before moving to the next.
+//
+// It is the shared body of every append-only provider's StreamEntries: the
+// providers differ only in how they find their files and how they parse one,
+// so those are the two arguments. Keeping the loop here means the rules that
+// make a resumed scan safe — parse from the recorded offset, emit before
+// advancing it — are stated once rather than re-derived per provider.
+func StreamFiles(
+	files []string,
+	filter usage.FileFilter,
+	parse func(path string, start int64) ([]usage.Entry, int64, error),
+	emit func(path string, entries []usage.Entry, offset int64) error,
+	resume func(path string) int64,
+) error {
+	for _, file := range files {
+		if filter != nil && !filter(file) {
+			continue
+		}
+		entries, offset, err := parse(file, resume(file))
+		if err != nil {
+			return err
+		}
+		if err := emit(file, entries, offset); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SortEntriesByTimestampDesc orders entries newest first, the order every
 // provider returns them in.
 func SortEntriesByTimestampDesc(entries []usage.Entry) []usage.Entry {
@@ -118,11 +148,19 @@ func SetSource(entry *usage.Entry, source string, line int, start, end int64) {
 	entry.SourceEnd = end
 }
 
+// StableEntryID derives a deterministic id from an entry's source position
+// and contents.
+//
+// The position is the byte offset, not the line number. A scan that resumes
+// mid-file starts counting lines from 1 again, so a line-based id would give
+// the same record a different identity depending on where the previous pass
+// happened to stop. The byte offset is a property of the file itself and does
+// not move.
 func StableEntryID(entry usage.Entry, extra ...string) string {
 	parts := []string{
 		string(entry.Provider),
 		entry.SourceFile,
-		strconv.Itoa(entry.SourceLine),
+		strconv.FormatInt(entry.SourceStart, 10),
 		entry.Timestamp.Format(time.RFC3339Nano),
 		entry.Project,
 		entry.ProjectPath,

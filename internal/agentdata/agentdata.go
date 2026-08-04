@@ -78,25 +78,64 @@ func CollectExt(root, ext string) []string {
 }
 
 func ReadJSONLines(path string, prefilter ...string) ([]LineJSON, error) {
+	lines, _, err := ReadJSONLinesFrom(path, 0, prefilter...)
+	return lines, err
+}
+
+// ReadJSONLinesFrom parses a JSONL file starting at byte offset start and
+// reports the offset to resume from next time.
+//
+// This exists for transcripts that are appended to while being read: an
+// active session's file grows continuously, and re-reading megabytes of
+// history to pick up the newest few lines is the cost resuming avoids.
+//
+// The returned offset is the end of the last line that arrived with its
+// newline, never the end of the file. A trailing line without one is either
+// the last line of a finished file or the front of one still being written,
+// and the two are indistinguishable from here. It is parsed either way, so a
+// file that merely lacks a final newline is not ignored, but the resume point
+// stops before it: if more of it arrives later, the next pass re-reads the
+// whole line. Re-reading one line costs nothing; skipping a real one loses it.
+//
+// The offset also advances past lines that fail to parse or that the
+// prefilter rejects. Those are lines the file has moved beyond; stopping
+// there would turn one malformed record into a permanent roadblock hiding
+// everything after it.
+//
+// Only callers whose files are append-only may resume. A caller that reads a
+// document rewritten in place, or that needs cross-line context from earlier
+// in the file, must keep using ReadJSONLines.
+func ReadJSONLinesFrom(path string, start int64, prefilter ...string) ([]LineJSON, int64, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
+
+	if start > 0 {
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, 0, err
+		}
+	}
 
 	lines := make([]LineJSON, 0)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
-	offset := int64(0)
+	offset := start
+	consumed := start
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		complete := readErr == nil
 		if len(line) > 0 {
 			lineNumber++
-			start := offset
+			lineStart := offset
 			offset += int64(len(line))
+			if complete {
+				consumed = offset
+			}
 			line = bytes.TrimRight(line, "\r\n")
 			if matchesPrefilter(line, prefilter) {
 				var value map[string]any
@@ -106,21 +145,21 @@ func ReadJSONLines(path string, prefilter ...string) ([]LineJSON, error) {
 					lines = append(lines, LineJSON{
 						Value: value,
 						Line:  lineNumber,
-						Start: start,
+						Start: lineStart,
 						End:   offset,
 					})
 				}
 			}
 		}
-		if readErr == nil {
+		if complete {
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
-		return nil, readErr
+		return nil, 0, readErr
 	}
-	return lines, nil
+	return lines, consumed, nil
 }
 
 type LineJSON struct {

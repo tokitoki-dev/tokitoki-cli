@@ -11,17 +11,21 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+func sessionFiles(paths []string) []string {
 	files := make([]string, 0)
 	for _, path := range paths {
 		files = append(files, agentdata.CollectExt(path, ".jsonl")...)
 	}
 	sort.Strings(files)
-	files = agentdata.FilterFiles(files, filter)
+	return files
+}
+
+func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
+	files := agentdata.FilterFiles(sessionFiles(paths), filter)
 
 	entries := make([]usage.Entry, 0)
 	for _, file := range files {
-		fileEntries, err := parseSessionFile(file)
+		fileEntries, _, err := parseSessionFileFrom(file, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -31,10 +35,10 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 	return entries, nil
 }
 
-func parseSessionFile(path string) ([]usage.Entry, error) {
-	lines, err := agentdata.ReadJSONLines(path, `"usage"`, `"message"`)
+func parseSessionFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
+	lines, consumed, err := agentdata.ReadJSONLinesFrom(path, start, `"usage"`, `"message"`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	project := project(path)
 	sessionID := sessionID(path)
@@ -74,7 +78,7 @@ func parseSessionFile(path string) ([]usage.Entry, error) {
 		entry.ID = usageprovider.StableEntryID(entry)
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	return entries, consumed, nil
 }
 
 func sessionID(path string) string {

@@ -34,3 +34,10 @@ func (p Provider) Entries() ([]usage.Entry, error) {
 	}
 	return usageprovider.SortEntriesByTimestampDesc(entries), nil
 }
+
+// StreamEntries parses each session file from where the previous scan stopped.
+// Sessions are append-only JSONL, so a scan reads only what was written since
+// the last one.
+func (p Provider) StreamEntries(resume func(path string) int64, emit func(path string, entries []usage.Entry, offset int64) error) error {
+	return usageprovider.StreamFiles(sessionFiles(p.Paths()), p.Filter(), parseSessionFileFrom, emit, resume)
+}

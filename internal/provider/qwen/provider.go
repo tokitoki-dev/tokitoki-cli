@@ -34,3 +34,10 @@ func (p Provider) Entries() ([]usage.Entry, error) {
 	}
 	return usageprovider.SortEntriesByTimestampDesc(entries), nil
 }
+
+// StreamEntries parses each chat file from where the previous scan stopped.
+// Chat files are append-only JSONL and each line stands alone, so a resumed
+// read produces exactly what a whole read would.
+func (p Provider) StreamEntries(resume func(path string) int64, emit func(path string, entries []usage.Entry, offset int64) error) error {
+	return usageprovider.StreamFiles(chatFiles(p.Paths()), p.Filter(), parseChatFileFrom, emit, resume)
+}

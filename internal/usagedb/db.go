@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codex"
@@ -33,22 +34,34 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	attempt_count   INTEGER NOT NULL DEFAULT 0,
 	next_attempt_at INTEGER NOT NULL DEFAULT 0,
 	uploaded_at     INTEGER,
-	last_error      TEXT NOT NULL DEFAULT ''
+	last_error      TEXT NOT NULL DEFAULT '',
+	lease_until     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_queue ON usage_events(status, next_attempt_at);
 CREATE TABLE IF NOT EXISTS scanned_files (
 	path     TEXT PRIMARY KEY,
 	size     INTEGER NOT NULL,
-	mtime_ns INTEGER NOT NULL
+	mtime_ns INTEGER NOT NULL,
+	offset   INTEGER NOT NULL DEFAULT 0
 );
 `
 
 // FileState is the stat snapshot of a source file at the time it was last
 // successfully scanned. A file whose current stat matches its stored state
 // holds no events the database has not already seen.
+//
+// Size and MtimeNS answer "has this file changed at all"; Offset answers
+// "where do we resume". They are deliberately separate: Size is the size
+// stat'd at the start of the pass, while Offset is where parsing actually
+// stopped, which is earlier whenever the file ended in a partial line.
 type FileState struct {
 	Size    int64
 	MtimeNS int64
+
+	// Offset is the byte position after the last fully-consumed line. Zero
+	// means parse from the beginning — the correct default both for files
+	// never seen before and for rows written by versions predating resume.
+	Offset int64
 }
 
 type DB struct {
@@ -108,7 +121,13 @@ func stampVersion(db *sql.DB) error {
 // dropped file position entirely in favor of session + timestamp + tokens.
 // The rekey recomputes from payload, so any older version jumps straight to
 // the current scheme in one pass.
-const eventSchemaVersion = 2
+// Version 3 adds scanned_files.offset, which lets a scan resume mid-file
+// instead of re-parsing every changed file from the beginning. Existing rows
+// default to 0, meaning "start over" — correct, just not yet incremental.
+//
+// Version 4 adds usage_events.lease_until, which lets a claimed batch be
+// reclaimed after the process that claimed it died mid-upload.
+const eventSchemaVersion = 4
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -123,7 +142,29 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 3 {
+		if err := addColumn(db, `ALTER TABLE scanned_files ADD COLUMN offset INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if err := addColumn(db, `ALTER TABLE usage_events ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	return stampVersion(db)
+}
+
+// addColumn runs an ALTER TABLE ADD COLUMN that may already have been applied.
+// The schema statement creates fresh databases at the current shape, so a
+// column this migration adds can already exist by the time it runs; that
+// duplicate-column error is the expected no-op, not a failure.
+func addColumn(db *sql.DB, statement string) error {
+	_, err := db.Exec(statement)
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return err
 }
 
 func rekeyCodexEvents(db *sql.DB) error {
@@ -262,7 +303,7 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 
 // ScannedFiles returns the stat snapshot of every file recorded as scanned.
 func (s *DB) ScannedFiles() (map[string]FileState, error) {
-	rows, err := s.db.Query(`SELECT path, size, mtime_ns FROM scanned_files`)
+	rows, err := s.db.Query(`SELECT path, size, mtime_ns, offset FROM scanned_files`)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +313,7 @@ func (s *DB) ScannedFiles() (map[string]FileState, error) {
 	for rows.Next() {
 		var path string
 		var state FileState
-		if err := rows.Scan(&path, &state.Size, &state.MtimeNS); err != nil {
+		if err := rows.Scan(&path, &state.Size, &state.MtimeNS, &state.Offset); err != nil {
 			return nil, err
 		}
 		states[path] = state
@@ -293,14 +334,14 @@ func (s *DB) UpsertScannedFiles(states map[string]FileState) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scanned_files (path, size, mtime_ns) VALUES (?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scanned_files (path, size, mtime_ns, offset) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for path, state := range states {
-		if _, err := stmt.Exec(path, state.Size, state.MtimeNS); err != nil {
+		if _, err := stmt.Exec(path, state.Size, state.MtimeNS, state.Offset); err != nil {
 			return fmt.Errorf("save scanned file %q: %w", path, err)
 		}
 	}
@@ -336,6 +377,115 @@ func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()
+}
+
+// PendingCount reports how many events are due for upload at now. It is the
+// cheap question "is there enough queued to be worth a request", answered
+// without claiming anything.
+func (s *DB) PendingCount(now time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT count(*) FROM usage_events
+		WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?`, now.Unix()).Scan(&count)
+	return count, err
+}
+
+// ClaimEvents takes ownership of a batch due for upload and returns it.
+//
+// Claiming marks the rows "sending" and stamps a lease. Two uploaders running
+// at once therefore take different batches instead of both sending the same
+// one: the UPDATE is atomic, so whichever runs second sees the rows already
+// claimed and moves past them.
+//
+// Fresh work is claimed first. Only when there is none does it fall back to
+// batches whose lease has expired — rows left "sending" by a process that
+// died mid-upload. Keeping that fallback off the common path means a healthy
+// queue never pays for it, and it also means a slow-but-alive uploader is not
+// raced for its batch while ordinary work is still available.
+//
+// A duplicate send is harmless if it happens anyway: the server dedupes on
+// event id and SyncPending counts a duplicate as uploaded. This is why the
+// lease can be a plain timestamp rather than something that must be renewed.
+func (s *DB) ClaimEvents(now time.Time, limit int, lease time.Duration) ([]usage.Entry, error) {
+	if limit <= 0 {
+		limit = -1
+	}
+	leaseUntil := now.Add(lease).Unix()
+
+	entries, err := s.claim(`
+		UPDATE usage_events SET status = 'sending', lease_until = ?
+		WHERE id IN (
+			SELECT id FROM usage_events
+			WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
+			ORDER BY ts DESC, id
+			LIMIT ?
+		)
+		RETURNING payload`, leaseUntil, now.Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(entries) >= limit {
+		return entries, nil
+	}
+
+	// Room left in this batch. Anything still "sending" past its lease belongs
+	// to a process that is gone, so reclaiming it is the only way those events
+	// are ever sent. Topping up rather than only checking when fresh work runs
+	// out matters: on a machine whose queue never empties, an "only if idle"
+	// check would never run and those events would be stranded indefinitely.
+	remaining := limit - len(entries)
+	if limit <= 0 {
+		remaining = limit
+	}
+	expired, err := s.claim(`
+		UPDATE usage_events SET status = 'sending', lease_until = ?
+		WHERE id IN (
+			SELECT id FROM usage_events
+			WHERE status = 'sending' AND lease_until <= ?
+			ORDER BY ts DESC, id
+			LIMIT ?
+		)
+		RETURNING payload`, leaseUntil, now.Unix(), remaining)
+	if err != nil {
+		return nil, err
+	}
+	return append(entries, expired...), nil
+}
+
+func (s *DB) claim(query string, args ...any) ([]usage.Entry, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]usage.Entry, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			return nil, fmt.Errorf("decode usage event: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// ReleaseClaims returns claimed events to the queue without counting an
+// attempt against them.
+//
+// It undoes a claim that resolved into nothing — a server response that did
+// not account for every event it was sent. Those rows are not failures to back
+// off from; they were simply never answered for, and the next pass should pick
+// them up immediately rather than wait out their lease.
+func (s *DB) ReleaseClaims(ids []string) error {
+	return s.updateEach(ids, func(stmt *sql.Stmt, id string) error {
+		_, err := stmt.Exec(id)
+		return err
+	}, `UPDATE usage_events SET status = 'pending', lease_until = 0 WHERE id = ? AND status = 'sending'`)
 }
 
 // MarkEventsUploaded marks ids as accepted by the server.
@@ -374,7 +524,8 @@ func (s *DB) MarkEventsUploadFailed(ids []string, message string) error {
 		status = 'failed',
 		attempt_count = attempt_count + 1,
 		next_attempt_at = ? + min(? << min(attempt_count, 7), ?),
-		last_error = ?
+		last_error = ?,
+		lease_until = 0
 	WHERE id = ?`)
 }
 

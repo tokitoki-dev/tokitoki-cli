@@ -11,6 +11,10 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
+// openclaw is deliberately not resumable: a model-change line sets the model
+// for every message after it, so parsing from a mid-file offset would attribute
+// later entries to "unknown" instead. The state would have to be carried across
+// scans to resume safely, and it is not worth that for this provider's volume.
 func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error) {
 	files := make([]string, 0)
 	for _, path := range paths {

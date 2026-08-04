@@ -1,6 +1,7 @@
 package usagedb
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -307,5 +308,271 @@ func TestOpenStampsFreshDatabaseAtCurrentVersion(t *testing.T) {
 	}
 	if version != eventSchemaVersion {
 		t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
+	}
+}
+
+// A database written before resume offsets existed must gain the column with
+// every row defaulting to 0, which means "parse from the beginning" — safe,
+// just not yet incremental.
+func TestOpenAddsScannedFilesOffsetToLegacyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	legacy, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE usage_events (
+			id TEXT PRIMARY KEY, ts INTEGER NOT NULL, payload TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at INTEGER NOT NULL DEFAULT 0, uploaded_at INTEGER,
+			last_error TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE scanned_files (
+			path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
+		);
+		INSERT INTO scanned_files (path, size, mtime_ns) VALUES ('/tmp/a.jsonl', 42, 7);
+		PRAGMA user_version = 2;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	states, err := db.ScannedFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := states["/tmp/a.jsonl"]
+	if !ok {
+		t.Fatal("legacy scanned_files row was lost")
+	}
+	if state.Size != 42 || state.MtimeNS != 7 {
+		t.Fatalf("legacy row = %+v, want size 42 mtime 7", state)
+	}
+	if state.Offset != 0 {
+		t.Fatalf("offset = %d, want 0", state.Offset)
+	}
+
+	var version int
+	if err := db.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != eventSchemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
+	}
+}
+
+// Two uploaders running at once must take different batches, not the same one.
+func TestClaimEventsGivesEachCallerADistinctBatch(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{
+		testUsageEntry("event-a"), testUsageEntry("event-b"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := db.ClaimEvents(time.Now(), 1, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.ClaimEvents(time.Now(), 1, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("claims = %d and %d, want 1 each", len(first), len(second))
+	}
+	if first[0].ID == second[0].ID {
+		t.Fatalf("both callers claimed %q; claims must not overlap", first[0].ID)
+	}
+
+	// Everything is claimed, and no lease has expired, so there is nothing left.
+	third, err := db.ClaimEvents(time.Now(), 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third) != 0 {
+		t.Fatalf("third claim = %d events, want 0 while leases are live", len(third))
+	}
+}
+
+// A batch left claimed by a process that died must become claimable again once
+// its lease expires — otherwise those events would never be sent.
+func TestClaimEventsReclaimsAfterLeaseExpires(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-a")}); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := db.ClaimEvents(time.Now(), 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("first claim = %d, want 1", len(claimed))
+	}
+
+	// Before the lease expires the batch stays with its owner.
+	if again, err := db.ClaimEvents(time.Now(), 10, time.Minute); err != nil {
+		t.Fatal(err)
+	} else if len(again) != 0 {
+		t.Fatalf("claimed %d events while the lease was live, want 0", len(again))
+	}
+
+	// After it expires the batch is reclaimable.
+	reclaimed, err := db.ClaimEvents(time.Now().Add(2*time.Minute), 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].ID != "event-a" {
+		t.Fatalf("reclaimed = %+v, want event-a", reclaimed)
+	}
+}
+
+// Expired leases are reclaimed alongside fresh work rather than only when the
+// queue runs dry. A machine whose queue never empties would otherwise never
+// reach the recovery path, stranding those events indefinitely.
+func TestClaimEventsReclaimsExpiredLeasesAlongsideFreshWork(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-stuck")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ClaimEvents(time.Now(), 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// event-stuck is now claimed with a lease that has long expired.
+	later := time.Now().Add(2 * time.Minute)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-fresh")}); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := db.ClaimEvents(later, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(claimed))
+	for _, entry := range claimed {
+		got[entry.ID] = true
+	}
+	if !got["event-fresh"] || !got["event-stuck"] {
+		t.Fatalf("claimed = %v, want both event-fresh and the stranded event-stuck", got)
+	}
+}
+
+// A batch that fills the limit with fresh work leaves expired leases for the
+// next pass rather than exceeding what the caller asked for.
+func TestClaimEventsRespectsLimitWhileReclaiming(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-stuck")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ClaimEvents(time.Now(), 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(2 * time.Minute)
+	if _, err := db.InsertEvents([]usage.Entry{
+		testUsageEntry("event-a"), testUsageEntry("event-b"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := db.ClaimEvents(later, 2, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed %d events, want exactly the 2 requested", len(claimed))
+	}
+}
+
+// A failed upload returns its batch to the queue rather than leaving it
+// claimed until the lease runs out.
+func TestMarkEventsUploadFailedReleasesTheClaim(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-a")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ClaimEvents(time.Now(), 10, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkEventsUploadFailed([]string{"event-a"}, "offline"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Due again after backoff, without waiting out the hour-long lease.
+	due := time.Now().Add(backoffBaseSeconds*time.Second + time.Second)
+	claimed, err := db.ClaimEvents(due, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != "event-a" {
+		t.Fatalf("claimed = %+v, want event-a back in the queue", claimed)
+	}
+}
+
+// Events the server never accounted for must return to the queue immediately,
+// not stay claimed until their lease runs out.
+func TestReleaseClaimsReturnsEventsToTheQueue(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-a")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ClaimEvents(time.Now(), 10, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	// While claimed it is invisible to the queue.
+	if n, err := db.PendingCount(time.Now()); err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Fatalf("pending count = %d while claimed, want 0", n)
+	}
+
+	if err := db.ReleaseClaims([]string{"event-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := db.PendingCount(time.Now()); err != nil {
+		t.Fatal(err)
+	} else if n != 1 {
+		t.Fatalf("pending count = %d after release, want 1", n)
+	}
+	claimed, err := db.ClaimEvents(time.Now(), 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != "event-a" {
+		t.Fatalf("claimed = %+v after release, want event-a", claimed)
+	}
+}
+
+// Releasing must not resurrect events that already resolved.
+func TestReleaseClaimsLeavesResolvedEventsAlone(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{testUsageEntry("event-a")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ClaimEvents(time.Now(), 10, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkEventsUploaded([]string{"event-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReleaseClaims([]string{"event-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := db.PendingCount(time.Now()); err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Fatalf("pending count = %d, want 0: an uploaded event was resurrected", n)
 	}
 }

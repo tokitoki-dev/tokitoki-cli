@@ -45,3 +45,29 @@ func (p Provider) Entries() ([]usage.Entry, error) {
 	})
 	return converted, nil
 }
+
+// StreamEntries parses each transcript from where the previous scan stopped
+// and hands its entries to emit before moving on.
+//
+// Transcripts are append-only, so resuming at a byte offset reads only what
+// was written since the last scan. An active session's transcript grows to
+// tens of megabytes, and re-reading all of it every few minutes to pick up
+// the newest few lines is the cost this avoids.
+//
+// Entries are not sorted here. Ordering is a presentation concern of Entries;
+// what emit does with these is store them, keyed by id.
+func (p Provider) StreamEntries(resume func(path string) int64, emit func(path string, entries []usage.Entry, offset int64) error) error {
+	for _, file := range UsageFiles(p.paths, "") {
+		if p.filter != nil && !p.filter(file) {
+			continue
+		}
+		loaded, offset, err := ReadUsageFileFrom(file, resume(file))
+		if err != nil {
+			return err
+		}
+		if err := emit(file, ConvertEntries(loaded), offset); err != nil {
+			return err
+		}
+	}
+	return nil
+}
