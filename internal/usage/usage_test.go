@@ -2,61 +2,63 @@ package usage
 
 import "testing"
 
-func TestNormalizeClientUsesRealIDESource(t *testing.T) {
+func TestNormalizeClientReportsTheRawSource(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider Provider
-		raw      string
-		want     string
+		name string
+		raw  string
+		want string
 	}{
 		{
-			name:     "claude vscode plugin",
-			provider: ProviderClaude,
-			raw:      "claude-vscode",
-			want:     "VS Code",
+			name: "claude vscode plugin",
+			raw:  "claude-vscode",
+			want: "claude-vscode",
 		},
 		{
-			name:     "codex vscode plugin",
-			provider: ProviderCodex,
-			raw:      "codex_vscode",
-			want:     "VS Code",
+			name: "codex vscode plugin",
+			raw:  "codex_vscode",
+			want: "codex_vscode",
 		},
 		{
-			name:     "codex cli",
-			provider: ProviderCodex,
-			raw:      "codex_cli_rs",
-			want:     "Codex CLI",
+			name: "codex cli",
+			raw:  "codex_cli_rs",
+			want: "codex_cli_rs",
 		},
 		{
-			name:     "claude sdk cli",
-			provider: ProviderClaude,
-			raw:      "sdk-cli",
-			want:     "Claude CLI",
+			name: "claude sdk",
+			raw:  "sdk-ts",
+			want: "sdk-ts",
 		},
 		{
-			name:     "claude sdk",
-			provider: ProviderClaude,
-			raw:      "sdk-ts",
-			want:     "Claude SDK",
+			name: "casing is preserved",
+			raw:  "Codex Desktop",
+			want: "Codex Desktop",
 		},
 		{
-			name:     "codex desktop",
-			provider: ProviderCodex,
-			raw:      "codex desktop",
-			want:     "Codex Desktop",
+			name: "unknown preserved",
+			raw:  "Custom IDE",
+			want: "Custom IDE",
 		},
 		{
-			name:     "unknown preserved",
-			provider: ProviderClaude,
-			raw:      "Custom IDE",
-			want:     "Custom IDE",
+			name: "surrounding space trimmed",
+			raw:  "  claude-desktop \n",
+			want: "claude-desktop",
+		},
+		{
+			name: "empty stays empty",
+			raw:  "",
+			want: "",
+		},
+		{
+			name: "blank collapses to empty",
+			raw:  "   ",
+			want: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NormalizeClient(tt.provider, tt.raw); got != tt.want {
-				t.Fatalf("NormalizeClient(%q, %q) = %q, want %q", tt.provider, tt.raw, got, tt.want)
+			if got := NormalizeClient(tt.raw); got != tt.want {
+				t.Fatalf("NormalizeClient(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
 	}

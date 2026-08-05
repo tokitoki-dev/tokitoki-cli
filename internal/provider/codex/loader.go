@@ -180,7 +180,7 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		if strings.TrimSpace(payload.CWD) != "" {
 			state.projectPath = payload.CWD
 		}
-		if client := usage.NormalizeClient(usage.ProviderCodex, payload.Originator); client != "" {
+		if client := usage.NormalizeClient(payload.Originator); client != "" {
 			state.client = client
 		}
 		return usage.Entry{}, false

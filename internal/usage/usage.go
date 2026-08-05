@@ -204,38 +204,16 @@ func NormalizeOS(goos string) string {
 	}
 }
 
-// NormalizeClient maps a provider-specific source token (Claude's "entrypoint"
-// or Codex's "originator") to the real IDE/app source. VS Code plugins should
-// not split by agent; standalone CLI/Desktop/SDK sources should remain
-// product-specific.
-// Unknown tokens are returned as-is so we never lose information; "" stays "".
-func NormalizeClient(provider Provider, raw string) string {
-	token := strings.ToLower(strings.TrimSpace(raw))
-	if token == "" {
-		return ""
-	}
-	switch provider {
-	case ProviderClaude:
-		switch token {
-		case "claude-vscode":
-			return "VS Code"
-		case "claude-desktop":
-			return "Claude Desktop"
-		case "sdk-cli", "cli":
-			return "Claude CLI"
-		case "sdk-ts", "sdk-py", "sdk-python":
-			return "Claude SDK"
-		}
-	case ProviderCodex:
-		switch token {
-		case "codex_vscode":
-			return "VS Code"
-		case "codex desktop", "codex-desktop":
-			return "Codex Desktop"
-		case "codex_cli_rs", "codex_cli", "cli":
-			return "Codex CLI"
-		}
-	}
+// NormalizeClient trims a provider-specific source token (Claude's
+// "entrypoint" or Codex's "originator") and reports it verbatim.
+//
+// The token is deliberately not mapped to a display name here. Every fork of
+// an editor reports its own token, so a client-side table can only ever name
+// the forks that existed when the binary shipped — anything newer would be
+// silently mislabelled as the product it forked from. Reporting the raw token
+// keeps that information intact and leaves naming to the server, which can
+// learn a new source without waiting for clients to update.
+func NormalizeClient(raw string) string {
 	return strings.TrimSpace(raw)
 }
 

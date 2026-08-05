@@ -489,7 +489,7 @@ func parseUsageLine(line []byte, sessionID string) (LoadedEntry, bool) {
 
 	client := ""
 	if data.Entrypoint != nil {
-		client = usage.NormalizeClient(usage.ProviderClaude, *data.Entrypoint)
+		client = usage.NormalizeClient(*data.Entrypoint)
 	}
 
 	branch := ""
