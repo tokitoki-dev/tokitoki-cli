@@ -138,7 +138,9 @@ func systemdUnitTexts(flags workerFlags, system bool) (string, string, error) {
 	if baseURL := os.Getenv("TOKITOKI_BASE_URL"); baseURL != "" {
 		service.WriteString("Environment=" + systemdQuote("TOKITOKI_BASE_URL="+baseURL) + "\n")
 	}
-	service.WriteString("ExecStart=" + strings.Join(execStart, " ") + "\n")
+	service.WriteString("ExecStart=" + strings.Join(execStart, " ") + "\n\n")
+	service.WriteString("[Install]\n")
+	service.WriteString("Alias=toki.service\n")
 
 	seconds := int(flags.interval.Seconds())
 	if seconds < 1 {
@@ -154,6 +156,7 @@ RandomizedDelaySec=1min
 Persistent=true
 
 [Install]
+Alias=toki.timer
 WantedBy=timers.target
 `, seconds)
 
