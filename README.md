@@ -118,7 +118,7 @@ Normal runs and `service install` default to these provider roots:
 ```text
 claude=~/.claude
 codex=~/.codex
-copilot=~/.copilot/otel
+copilot=~/.copilot
 gemini=~/.gemini/tmp
 kimi=~/.kimi
 qwen=~/.qwen

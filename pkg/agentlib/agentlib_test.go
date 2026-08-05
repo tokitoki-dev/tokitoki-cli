@@ -87,7 +87,7 @@ func TestDefaultProviderDirsIncludesBuiltInProviders(t *testing.T) {
 	want := map[Provider]string{
 		ProviderClaude:  filepath.Join(home, ".claude"),
 		ProviderCodex:   filepath.Join(home, ".codex"),
-		ProviderCopilot: filepath.Join(home, ".copilot", "otel"),
+		ProviderCopilot: filepath.Join(home, ".copilot"),
 		ProviderGemini:  filepath.Join(home, ".gemini", "tmp"),
 		ProviderKimi:    filepath.Join(home, ".kimi"),
 		ProviderQwen:    filepath.Join(home, ".qwen"),

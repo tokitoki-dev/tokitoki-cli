@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
@@ -84,6 +85,9 @@ const (
 
 	// ProviderGoose identifies Goose usage files.
 	ProviderGoose Provider = "goose"
+
+	// ProviderWorkbuddy identifies WorkBuddy usage files.
+	ProviderWorkbuddy Provider = "workbuddy"
 )
 
 var (
@@ -240,9 +244,35 @@ func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
 	return deviceauth.VerifyKey(ctx, usageupload.BaseURL(), apiKey)
 }
 
+const (
+	// syncDrainPoll is how often the upload half re-checks the queue while a
+	// scan is still running.
+	syncDrainPoll = 250 * time.Millisecond
+
+	// syncDrainMinBatch is how many events must be queued before a drain runs
+	// alongside a still-running scan.
+	//
+	// Without it the drain chases the scan: it sends whatever landed in the
+	// last few milliseconds, so a scan producing a trickle of events turns
+	// into a request per handful. Waiting for a worthwhile batch trades a
+	// little latency — bounded by the scan itself, since the final drain sends
+	// everything regardless — for far fewer, fuller requests.
+	syncDrainMinBatch = 500
+)
+
 // Sync scans selected provider directories and uploads newly discovered
 // events. Scanning is local and always runs; without a configured API key the
 // events simply stay queued and upload resumes once a key is saved.
+//
+// The two halves run at the same time. A scan queues each file's events as it
+// finishes that file, so the upload half has work to send long before the scan
+// is done — on a first run over a large history that is the difference between
+// uploading throughout the scan and sitting idle until it ends. They share no
+// state but the queue: the scan writes to it, the drain reads from it.
+//
+// Sync returns only once both halves are finished, because callers are
+// one-shot processes that exit when it returns. The drain therefore keeps
+// polling until the scan has stopped producing and the queue is empty.
 func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	providerDirs := normalizeProviderDirs(options.ProviderDirs)
 	if len(providerDirs) == 0 {
@@ -256,6 +286,11 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 	if err != nil {
 		return err
 	}
+	settings, err := agent.New(fileStore, c.logger).Settings()
+	if err != nil {
+		return err
+	}
+
 	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
 	if err != nil {
 		return err
@@ -272,10 +307,107 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 		Out:          io.Discard,
 	}
 
-	// Two phases, two locks. Ingestion mutates shared local state and runs
-	// under the data lock; the drain talks to the network for up to the whole
-	// upload timeout and must not make other processes' ingestion wait on it.
-	if err := c.withDataLock(app.Ingest); err != nil {
+	// Without a key there is nothing to drain into, so the scan runs alone and
+	// its events wait in the queue for a run that has one.
+	if settings.APIKey == "" {
+		c.logger.Debug("skip upload; API key is not configured")
+		return c.withDataLock(app.Ingest)
+	}
+
+	scanDone := make(chan struct{})
+	var scanErr, uploadErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		defer close(scanDone)
+		// Ingestion mutates shared local state and runs under the data lock;
+		// the drain talks to the network and holds no lock, so a slow upload
+		// never makes another process's ingestion wait.
+		scanErr = c.withDataLock(app.Ingest)
+	}()
+
+	go func() {
+		defer wg.Done()
+		uploadErr = c.drainUntil(ctx, settings, usageDB, scanDone)
+	}()
+
+	wg.Wait()
+	return errors.Join(scanErr, uploadErr)
+}
+
+// drainUntil uploads queued events until done is closed and the queue has been
+// drained after that, or until ctx ends.
+//
+// The final drain after done matters: the scan's last file is queued moments
+// before it finishes, and a drain that stopped at the same instant would leave
+// those events for the next run.
+func (c *Client) drainUntil(ctx context.Context, settings agent.Settings, usageDB *usagedb.DB, done <-chan struct{}) error {
+	for {
+		select {
+		case <-done:
+			// The scan has stopped adding work, so there is nothing left to
+			// wait for. This pass sends everything, however little, and its
+			// error is the one worth reporting: it is the last chance these
+			// events had to go out during this run.
+			return usageupload.SyncPending(ctx, settings, usageDB)
+		case <-ctx.Done():
+			// The run is out of time. The scan's events are queued and a later
+			// run sends them, so this is not a failure of the sync.
+			return nil
+		default:
+		}
+
+		// While the scan is still producing, send only once enough has piled
+		// up to fill a request. Draining on every tick would chase the scan
+		// and spend a round-trip on whatever handful arrived since the last
+		// one.
+		queued, err := usageDB.PendingCount(time.Now())
+		if err != nil {
+			return err
+		}
+		if queued >= syncDrainMinBatch {
+			// One batch per pass. Draining to empty here would follow the scan
+			// down to its trickle; stopping lets the queue refill.
+			//
+			// A failure here is not fatal to the run. The scan is still going,
+			// and returning would leave it with no uploader at all — including
+			// for the final drain, which is where the events actually need to
+			// be sent. Uploads retry with backoff, so the next pass tries
+			// again and the final drain reports whatever still fails.
+			if err := usageupload.SyncPendingBatches(ctx, settings, usageDB, 1); err != nil {
+				c.logger.Debug("mid-scan upload failed; will retry", "error", err)
+			}
+		}
+
+		select {
+		case <-done:
+			return usageupload.SyncPending(ctx, settings, usageDB)
+		case <-ctx.Done():
+			return nil
+		case <-time.After(syncDrainPoll):
+		}
+	}
+}
+
+// Upload drains queued events to the server without scanning first.
+//
+// Scanning and uploading share no state but the local queue: a scan writes
+// events into it and an upload drains them. Nothing about the drain depends on
+// a scan having just run, so a caller that wants the two to proceed at their
+// own pace runs Scan and Upload on separate schedules — an upload no longer
+// waits for a scan to finish before sending what is already queued, and a slow
+// or failing scan cannot hold back events that were queued minutes ago.
+//
+// A missing API key is not an error here. Events stay queued until a key
+// exists, which is the same thing Sync does.
+func (c *Client) Upload(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	fileStore, err := store.Open(c.dataDir)
+	if err != nil {
 		return err
 	}
 	settings, err := agent.New(fileStore, c.logger).Settings()
@@ -286,7 +418,40 @@ func (c *Client) Sync(ctx context.Context, options SyncOptions) error {
 		c.logger.Debug("skip upload; API key is not configured")
 		return nil
 	}
-	return c.withUploadLock(func() error { return app.Upload(ctx) })
+
+	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
+	if err != nil {
+		return err
+	}
+	defer usageDB.Close()
+
+	return usageupload.SyncPending(ctx, settings, usageDB)
+}
+
+// Scan ingests provider directories into the local queue without uploading.
+// It is the other half of Sync, for callers running the two on separate
+// schedules.
+func (c *Client) Scan(options SyncOptions) error {
+	providerDirs := normalizeProviderDirs(options.ProviderDirs)
+	if len(providerDirs) == 0 {
+		return ErrNoScanDirectories
+	}
+
+	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
+	if err != nil {
+		return err
+	}
+	defer usageDB.Close()
+
+	scanner := usagescan.New(usageDB)
+	scanner.Logger = c.logger
+	app := &cli.App{
+		UsageDB:      usageDB,
+		Scanner:      scanner,
+		ProviderDirs: providerDirs,
+		Out:          io.Discard,
+	}
+	return c.withDataLock(app.Ingest)
 }
 
 // SendHeartbeat persists an IDE activity event before attempting upload. If
@@ -362,7 +527,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	}
 	defer usageDB.Close()
 
-	// Queue the event under the data lock, then drain under the upload lock.
+	// Queue the event under the data lock, then drain without one.
 	// The drain can take the whole network timeout; heartbeats from other
 	// editors must be able to enqueue while it runs, not wait behind it.
 	//
@@ -389,9 +554,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		c.logger.Debug("skip upload; API key is not configured")
 		return nil
 	}
-	return c.withUploadLock(func() error {
-		return usageupload.SyncPending(ctx, settings, usageDB)
-	})
+	return usageupload.SyncPending(ctx, settings, usageDB)
 }
 
 func applyProjectFile(heartbeat *Heartbeat) error {
@@ -433,23 +596,6 @@ func (c *Client) withDataLock(fn func() error) error {
 	return fn()
 }
 
-// withUploadLock runs fn while holding the cross-process upload lock. When
-// another process already holds it, that process is draining the same queue
-// this one just wrote to, so there is nothing left to do here: the events are
-// safely queued and "busy" is success, not failure.
-func (c *Client) withUploadLock(fn func() error) error {
-	lock, err := store.AcquireLock(c.dataDir, store.UploadLockFile, 0)
-	if errors.Is(err, store.ErrLockBusy) {
-		c.logger.Debug("another tokitoki process is uploading; events stay queued")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	return fn()
-}
-
 // DefaultDataDir returns the shared Tokitoki data directory.
 func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -468,7 +614,7 @@ func DefaultProviderDirs() map[Provider][]string {
 	return map[Provider][]string{
 		ProviderClaude:   {filepath.Join(home, ".claude")},
 		ProviderCodex:    {filepath.Join(home, ".codex")},
-		ProviderCopilot:  {filepath.Join(home, ".copilot", "otel")},
+		ProviderCopilot:  {filepath.Join(home, ".copilot")},
 		ProviderGemini:   {filepath.Join(home, ".gemini", "tmp")},
 		ProviderKimi:     {filepath.Join(home, ".kimi"), filepath.Join(home, ".kimi-code")},
 		ProviderQwen:     {filepath.Join(home, ".qwen")},
@@ -479,11 +625,17 @@ func DefaultProviderDirs() map[Provider][]string {
 		ProviderKilo:     {filepath.Join(home, ".local", "share", "kilo")},
 		ProviderHermes:   {filepath.Join(home, ".hermes")},
 		ProviderCodebuff: {filepath.Join(home, ".config", "manicode"), filepath.Join(home, ".config", "manicode-dev"), filepath.Join(home, ".config", "manicode-staging")},
-		ProviderOpenCode: {filepath.Join(home, ".local", "share", "opencode")},
+		ProviderOpenCode: {
+			filepath.Join(home, ".local", "share", "opencode"),
+			filepath.Join(home, "Library", "Application Support", "opencode"),
+			filepath.Join(home, "AppData", "Local", "opencode"),
+			filepath.Join(home, "AppData", "Roaming", "opencode"),
+		},
 		ProviderGoose: {
 			filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"),
 			filepath.Join(home, "Library", "Application Support", "goose", "sessions", "sessions.db"),
 			filepath.Join(home, ".local", "share", "Block", "goose", "sessions", "sessions.db"),
 		},
+		ProviderWorkbuddy: {filepath.Join(home, ".workbuddy")},
 	}
 }

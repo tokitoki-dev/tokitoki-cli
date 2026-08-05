@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 const (
@@ -193,7 +195,7 @@ func findVCSRoot(start searchStart) (string, bool) {
 func projectName(path string) string {
 	name := filepath.Base(filepath.Clean(path))
 	if name == "." || name == string(filepath.Separator) || name == "" {
-		return "unknown"
+		return usage.UnknownProject
 	}
 	return name
 }

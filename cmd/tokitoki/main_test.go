@@ -175,7 +175,9 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 	if event.SourceType != "ide" || event.SourceProvider != "eclipse" || event.EventKind != "heartbeat" {
 		t.Fatalf("source fields = %+v, want Eclipse IDE heartbeat", event)
 	}
-	if event.Entity != "/repo/src/App.java" || event.Language != "Java" {
+	// The entity is uploaded relative to the project folder: the absolute
+	// path would leak the machine layout that project_path_hash hides.
+	if event.Entity != "src/App.java" || event.Language != "Java" {
 		t.Fatalf("entity/language = %q/%q, want Java file", event.Entity, event.Language)
 	}
 	if event.IsWrite == nil || !*event.IsWrite {

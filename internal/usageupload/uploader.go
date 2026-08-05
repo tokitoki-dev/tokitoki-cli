@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -36,6 +38,15 @@ const (
 
 	// uploadedRetention is how long uploaded events are kept before pruning.
 	uploadedRetention = 30 * 24 * time.Hour
+
+	// uploadLease is how long a claimed batch stays claimed.
+	//
+	// It must outlast a healthy upload, or a batch still being sent would be
+	// reclaimed and sent twice. Callers bound an upload by DefaultUploadTimeout
+	// (2 minutes), so this leaves a wide margin above it: expiring early costs
+	// duplicate round-trips on every slow upload, while expiring late costs
+	// delay only when a process actually died. The asymmetry says round up.
+	uploadLease = 5 * time.Minute
 )
 
 type Payload struct {
@@ -54,12 +65,12 @@ type DevicePayload struct {
 }
 
 type Event struct {
-	ID                       string         `json:"id"`
-	Provider                 string         `json:"provider"`
-	SourceType               string         `json:"source_type,omitempty"`
-	SourceProvider           string         `json:"source_provider,omitempty"`
-	EventKind                string         `json:"event_kind,omitempty"`
-	Timestamp                string         `json:"timestamp"`
+	ID             string `json:"id"`
+	Provider       string `json:"provider"`
+	SourceType     string `json:"source_type,omitempty"`
+	SourceProvider string `json:"source_provider,omitempty"`
+	EventKind      string `json:"event_kind,omitempty"`
+	Timestamp      string `json:"timestamp"`
 	// The machine's IANA zone ("Asia/Tokyo"), omitted when it cannot be
 	// resolved — see usage.MachineTimezone. Never a fixed abbreviation like
 	// "JST": those are ambiguous across regions and cannot be re-expanded.
@@ -70,28 +81,31 @@ type Event struct {
 	// Australia/Lord_Howe — is a pure function of the two. Sending it as well
 	// would be a second copy of a derived value, and the copy is what goes
 	// stale when tzdata is corrected.
-	Timezone string `json:"timezone,omitempty"`
-	SessionID                string         `json:"session_id,omitempty"`
-	Project                  string         `json:"project"`
-	ProjectPathHash          string         `json:"project_path_hash,omitempty"`
-	Model                    string         `json:"model,omitempty"`
-	Language                 string         `json:"language"`
-	OS                       string         `json:"os,omitempty"`
-	Client                   string         `json:"client,omitempty"`
-	Entity                   string         `json:"entity,omitempty"`
-	EntityType               string         `json:"entity_type,omitempty"`
-	Branch                   string         `json:"branch,omitempty"`
-	Editor                   string         `json:"editor,omitempty"`
-	Category                 string         `json:"category,omitempty"`
-	IsWrite                  *bool          `json:"is_write,omitempty"`
-	Raw                      map[string]any `json:"raw,omitempty"`
-	InputTokens              uint64         `json:"input_tokens,omitempty"`
-	OutputTokens             uint64         `json:"output_tokens,omitempty"`
-	CachedInputTokens        uint64         `json:"cached_input_tokens,omitempty"`
-	CacheCreationInputTokens uint64         `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64         `json:"cache_read_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64         `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64         `json:"total_tokens,omitempty"`
+	Timezone                 string             `json:"timezone,omitempty"`
+	SessionID                string             `json:"session_id,omitempty"`
+	Project                  string             `json:"project"`
+	ProjectPathHash          string             `json:"project_path_hash,omitempty"`
+	Model                    string             `json:"model,omitempty"`
+	Language                 string             `json:"language"`
+	OS                       string             `json:"os,omitempty"`
+	Client                   string             `json:"client,omitempty"`
+	Entity                   string             `json:"entity,omitempty"`
+	EntityType               string             `json:"entity_type,omitempty"`
+	Branch                   string             `json:"branch,omitempty"`
+	Editor                   string             `json:"editor,omitempty"`
+	Category                 string             `json:"category,omitempty"`
+	IsWrite                  *bool              `json:"is_write,omitempty"`
+	LinesAdded               uint64             `json:"lines_added,omitempty"`
+	LinesRemoved             uint64             `json:"lines_removed,omitempty"`
+	Files                    []usage.FileChange `json:"files,omitempty"`
+	Raw                      map[string]any     `json:"raw,omitempty"`
+	InputTokens              uint64             `json:"input_tokens,omitempty"`
+	OutputTokens             uint64             `json:"output_tokens,omitempty"`
+	CachedInputTokens        uint64             `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens uint64             `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     uint64             `json:"cache_read_input_tokens,omitempty"`
+	ReasoningOutputTokens    uint64             `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens              uint64             `json:"total_tokens,omitempty"`
 }
 
 type Response struct {
@@ -125,12 +139,30 @@ func Upload(ctx context.Context, settings agent.Settings, events []usage.Entry) 
 // Uploaded events older than uploadedRetention are pruned before sending.
 // SyncPending continues until all pending+failed events are sent or an error occurs.
 func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) error {
+	return syncPending(ctx, settings, db, 0)
+}
+
+// SyncPendingBatches drains at most maxBatches batches instead of continuing
+// until the queue is empty.
+//
+// A drain running beside a scan needs this: the scan keeps adding events, so
+// an unbounded drain follows it down to whatever arrived in the last few
+// milliseconds and spends a request on each handful. Stopping after a bounded
+// number of batches lets the queue refill into full requests between passes.
+func SyncPendingBatches(ctx context.Context, settings agent.Settings, db *usagedb.DB, maxBatches int) error {
+	return syncPending(ctx, settings, db, maxBatches)
+}
+
+func syncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB, maxBatches int) error {
 	if _, err := db.PruneUploaded(time.Now().Add(-uploadedRetention)); err != nil {
 		return err
 	}
 
-	for {
-		events, err := db.PendingEvents(time.Now(), queueBatchSize)
+	for sent := 0; maxBatches <= 0 || sent < maxBatches; sent++ {
+		// Claiming rather than reading marks this batch as ours, so a second
+		// uploader running at the same time takes a different one instead of
+		// re-sending this.
+		events, err := db.ClaimEvents(time.Now(), queueBatchSize, uploadLease)
 		if err != nil {
 			return err
 		}
@@ -155,29 +187,88 @@ func SyncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB) e
 			}
 		}
 
-		// Duplicate + Rejected: both are "acknowledged and won't be processed again".
-		// Duplicates are events we already uploaded. Rejected are events that failed
-		// validation. Both should stop querying; we mark them as uploaded to clear them.
-		ackd := append([]string{}, response.Duplicate...)
-		for _, r := range response.Rejected {
-			if r.ID != "" {
-				ackd = append(ackd, r.ID)
-			}
-		}
-		if len(ackd) > 0 {
-			if err := db.MarkEventsUploaded(ackd); err != nil {
+		// Duplicates are events the server already has: nothing was lost, so they
+		// count as uploaded.
+		if len(response.Duplicate) > 0 {
+			if err := db.MarkEventsUploaded(response.Duplicate); err != nil {
 				return err
 			}
+		}
+
+		// Rejected events are data the server threw away. Recording them as
+		// uploaded hid that: a server that refused every event from a whole
+		// provider looked exactly like a successful sync, and the reason it gave
+		// was discarded. They still are not retried — the queue keeps them as
+		// rejected, with the server's reason, so the loss is visible.
+		if len(response.Rejected) > 0 {
+			reasons := make(map[string]string, len(response.Rejected))
+			for _, rejected := range response.Rejected {
+				if rejected.ID != "" {
+					reasons[rejected.ID] = rejected.Reason
+				}
+			}
+			if err := db.MarkEventsRejected(reasons); err != nil {
+				return err
+			}
+			logRejections(response.Rejected)
 		}
 
 		// Sanity check: server must acknowledge every event as accepted/duplicate/rejected.
 		// If not, it's a server bug or response parsing error.
 		totalAcknowledged := len(response.Accepted) + len(response.Duplicate) + len(response.Rejected)
 		if totalAcknowledged != len(events) {
-			return fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
-				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected))
+			// Whatever went unaccounted for is still claimed. Releasing it
+			// puts it back in the queue for the next pass; left alone it would
+			// be invisible to both the pending count and the next claim until
+			// its lease expired.
+			releaseErr := db.ReleaseClaims(unacknowledged(events, response))
+			return errors.Join(fmt.Errorf("usage upload incomplete: server acknowledged %d/%d events (accepted=%d, duplicate=%d, rejected=%d)",
+				totalAcknowledged, len(events), len(response.Accepted), len(response.Duplicate), len(response.Rejected)), releaseErr)
 		}
 	}
+	// Reached the batch limit with events still queued; the caller drains the
+	// rest on its next pass.
+	return nil
+}
+
+// logRejections reports what the server refused. Rejections repeat: a server
+// that rejects one event from a provider rejects all of them, so the reasons
+// are counted rather than printed one per event.
+func logRejections(rejected []Reject) {
+	counts := make(map[string]int, len(rejected))
+	for _, r := range rejected {
+		reason := strings.TrimSpace(r.Reason)
+		if reason == "" {
+			reason = "no reason given"
+		}
+		counts[reason]++
+	}
+	for reason, count := range counts {
+		slog.Warn("usage events rejected by server", "reason", reason, "events", count)
+	}
+}
+
+// unacknowledged returns the ids the server said nothing about — neither
+// accepted, duplicate, nor rejected.
+func unacknowledged(events []usage.Entry, response Response) []string {
+	seen := make(map[string]bool, len(response.Accepted)+len(response.Duplicate)+len(response.Rejected))
+	for _, id := range response.Accepted {
+		seen[id] = true
+	}
+	for _, id := range response.Duplicate {
+		seen[id] = true
+	}
+	for _, rejected := range response.Rejected {
+		seen[rejected.ID] = true
+	}
+
+	missing := make([]string, 0)
+	for _, event := range events {
+		if event.ID != "" && !seen[event.ID] {
+			missing = append(missing, event.ID)
+		}
+	}
+	return missing
 }
 
 func eventIDs(events []usage.Entry) []string {
@@ -295,12 +386,15 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Language:                 usage.NormalizeLanguage(entry.Language),
 		OS:                       entry.OS,
 		Client:                   entry.Client,
-		Entity:                   entry.Entity,
+		Entity:                   relativeEntity(entry.ProjectPath, entry.Entity),
 		EntityType:               entry.EntityType,
 		Branch:                   entry.Branch,
 		Editor:                   entry.Editor,
 		Category:                 entry.Category,
 		IsWrite:                  entry.IsWrite,
+		LinesAdded:               entry.LinesAdded,
+		LinesRemoved:             entry.LinesRemoved,
+		Files:                    relativeFiles(entry.ProjectPath, entry.Files),
 		Raw:                      entry.Raw,
 		InputTokens:              entry.Usage.InputTokens,
 		OutputTokens:             entry.Usage.OutputTokens,
@@ -329,4 +423,34 @@ func hashProjectPath(path string) string {
 	}
 	sum := sha256.Sum256([]byte(path))
 	return hex.EncodeToString(sum[:])
+}
+
+// relativeEntity strips the local filesystem prefix from an entity path for
+// the same reason the project path is uploaded as a hash: the server sees the
+// file's place inside the project, never the machine's directory layout.
+func relativeEntity(projectPath, entity string) string {
+	entity = strings.TrimSpace(entity)
+	if entity == "" {
+		return ""
+	}
+	if projectPath = strings.TrimSpace(projectPath); projectPath != "" {
+		if rel, err := filepath.Rel(projectPath, entity); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(entity)
+}
+
+// relativeFiles applies the same machine-layout stripping to the per-file
+// breakdown that relativeEntity applies to the entity.
+func relativeFiles(projectPath string, files []usage.FileChange) []usage.FileChange {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]usage.FileChange, len(files))
+	for i, file := range files {
+		out[i] = file
+		out[i].Path = relativeEntity(projectPath, file.Path)
+	}
+	return out
 }
