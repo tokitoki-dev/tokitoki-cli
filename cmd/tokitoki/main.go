@@ -49,11 +49,15 @@ func main() {
 }
 
 func run(args []string) int {
-	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+	if len(args) == 0 {
 		usage()
 		return 0
 	}
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+	if len(args) >= 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+		usageDetailed(args)
+		return 0
+	}
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
 		fmt.Fprintln(os.Stdout, version)
 		return 0
 	}
@@ -631,48 +635,160 @@ func copyProviderDirs(providerDirs map[agentlib.Provider][]string) map[agentlib.
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the Tokitoki server
+	fmt.Fprint(os.Stderr, `Usage: tokitoki [COMMAND] [OPTIONS]
 
-Usage:
-  tokitoki [--provider-dir PROVIDER=DIR ...] [--check-update]
-  tokitoki set key <API_KEY>
-  tokitoki get key
-  tokitoki get dashboard-url
-  tokitoki verify key
-  tokitoki heartbeat --entity FILE [options]
-  tokitoki version
-  tokitoki update
-  tokitoki service <install|uninstall|start|stop|restart|status> [options]
+Sync local AI usage to Tokitoki server
 
-Each invocation scans the provider roots you pass and uploads their usage
-events to the Tokitoki server (TOKITOKI_BASE_URL, default
-https://tokitoki.dev). By default, tokitoki scans the built-in roots for
-claude, codex, copilot, gemini, kimi, qwen, openclaw, pi, amp, droid, kilo,
-hermes, codebuff, opencode, goose, and workbuddy. Pass one or more
---provider-dir provider=dir values to scan an explicit provider set. The API
-key is read from ~/.tokitoki/api_key; use tokitoki set key <API_KEY> to create
-or update that file.
+Commands:
+  sync                          Scan and upload usage events (default)
+  set key <API_KEY>             Configure API key
+  get key                       Show current API key
+  get dashboard-url             Show dashboard URL
+  verify key                    Test API key connectivity
+  service SUBCOMMAND            Manage sync service
+    install                     Register service
+    uninstall                   Unregister service
+    start|stop|restart|status   Control service
+  update                        Check and install new version
+  heartbeat                     Submit heartbeat event
+  version, -v, --version        Show version
+  help, -h, --help              Show this message
 
-tokitoki update replaces this binary with the newest published release from
-the same server. --check-update does the same after a sync, throttled to once
-per 12 hours, and the resident service worker checks on the same cadence.
-Local builds (version "dev") never self-update.
+Options:
+  --provider-dir PROVIDER=DIR   Scan specific provider directory
+  --check-update                Check for updates after sync
+  --interval DURATION           Sync interval (service mode)
+  --provider-dir PROVIDER=DIR   Scan specific provider (repeatable)
 
-tokitoki service install keeps the sync running on its own. On Linux it
-writes a systemd oneshot service plus timer: run it with sudo on servers to
-get system units that need no login session, or as a plain user to get user
-units (install then enables lingering so the timer survives logout). On macOS
-and Windows it installs a resident worker via the OS service manager.
+Examples:
+  tokitoki                      Upload usage now
+  tokitoki set key tt_live_xxx  Configure API key
+  tokitoki get dashboard-url    Show dashboard
+  tokitoki service install      Register sync service (user mode)
+  tokitoki service status       Check service status
+  tokitoki update               Install latest version
+
+For more help: tokitoki help
+`)
+}
+
+func usageDetailed(args []string) {
+	if len(args) > 1 {
+		topic := args[1]
+		switch topic {
+		case "service":
+			fmt.Fprint(os.Stderr, `service SUBCOMMAND [OPTIONS]
+
+Manage the Tokitoki sync service on your system.
+
+Subcommands:
+  install                       Register service for automatic sync
+  uninstall                     Unregister service
+  start                         Start the service
+  stop                          Stop the service
+  restart                        Restart the service
+  status                        Show service status
+
+Options:
+  --interval DURATION           Sync interval (default 5m)
+  --provider-dir PROVIDER=DIR   Custom provider directory
+  --system                      Install as system service (requires root)
+
+Details:
+  On Linux, 'tokitoki service install' creates a systemd user service
+  that runs every 5 minutes. Use 'systemctl --user' to manage it:
+    systemctl --user status toki.timer
+    systemctl --user stop toki.timer
+    systemctl --user start toki.timer
+
+  For system-wide installation (all users), use:
+    sudo tokitoki service install --system
+
+  On macOS and Windows, uses the OS service manager instead.
+`)
+		case "heartbeat":
+			fmt.Fprint(os.Stderr, `heartbeat [OPTIONS]
+
+Submit a heartbeat event (project activity marker).
+
+Required:
+  --entity FILE                 File being edited
+  --project NAME                Project name
+  --project-folder DIR          Project root directory
+  --editor NAME                 Editor name (e.g., vscode, vim)
+
+Optional:
+  --language LANG               Programming language
+  --is-write                    Mark as write operation (default: read)
+
+Example:
+  tokitoki heartbeat \
+    --entity /repo/main.go \
+    --project myrepo \
+    --project-folder /repo \
+    --editor vscode \
+    --language go
+`)
+		case "set", "get":
+			fmt.Fprint(os.Stderr, `get|set [SUBCOMMAND]
+
+Manage Tokitoki settings.
+
+Subcommands:
+  key                           API key (get or set)
+  dashboard-url                 Dashboard URL (get only)
+
+The API key is stored in ~/.tokitoki/api_key
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki get dashboard-url
-  tokitoki heartbeat --entity /repo/main.go --project repo --project-folder /repo --editor eclipse
-  tokitoki
-  tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
-  tokitoki service install
-  tokitoki service status
+`)
+		default:
+			fmt.Fprintf(os.Stderr, "No detailed help for '%s'\n", topic)
+		}
+		return
+	}
+
+	fmt.Fprint(os.Stderr, `tokitoki — Sync local AI coding usage to the Tokitoki server
+
+DESCRIPTION
+  Tokitoki scans your local Claude Code, Codex, Copilot, and other AI tool
+  data directories, and uploads usage events to your Tokitoki dashboard.
+  It runs once per invocation, or continuously via a registered service.
+
+GETTING STARTED
+  1. Get your API key at https://tokitoki.dev/settings
+  2. Configure it: tokitoki set key <YOUR_KEY>
+  3. Run once: tokitoki
+  4. Or set up service: tokitoki service install
+
+COMMANDS
+  sync [OPTIONS]                Scan and upload usage (default command)
+  service [SUBCOMMAND]          Manage automatic sync service
+  set key <API_KEY>             Store API key
+  get key|dashboard-url         Retrieve stored settings
+  verify key                    Test API key
+  heartbeat [OPTIONS]           Submit a heartbeat event
+  update                        Install the latest version
+  version                       Show version
+
+OPTIONS
+  --provider-dir PROVIDER=DIR   Scan a specific provider instead of defaults
+  --check-update                Check for updates after each sync
+  --interval DURATION           Sync interval (for service mode)
+
+ENVIRONMENT
+  TOKITOKI_BASE_URL             Server URL (default: https://tokitoki.dev)
+  TOKITOKI_API_KEY              API key (alternative to stored file)
+
+For command-specific help, use: tokitoki help COMMAND
+
+Examples:
+  tokitoki help service         Service management details
+  tokitoki help heartbeat       Heartbeat event details
+  tokitoki help get             Configuration help
 `)
 }
 
