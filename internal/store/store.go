@@ -64,6 +64,11 @@ func UsageDBPath(dataDir string) string {
 	return filepath.Join(dataDir, dataDirName, UsageDBFile)
 }
 
+// StatePath returns the path of a state file within the data directory.
+func StatePath(dataDir, name string) string {
+	return filepath.Join(dataDir, stateDirName, name)
+}
+
 // LoadSettings reads the API key from the config/api_key file.
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	s.mu.Lock()

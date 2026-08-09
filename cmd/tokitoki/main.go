@@ -22,6 +22,9 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagestats"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
@@ -76,6 +79,9 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "verify" {
 		return runVerify(args[1:])
 	}
+	if len(args) > 0 && args[0] == "stats" {
+		return runStats(args[1:])
+	}
 	if len(args) > 0 && args[0] == "__service-run" {
 		return runServiceWorker(args[1:])
 	}
@@ -99,6 +105,10 @@ func run(args []string) int {
 	if runFlags.checkUpdate {
 		maybeCheckUpdate(defaultLogger())
 	}
+	// The ping likewise runs regardless of the sync outcome: an install whose
+	// sync fails (most often: no API key) is exactly the install it exists to
+	// count.
+	telemetry.MaybePing(defaultLogger(), usageupload.BaseURL())
 	if syncErr != nil {
 		return fail(defaultLogger(), syncErr)
 	}
@@ -161,6 +171,11 @@ func runHeartbeat(args []string) int {
 		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --editor")
 		return 2
 	}
+
+	// Editors with no API key configured never reach the sync path — their
+	// front-ends skip it — so a heartbeat attempt is the only run this install
+	// makes. Deferred so it counts the install whether or not the send fails.
+	defer telemetry.MaybePing(defaultLogger(), usageupload.BaseURL())
 
 	heartbeatTime := time.Now().UTC()
 	if *timestamp != 0 {
@@ -249,6 +264,9 @@ func runSet(args []string) int {
 	if err := client.SetAPIKey(args[1]); err != nil {
 		return fail(logger, err)
 	}
+	// Unthrottled: has_api_key flipping to true is the funnel transition the
+	// server is waiting on, and the daily ping already reported false today.
+	telemetry.Ping(logger, usageupload.BaseURL())
 	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(logger, err)
 	}
@@ -309,6 +327,50 @@ func runVerify(args []string) int {
 		return fail(logger, err)
 	}
 	if err := writeJSON(os.Stdout, map[string]any{"ok": true, "valid": valid}); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
+// runStats aggregates the local event database into a JSON report. It never
+// touches the network and needs no API key: this is what front-ends render so
+// a fresh install has something to show before any configuration.
+func runStats(args []string) int {
+	flags := flag.NewFlagSet("tokitoki stats", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	days := flags.Int("days", 30, "number of calendar days to report, ending today")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki stats does not accept positional arguments")
+		return 2
+	}
+	if *days < 1 || *days > 366 {
+		fmt.Fprintln(os.Stderr, "tokitoki stats --days must be between 1 and 366")
+		return 2
+	}
+
+	logger := defaultLogger()
+	dataDir, err := store.InitializeDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(dataDir))
+	if err != nil {
+		return fail(logger, err)
+	}
+	defer usageDB.Close()
+
+	// The window starts at local midnight `days-1` days back; querying one
+	// extra day of raw timestamps lets Build apply the local-date boundary
+	// instead of this query approximating it in UTC.
+	now := time.Now()
+	entries, err := usageDB.EventsSince(now.AddDate(0, 0, -*days))
+	if err != nil {
+		return fail(logger, err)
+	}
+	if err := writeJSON(os.Stdout, usagestats.Build(entries, *days, now)); err != nil {
 		return fail(logger, err)
 	}
 	return 0
@@ -399,6 +461,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 			if err := client.Scan(agentlib.SyncOptions{ProviderDirs: flags.providerDirs}); err != nil {
 				logger.Error("tokitoki scan failed", "error", err)
 			}
+			telemetry.MaybePing(logger, usageupload.BaseURL())
 		})
 	}()
 
@@ -645,6 +708,7 @@ Commands:
   get key                       Show current API key
   get dashboard-url             Show dashboard URL
   verify key                    Test API key connectivity
+  stats [--days N]              Report local usage stats as JSON
   service SUBCOMMAND            Manage sync service
     install                     Register service
     uninstall                   Unregister service
@@ -770,6 +834,7 @@ COMMANDS
   set key <API_KEY>             Store API key
   get key|dashboard-url         Retrieve stored settings
   verify key                    Test API key
+  stats [--days N]              Report local usage stats as JSON (default 30 days)
   heartbeat [OPTIONS]           Submit a heartbeat event
   update                        Install the latest version
   version                       Show version
@@ -781,7 +846,7 @@ OPTIONS
 
 ENVIRONMENT
   TOKITOKI_BASE_URL             Server URL (default: https://tokitoki.dev)
-  TOKITOKI_API_KEY              API key (alternative to stored file)
+  TOKITOKI_NO_TELEMETRY         Disable the anonymous install ping
 
 For command-specific help, use: tokitoki help COMMAND
 

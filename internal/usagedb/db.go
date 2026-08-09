@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	lease_until     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_queue ON usage_events(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts);
 CREATE TABLE IF NOT EXISTS scanned_files (
 	path     TEXT PRIMARY KEY,
 	size     INTEGER NOT NULL,
@@ -373,6 +374,35 @@ func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
 		var entry usage.Entry
 		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
 			return nil, fmt.Errorf("decode usage event: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// EventsSince returns every event recorded at or after since, oldest first,
+// regardless of upload status — local charts care about what happened, not
+// about queue state. A payload that no longer decodes is skipped rather than
+// failing the whole read: one corrupt row must not blank the chart.
+func (s *DB) EventsSince(since time.Time) ([]usage.Entry, error) {
+	rows, err := s.db.Query(`
+		SELECT payload FROM usage_events
+		WHERE ts >= ?
+		ORDER BY ts, id`, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]usage.Entry, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
 		}
 		entries = append(entries, entry)
 	}
