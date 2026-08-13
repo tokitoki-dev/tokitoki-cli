@@ -28,6 +28,28 @@ type Report struct {
 	Providers []GroupStat `json:"providers"`
 	Models    []GroupStat `json:"models"`
 	Projects  []GroupStat `json:"projects"`
+	// Project carries the same report narrowed to the one project the caller
+	// asked for (stats --project), built from the same database read. One
+	// invocation answers both "overall" and "this project" — front-ends never
+	// need two processes for one panel.
+	Project *Report `json:"project,omitempty"`
+}
+
+// BuildForProject aggregates the full window plus a nested sub-report for one
+// project. The sub-report exists even when the project has no events: a
+// zero-filled report is an answer ("nothing recorded"), a missing one is a
+// question the caller has to special-case.
+func BuildForProject(entries []usage.Entry, days int, now time.Time, project string) Report {
+	report := Build(entries, days, now)
+	scoped := make([]usage.Entry, 0)
+	for _, entry := range entries {
+		if entry.Project == project {
+			scoped = append(scoped, entry)
+		}
+	}
+	sub := Build(scoped, days, now)
+	report.Project = &sub
+	return report
 }
 
 type Totals struct {
@@ -46,9 +68,17 @@ type DailyStat struct {
 }
 
 type GroupStat struct {
-	Name        string `json:"name"`
-	Events      int    `json:"events"`
-	TotalTokens uint64 `json:"total_tokens"`
+	Name          string `json:"name"`
+	Events        int    `json:"events"`
+	TotalTokens   uint64 `json:"total_tokens"`
+	ActiveSeconds int64  `json:"active_seconds"`
+}
+
+// groupAgg carries a group's activity buckets while aggregating; the bucket
+// set collapses into ActiveSeconds once counting is done.
+type groupAgg struct {
+	GroupStat
+	buckets map[int64]struct{}
 }
 
 // Build aggregates entries into the report for the window of `days` calendar
@@ -76,9 +106,9 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 		dayIndex[date] = i
 	}
 
-	providers := make(map[string]*GroupStat)
-	models := make(map[string]*GroupStat)
-	projects := make(map[string]*GroupStat)
+	providers := make(map[string]*groupAgg)
+	models := make(map[string]*groupAgg)
+	projects := make(map[string]*groupAgg)
 	activeBuckets := make(map[int64]struct{})
 	dailyBuckets := make([]map[int64]struct{}, days)
 
@@ -104,9 +134,9 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 		}
 		dailyBuckets[index][bucket] = struct{}{}
 
-		accumulate(providers, string(entry.Provider), entry)
-		accumulate(models, entry.Model, entry)
-		accumulate(projects, entry.Project, entry)
+		accumulate(providers, string(entry.Provider), entry, bucket)
+		accumulate(models, entry.Model, entry, bucket)
+		accumulate(projects, entry.Project, entry, bucket)
 	}
 
 	report.Totals.ActiveSeconds = int64(len(activeBuckets)) * int64(activeBucket/time.Second)
@@ -119,23 +149,25 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 	return report
 }
 
-func accumulate(groups map[string]*GroupStat, name string, entry usage.Entry) {
+func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, bucket int64) {
 	if name == "" {
 		return
 	}
 	group := groups[name]
 	if group == nil {
-		group = &GroupStat{Name: name}
+		group = &groupAgg{GroupStat: GroupStat{Name: name}, buckets: make(map[int64]struct{})}
 		groups[name] = group
 	}
 	group.Events++
 	group.TotalTokens += entry.Usage.TotalTokens
+	group.buckets[bucket] = struct{}{}
 }
 
-func sorted(groups map[string]*GroupStat) []GroupStat {
+func sorted(groups map[string]*groupAgg) []GroupStat {
 	result := make([]GroupStat, 0, len(groups))
 	for _, group := range groups {
-		result = append(result, *group)
+		group.ActiveSeconds = int64(len(group.buckets)) * int64(activeBucket/time.Second)
+		result = append(result, group.GroupStat)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].TotalTokens != result[j].TotalTokens {

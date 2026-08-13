@@ -6,8 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
 func testLogger() *slog.Logger {
@@ -69,4 +73,44 @@ func TestOptOut(t *testing.T) {
 
 	MaybePing(testLogger(), server.URL)
 	Ping(testLogger(), server.URL)
+}
+
+// A configured install authenticates its ping with the same Bearer header the
+// uploader sends, and reports has_api_key accordingly.
+func TestPingAuthenticatesWhenKeyConfigured(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv(OptOutEnv, "")
+
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "tokitoki_test_key"
+	configDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "api_key"), []byte(key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var auth string
+	var got payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("bad payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	Ping(testLogger(), server.URL)
+	if auth != "Bearer "+key {
+		t.Fatalf("Authorization = %q, want %q", auth, "Bearer "+key)
+	}
+	if !got.HasAPIKey {
+		t.Fatalf("key configured, has_api_key must be true")
+	}
 }

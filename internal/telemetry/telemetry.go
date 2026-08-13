@@ -3,8 +3,12 @@
 // about installs that never upload anything — without it, a user who installs
 // and never configures a key is invisible.
 //
-// The ping is anonymous: an HMAC of the OS machine id (see machineid), the
+// The ping carries an HMAC of the OS machine id (see machineid), the
 // platform, the version, and one boolean. No hostname, no paths, no events.
+// While no API key is configured it is anonymous. Once a key is set, the ping
+// authenticates with it — the same Bearer header every upload already sends —
+// so the server may tie the install to the account it already knows from
+// those uploads; this reveals nothing the uploads have not.
 // TOKITOKI_NO_TELEMETRY disables it entirely.
 package telemetry
 
@@ -86,12 +90,13 @@ func ping(logger *slog.Logger, dir, baseURL string) {
 		return
 	}
 
-	hasKey := false
+	apiKey := ""
 	if fileStore, err := store.Open(dir); err == nil {
 		if settings, err := fileStore.LoadSettings(); err == nil {
-			hasKey = settings.APIKey != ""
+			apiKey = settings.APIKey
 		}
 	}
+	hasKey := apiKey != ""
 
 	body, err := json.Marshal(payload{
 		MachineID:  machineid.ID(),
@@ -112,6 +117,11 @@ func ping(logger *slog.Logger, dir, baseURL string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", buildinfo.UserAgent())
+	// Same header the uploader sends: a configured install identifies itself,
+	// so the admin funnel can name who each configured machine belongs to.
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

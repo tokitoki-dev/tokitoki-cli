@@ -88,7 +88,16 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "service" {
 		return runService(args[1:])
 	}
+	// The documented `sync` subcommand and the legacy flags-only spelling
+	// (`tokitoki --check-update`) run the same code; only `tokitoki` with
+	// nothing at all means "show me the usage" (handled above).
+	if args[0] == "sync" {
+		return runSyncCommand(args[1:])
+	}
+	return runSyncCommand(args)
+}
 
+func runSyncCommand(args []string) int {
 	runFlags, ok := parseRunFlags(args)
 	if !ok {
 		return 2
@@ -339,6 +348,7 @@ func runStats(args []string) int {
 	flags := flag.NewFlagSet("tokitoki stats", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	days := flags.Int("days", 30, "number of calendar days to report, ending today")
+	project := flags.String("project", "", "additionally nest a report scoped to this project name")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -370,7 +380,13 @@ func runStats(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
-	if err := writeJSON(os.Stdout, usagestats.Build(entries, *days, now)); err != nil {
+	var report usagestats.Report
+	if *project != "" {
+		report = usagestats.BuildForProject(entries, *days, now, *project)
+	} else {
+		report = usagestats.Build(entries, *days, now)
+	}
+	if err := writeJSON(os.Stdout, report); err != nil {
 		return fail(logger, err)
 	}
 	return 0
@@ -708,7 +724,7 @@ Commands:
   get key                       Show current API key
   get dashboard-url             Show dashboard URL
   verify key                    Test API key connectivity
-  stats [--days N]              Report local usage stats as JSON
+  stats [--days N] [--project NAME]  Report local usage stats as JSON
   service SUBCOMMAND            Manage sync service
     install                     Register service
     uninstall                   Unregister service

@@ -62,4 +62,45 @@ func TestBuild(t *testing.T) {
 	if len(report.Projects) != 2 || report.Projects[0].Name != "tracklm" {
 		t.Fatalf("projects wrong: %+v", report.Projects)
 	}
+	// tracklm's two events share one bucket; other has its own bucket.
+	if report.Projects[0].ActiveSeconds != 120 {
+		t.Fatalf("tracklm active time: want 120s, got %d", report.Projects[0].ActiveSeconds)
+	}
+	if report.Projects[1].ActiveSeconds != 120 {
+		t.Fatalf("other active time: want 120s, got %d", report.Projects[1].ActiveSeconds)
+	}
+	if report.Project != nil {
+		t.Fatalf("plain Build must not nest a project report")
+	}
+}
+
+func TestBuildForProject(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	entries := []usage.Entry{
+		entry(now.Add(-1*time.Hour), "claude", "claude-fable-5", "tracklm", 1000),
+		entry(now.AddDate(0, 0, -1), "codex", "", "other", 500),
+	}
+
+	report := BuildForProject(entries, 7, now, "tracklm")
+	if report.Totals.Events != 2 {
+		t.Fatalf("outer report must stay global: events=%d", report.Totals.Events)
+	}
+	if report.Project == nil {
+		t.Fatal("project sub-report missing")
+	}
+	if report.Project.Totals.Events != 1 || report.Project.Totals.TotalTokens != 1000 {
+		t.Fatalf("sub-report not scoped: %+v", report.Project.Totals)
+	}
+	if report.Project.Project != nil {
+		t.Fatal("sub-report must not nest further")
+	}
+
+	// An unknown project still yields a zero-filled sub-report, not nil.
+	empty := BuildForProject(entries, 7, now, "no-such-project")
+	if empty.Project == nil || empty.Project.Totals.Events != 0 {
+		t.Fatalf("unknown project must yield an empty sub-report, got %+v", empty.Project)
+	}
+	if len(empty.Project.Daily) != 7 {
+		t.Fatalf("empty sub-report must keep the dense daily window, got %d", len(empty.Project.Daily))
+	}
 }
