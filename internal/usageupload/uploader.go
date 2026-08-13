@@ -92,7 +92,9 @@ type Event struct {
 	Entity                   string             `json:"entity,omitempty"`
 	EntityType               string             `json:"entity_type,omitempty"`
 	Branch                   string             `json:"branch,omitempty"`
-	Editor                   string             `json:"editor,omitempty"`
+	// No `editor` field: on a heartbeat it duplicated SourceProvider and
+	// Client, on an AI event it was never set, and the server stopped storing
+	// it (server migration 0060). The server still accepts it from older CLIs.
 	Category                 string             `json:"category,omitempty"`
 	IsWrite                  *bool              `json:"is_write,omitempty"`
 	LinesAdded               uint64             `json:"lines_added,omitempty"`
@@ -389,7 +391,6 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Entity:                   relativeEntity(entry.ProjectPath, entry.Entity),
 		EntityType:               entry.EntityType,
 		Branch:                   entry.Branch,
-		Editor:                   entry.Editor,
 		Category:                 entry.Category,
 		IsWrite:                  entry.IsWrite,
 		LinesAdded:               entry.LinesAdded,

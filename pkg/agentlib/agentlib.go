@@ -503,7 +503,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		Entity:      strings.TrimSpace(heartbeat.Entity),
 		EntityType:  "file",
 		Branch:      strings.TrimSpace(heartbeat.Branch),
-		Editor:      strings.TrimSpace(heartbeat.Editor),
 		Category:    strings.TrimSpace(heartbeat.Category),
 		IsWrite:     &isWrite,
 		Raw: map[string]any{

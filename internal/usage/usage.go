@@ -175,7 +175,6 @@ type Entry struct {
 	Entity     string `json:"entity,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 	Branch     string `json:"branch,omitempty"`
-	Editor     string `json:"editor,omitempty"`
 	Category   string `json:"category,omitempty"`
 	IsWrite    *bool  `json:"is_write,omitempty"`
 	// LinesAdded/LinesRemoved count the source lines the agent added and
