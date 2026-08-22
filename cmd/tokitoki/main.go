@@ -313,8 +313,8 @@ func runGet(args []string) int {
 }
 
 func runVerify(args []string) int {
-	if len(args) != 1 || args[0] != "key" {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki verify key")
+	if len(args) < 1 || len(args) > 2 || args[0] != "key" {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki verify key [<key>]")
 		return 2
 	}
 
@@ -331,7 +331,14 @@ func runVerify(args []string) int {
 
 	// An invalid key is a definite answer, not a failure: exit 0 with
 	// valid:false so callers can tell it apart from "could not check".
-	valid, err := client.VerifyAPIKey(ctx)
+	// With an explicit key argument the stored key is not consulted, so
+	// front-ends can verify a candidate before saving it.
+	var valid bool
+	if len(args) == 2 {
+		valid, err = client.VerifyAPIKeyValue(ctx, args[1])
+	} else {
+		valid, err = client.VerifyAPIKey(ctx)
+	}
 	if err != nil {
 		return fail(logger, err)
 	}
@@ -723,7 +730,7 @@ Commands:
   set key <API_KEY>             Configure API key
   get key                       Show current API key
   get dashboard-url             Show dashboard URL
-  verify key                    Test API key connectivity
+  verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
   service SUBCOMMAND            Manage sync service
     install                     Register service
@@ -849,7 +856,7 @@ COMMANDS
   service [SUBCOMMAND]          Manage automatic sync service
   set key <API_KEY>             Store API key
   get key|dashboard-url         Retrieve stored settings
-  verify key                    Test API key
+  verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
   heartbeat [OPTIONS]           Submit a heartbeat event
   update                        Install the latest version

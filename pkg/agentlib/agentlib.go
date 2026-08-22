@@ -238,6 +238,13 @@ func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return c.VerifyAPIKeyValue(ctx, apiKey)
+}
+
+// VerifyAPIKeyValue checks the given key against the server without touching
+// the stored one — front-ends verify a candidate key before saving it. Same
+// answer semantics as VerifyAPIKey.
+func (c *Client) VerifyAPIKeyValue(ctx context.Context, apiKey string) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
