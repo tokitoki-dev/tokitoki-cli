@@ -501,16 +501,9 @@ func normalizeGeminiInput(tokens tokens, direct bool) (uint64, uint64) {
 		}
 		return tokens.input - cachedPortion, tokens.cached
 	}
-	inclusiveTotal := tokens.input + tokens.output + tokens.thoughts + tokens.tool
-	exclusiveTotal := inclusiveTotal + tokens.cached
-	if tokens.cached > 0 && tokens.hasTotal && tokens.total == inclusiveTotal && tokens.total != exclusiveTotal {
-		cachedPortion := tokens.input
-		if tokens.cached < cachedPortion {
-			cachedPortion = tokens.cached
-		}
-		return tokens.input - cachedPortion, tokens.cached
-	}
-	return tokens.input, tokens.cached
+	return usageprovider.SubtractCachedOverlap(
+		tokens.input, tokens.output, tokens.thoughts, tokens.tool,
+		tokens.cached, tokens.total, tokens.hasTotal)
 }
 
 func recordStats(record map[string]any) map[string]any {

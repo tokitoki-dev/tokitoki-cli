@@ -80,15 +80,23 @@ func parseChatFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
 		if model == "" {
 			model = "unknown"
 		}
+		prompt := agentdata.UintField(meta, "promptTokenCount")
+		output := agentdata.UintField(meta, "candidatesTokenCount")
+		thoughts := agentdata.UintField(meta, "thoughtsTokenCount")
+		cached := agentdata.UintField(meta, "cachedContentTokenCount")
+		total := agentdata.UintField(meta, "totalTokenCount")
+		// Google-shaped usage: promptTokenCount may already include the
+		// cached tokens. Same disambiguation as the Gemini provider — the
+		// overlap must not be billed at both the input and cache-read rate.
+		input, cacheRead := usageprovider.SubtractCachedOverlap(
+			prompt, output, thoughts, 0, cached, total, total > 0)
 		tokens := usage.TokenUsage{
-			InputTokens:          agentdata.UintField(meta, "promptTokenCount"),
-			OutputTokens:         agentdata.UintField(meta, "candidatesTokenCount"),
-			CacheReadInputTokens: agentdata.UintField(meta, "cachedContentTokenCount"),
-			ReasoningOutputTokens: agentdata.UintField(meta,
-				"thoughtsTokenCount",
-			),
+			InputTokens:           input,
+			OutputTokens:          output,
+			CacheReadInputTokens:  cacheRead,
+			ReasoningOutputTokens: thoughts,
 		}
-		tokens = usageprovider.ApplyTotalFallback(tokens, agentdata.UintField(meta, "totalTokenCount"))
+		tokens = usageprovider.ApplyTotalFallback(tokens, total)
 		if !usageprovider.NonZero(tokens) {
 			continue
 		}

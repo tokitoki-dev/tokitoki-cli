@@ -32,3 +32,30 @@ func TestLoadsEntry(t *testing.T) {
 		},
 	})
 }
+
+// TestSubtractsCachedFromInclusivePrompt covers the real Google-API shape:
+// totalTokenCount == prompt+candidates+thoughts, proving promptTokenCount
+// already contains the cached tokens. The overlap must come out of input or
+// it bills twice — once at the input rate and once at the cache-read rate.
+func TestSubtractsCachedFromInclusivePrompt(t *testing.T) {
+	entries, err := func() ([]usage.Entry, error) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "projects", "project-a", "chats", "chat-a.jsonl")
+		providertest.WriteFile(t, path, `{"type":"assistant","timestamp":"2026-01-02T00:00:00.000Z","sessionId":"session-a","model":"qwen3-coder","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"thoughtsTokenCount":5,"cachedContentTokenCount":3,"totalTokenCount":35}}`+"\n")
+		return Provider{}.WithPaths([]string{dir}).Entries()
+	}()
+
+	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
+		Provider:  usage.ProviderQwen,
+		Model:     "qwen3-coder",
+		SessionID: "session-a",
+		Project:   "qwen",
+		Tokens: usage.TokenUsage{
+			InputTokens:           7,
+			OutputTokens:          20,
+			CacheReadInputTokens:  3,
+			ReasoningOutputTokens: 5,
+			TotalTokens:           35,
+		},
+	})
+}
