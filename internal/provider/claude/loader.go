@@ -46,7 +46,18 @@ type TokenUsage struct {
 	OutputTokens             uint64 `json:"output_tokens"`
 	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens"`
-	Speed                    *Speed `json:"speed"`
+	// CacheCreation is the TTL breakdown of CacheCreationInputTokens.
+	// The 1h tier bills at 2.0x input vs 1.25x for 5m, so dropping this
+	// object silently underprices every 1h cache write by 37.5%.
+	CacheCreation *CacheCreationBreakdown `json:"cache_creation"`
+	Speed         *Speed                  `json:"speed"`
+}
+
+// CacheCreationBreakdown mirrors the usage.cache_creation object in Claude
+// Code transcripts: cache_creation_input_tokens split by ephemeral TTL.
+type CacheCreationBreakdown struct {
+	Ephemeral5mInputTokens uint64 `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens uint64 `json:"ephemeral_1h_input_tokens"`
 }
 
 type Speed string
@@ -150,11 +161,13 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			LinesRemoved: entry.LinesRemoved,
 			Files:        entry.Files,
 			Usage: usage.TokenUsage{
-				InputTokens:              tokens.InputTokens,
-				OutputTokens:             tokens.OutputTokens,
-				CacheCreationInputTokens: tokens.CacheCreationInputTokens,
-				CacheReadInputTokens:     tokens.CacheReadInputTokens,
-				TotalTokens:              tokenTotal(tokens),
+				InputTokens:                tokens.InputTokens,
+				OutputTokens:               tokens.OutputTokens,
+				CacheCreationInputTokens:   tokens.CacheCreationInputTokens,
+				CacheCreation5mInputTokens: cacheCreation5m(tokens),
+				CacheCreation1hInputTokens: cacheCreation1h(tokens),
+				CacheReadInputTokens:       tokens.CacheReadInputTokens,
+				TotalTokens:                tokenTotal(tokens),
 			},
 		})
 	}
@@ -798,6 +811,22 @@ func shouldReplaceDedupedEntry(candidate, existing LoadedEntry) bool {
 		return candidateTotal > existingTotal
 	}
 	return candidate.Data.Message.Usage.Speed != nil && existing.Data.Message.Usage.Speed == nil
+}
+
+// cacheCreation5m/1h read the TTL breakdown, verbatim. No arithmetic here:
+// the collector ships facts, the server owns clamping and interpretation.
+func cacheCreation5m(usage TokenUsage) uint64 {
+	if usage.CacheCreation == nil {
+		return 0
+	}
+	return usage.CacheCreation.Ephemeral5mInputTokens
+}
+
+func cacheCreation1h(usage TokenUsage) uint64 {
+	if usage.CacheCreation == nil {
+		return 0
+	}
+	return usage.CacheCreation.Ephemeral1hInputTokens
 }
 
 func tokenTotal(usage TokenUsage) uint64 {

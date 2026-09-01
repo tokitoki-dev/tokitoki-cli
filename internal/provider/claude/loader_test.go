@@ -474,3 +474,46 @@ func TestParsePatchLineCountsCreatedFileContent(t *testing.T) {
 		t.Fatalf("empty create = %+v ok=%v, want +0 ok=true", stats, ok)
 	}
 }
+
+func TestReadUsageFileParsesCacheCreationBreakdown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"timestamp":"2026-05-21T01:02:03Z","cwd":"/repo/app","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":2,"output_tokens":348,"cache_creation_input_tokens":44994,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":11,"ephemeral_1h_input_tokens":44983}}}}
+{"timestamp":"2026-05-21T01:02:04Z","cwd":"/repo/app","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":7}}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+
+	converted := ConvertEntries(entries)
+	var withBreakdown, withoutBreakdown *usage.Entry
+	for i := range converted {
+		if converted[i].Usage.CacheCreationInputTokens == 44994 {
+			withBreakdown = &converted[i]
+		} else {
+			withoutBreakdown = &converted[i]
+		}
+	}
+	if withBreakdown == nil || withoutBreakdown == nil {
+		t.Fatalf("entries not found: %+v", converted)
+	}
+	if withBreakdown.Usage.CacheCreation5mInputTokens != 11 ||
+		withBreakdown.Usage.CacheCreation1hInputTokens != 44983 {
+		t.Fatalf("breakdown = 5m:%d 1h:%d, want 5m:11 1h:44983",
+			withBreakdown.Usage.CacheCreation5mInputTokens,
+			withBreakdown.Usage.CacheCreation1hInputTokens)
+	}
+	// No breakdown object means both tiers stay zero — the flat total alone
+	// travels, exactly as before this field existed.
+	if withoutBreakdown.Usage.CacheCreation5mInputTokens != 0 ||
+		withoutBreakdown.Usage.CacheCreation1hInputTokens != 0 ||
+		withoutBreakdown.Usage.CacheCreationInputTokens != 7 {
+		t.Fatalf("plain entry gained a breakdown: %+v", withoutBreakdown.Usage)
+	}
+}

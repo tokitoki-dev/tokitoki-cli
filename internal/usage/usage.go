@@ -55,10 +55,19 @@ type TokenUsage struct {
 	InputTokens              uint64 `json:"input_tokens"`
 	OutputTokens             uint64 `json:"output_tokens"`
 	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens,omitempty"`
-	CachedInputTokens        uint64 `json:"cached_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64 `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64 `json:"total_tokens"`
+	// CacheCreation5m/1hInputTokens are the TTL-tiered portions of
+	// CacheCreationInputTokens — classified subsets of it, never additional
+	// tokens, so no total may sum them. Only Anthropic breaks its cache
+	// writes down by TTL; for every other provider both stay 0, which is the
+	// literal truth (no tiered cache) rather than missing data. The 1h tier
+	// bills at 2.0x input where the base rate is 1.25x, which is why the
+	// split must survive to the server.
+	CacheCreation5mInputTokens uint64 `json:"cache_creation_5m_input_tokens,omitempty"`
+	CacheCreation1hInputTokens uint64 `json:"cache_creation_1h_input_tokens,omitempty"`
+	CacheReadInputTokens       uint64 `json:"cache_read_input_tokens,omitempty"`
+	CachedInputTokens          uint64 `json:"cached_input_tokens,omitempty"`
+	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens                uint64 `json:"total_tokens"`
 }
 
 // FileChange records the diff one event applied to a single file.
