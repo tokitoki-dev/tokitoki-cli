@@ -604,6 +604,9 @@ func (c *Client) withDataLock(fn func() error) error {
 
 // DefaultDataDir returns the shared Tokitoki data directory.
 func DefaultDataDir() (string, error) {
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

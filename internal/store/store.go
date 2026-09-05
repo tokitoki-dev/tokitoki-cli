@@ -28,6 +28,9 @@ type FileStore struct {
 }
 
 func DefaultDataDir() (string, error) {
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

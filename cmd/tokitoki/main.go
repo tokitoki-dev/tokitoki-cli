@@ -82,6 +82,12 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "stats" {
 		return runStats(args[1:])
 	}
+	if len(args) > 0 && args[0] == "upload" {
+		return runUploadSwitch(args[1:])
+	}
+	if len(args) > 0 && args[0] == "data-dir" {
+		return runDataDir(args[1:])
+	}
 	if len(args) > 0 && args[0] == "__service-run" {
 		return runServiceWorker(args[1:])
 	}
@@ -253,6 +259,16 @@ func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, o
 	if err != nil {
 		return err
 	}
+	// With uploading switched off the scan still runs and its events stay
+	// queued, which is exactly what a sync without an API key does. Calling
+	// Scan rather than Sync is the whole difference: the queue keeps filling,
+	// so enabling uploads later sends everything collected in between.
+	if store.UploadDisabled(client.DataDir()) {
+		if err := client.Scan(agentlib.SyncOptions{ProviderDirs: providerDirs}); err != nil {
+			return err
+		}
+		return writeJSON(out, map[string]bool{"ok": true})
+	}
 	if err := client.Sync(ctx, agentlib.SyncOptions{ProviderDirs: providerDirs}); err != nil {
 		return err
 	}
@@ -399,6 +415,59 @@ func runStats(args []string) int {
 	return 0
 }
 
+// runDataDir prints the directory this binary keeps its state in. The path is
+// stamped at build time, so with a development and an installed binary on one
+// machine this is how you tell which state you are about to look at — asking
+// the binary beats inferring it from how it was built.
+func runDataDir(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki data-dir")
+		return 2
+	}
+	logger := defaultLogger()
+	dir, err := store.DefaultDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+	fmt.Fprintln(os.Stdout, dir)
+	return 0
+}
+
+// runUploadSwitch flips and reports the upload switch. Scanning is never
+// affected: a disabled install keeps queueing events locally, so enabling it
+// again sends everything that accumulated in between rather than starting
+// from the moment the switch flipped.
+func runUploadSwitch(args []string) int {
+	if len(args) != 1 || (args[0] != "enable" && args[0] != "disable" && args[0] != "status") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki upload <enable|disable|status>")
+		return 2
+	}
+
+	logger := defaultLogger()
+	dataDir, err := store.InitializeDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+
+	switch args[0] {
+	case "disable":
+		err = store.DisableUpload(dataDir)
+	case "enable":
+		err = store.EnableUpload(dataDir)
+	}
+	if err != nil {
+		return fail(logger, err)
+	}
+
+	if err := writeJSON(os.Stdout, map[string]any{
+		"ok":      true,
+		"enabled": !store.UploadDisabled(dataDir),
+	}); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
 func runUpdate(args []string) int {
 	if len(args) != 0 {
 		fmt.Fprintln(os.Stderr, "usage: tokitoki update")
@@ -491,6 +560,11 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 	go func() {
 		defer wg.Done()
 		runIntervalLoop(workerCtx, flags.uploadInterval, func(runCtx context.Context) {
+			// Checked every tick, not once at start: flipping the switch
+			// takes effect on a running service without restarting it.
+			if store.UploadDisabled(client.DataDir()) {
+				return
+			}
 			if err := client.Upload(runCtx); err != nil {
 				logger.Error("tokitoki upload failed", "error", err)
 			}
@@ -732,6 +806,8 @@ Commands:
   get dashboard-url             Show dashboard URL
   verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
+  upload enable|disable|status  Turn uploading on or off
+  data-dir                      Show where this binary keeps its state
   service SUBCOMMAND            Manage sync service
     install                     Register service
     uninstall                   Unregister service
@@ -751,6 +827,7 @@ Examples:
   tokitoki                      Upload usage now
   tokitoki set key tt_live_xxx  Configure API key
   tokitoki get dashboard-url    Show dashboard
+  tokitoki upload disable       Stop uploading (keeps collecting locally)
   tokitoki service install      Register sync service (user mode)
   tokitoki service status       Check service status
   tokitoki update               Install latest version
@@ -816,6 +893,51 @@ Example:
     --editor vscode \
     --language go
 `)
+		case "data-dir":
+			fmt.Fprint(os.Stderr, `data-dir
+
+Show the directory this binary keeps its state in.
+
+Details:
+  The directory is a build parameter, fixed when the binary is compiled.
+  Binaries built with different values share nothing — not the API key,
+  not the event queue, not the locks — so any number of them run on one
+  machine without seeing each other's data.
+
+  Use this when more than one binary is around and you need to know which
+  state you are about to inspect or delete.
+
+Example:
+  tokitoki data-dir
+`)
+		case "upload":
+			fmt.Fprint(os.Stderr, `upload enable|disable|status
+
+Turn uploading on or off.
+
+Subcommands:
+  disable                       Stop uploading to the server
+  enable                        Resume uploading
+  status                        Report whether uploading is on
+
+Details:
+  Only uploading is affected. Scanning keeps running while uploads are
+  disabled, so events pile up in the local database and are all sent once
+  you enable uploading again — nothing recorded in between is lost.
+
+  The switch is one file: ~/.tokitoki/state/upload-disabled. Its existence
+  is the whole setting, so you can flip it without the CLI:
+    touch ~/.tokitoki/state/upload-disabled    # same as: tokitoki upload disable
+    rm -f ~/.tokitoki/state/upload-disabled    # same as: tokitoki upload enable
+
+  Every subcommand is idempotent — enabling an already-enabled install
+  succeeds and changes nothing.
+
+Examples:
+  tokitoki upload disable
+  tokitoki upload status
+  tokitoki upload enable
+`)
 		case "set", "get":
 			fmt.Fprint(os.Stderr, `get|set [SUBCOMMAND]
 
@@ -858,6 +980,8 @@ COMMANDS
   get key|dashboard-url         Retrieve stored settings
   verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
+  upload enable|disable|status  Turn uploading on or off
+  data-dir                      Show where this binary keeps its state
   heartbeat [OPTIONS]           Submit a heartbeat event
   update                        Install the latest version
   version                       Show version
@@ -875,6 +999,7 @@ For command-specific help, use: tokitoki help COMMAND
 
 Examples:
   tokitoki help service         Service management details
+  tokitoki help upload          Upload switch details
   tokitoki help heartbeat       Heartbeat event details
   tokitoki help get             Configuration help
 `)
