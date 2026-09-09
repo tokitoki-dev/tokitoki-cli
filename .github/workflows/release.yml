@@ -49,6 +49,7 @@ jobs:
       # what the built artifact is checked against, so a Makefile that stopped
       # stamping it would fail the release instead of shipping quietly.
       EXPECTED_DATA_DIR: .tokitoki
+      EXPECTED_SERVER_URL: https://tokitoki.dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -89,6 +90,15 @@ jobs:
           got_dir="$(HOME=/tmp/release-check dist/tokitoki-linux-amd64 data-dir)"
           if [ "$got_dir" != "/tmp/release-check/$EXPECTED_DATA_DIR" ]; then
             echo "release binary uses '$got_dir', want ~/$EXPECTED_DATA_DIR" >&2
+            exit 1
+          fi
+
+          # Same rule for the server. Every local target stamps the development
+          # server so no local build can reach production; a release that lost
+          # its stamp would ship pointing at localhost and upload nothing.
+          got_url="$(dist/tokitoki-linux-amd64 server-url)"
+          if [ "$got_url" != "$EXPECTED_SERVER_URL" ]; then
+            echo "release binary reports to '$got_url', want $EXPECTED_SERVER_URL" >&2
             exit 1
           fi
 

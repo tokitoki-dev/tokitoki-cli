@@ -15,6 +15,8 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 )
 
 // Uploading must begin while the scan is still running. A scan queues each
@@ -49,7 +51,9 @@ func TestSyncUploadsWhileScanning(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "accepted": ids})
 	}))
 	defer srv.Close()
-	t.Setenv("TOKITOKI_BASE_URL", srv.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = srv.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 
 	dir := t.TempDir()
 	// 很多文件, 让扫描明显耗时
@@ -118,7 +122,9 @@ func TestSyncUploadsEverythingBeforeReturning(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "accepted": ids})
 	}))
 	defer srv.Close()
-	t.Setenv("TOKITOKI_BASE_URL", srv.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = srv.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 
 	const files = 40
 	dir := t.TempDir()
@@ -190,7 +196,9 @@ func TestSyncBatchesTrickleIntoFewRequests(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "accepted": ids})
 	}))
 	defer srv.Close()
-	t.Setenv("TOKITOKI_BASE_URL", srv.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = srv.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 
 	// Many files holding one event each: a slow scan producing a trickle.
 	const files = 3000

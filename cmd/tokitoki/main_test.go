@@ -152,7 +152,9 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted, Duplicate: []string{}, Rejected: []usageupload.Reject{}})
 	}))
 	defer server.Close()
-	t.Setenv(usageupload.BaseURLEnv, server.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = server.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 
 	code := run([]string{
 		"heartbeat",
@@ -237,7 +239,9 @@ func TestRunHeartbeatAppliesProjectIdentityFile(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted, Duplicate: []string{}, Rejected: []usageupload.Reject{}})
 	}))
 	defer server.Close()
-	t.Setenv(usageupload.BaseURLEnv, server.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = server.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 
 	code := run([]string{
 		"heartbeat",

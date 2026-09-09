@@ -135,9 +135,6 @@ func systemdUnitTexts(flags workerFlags, system bool) (string, string, error) {
 	if system {
 		service.WriteString("User=" + systemdRunAsUser() + "\n")
 	}
-	if baseURL := os.Getenv("TOKITOKI_BASE_URL"); baseURL != "" {
-		service.WriteString("Environment=" + systemdQuote("TOKITOKI_BASE_URL="+baseURL) + "\n")
-	}
 	service.WriteString("ExecStart=" + strings.Join(execStart, " ") + "\n\n")
 	service.WriteString("[Install]\n")
 	service.WriteString("Alias=toki.service\n")

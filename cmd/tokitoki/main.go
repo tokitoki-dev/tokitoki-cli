@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
@@ -87,6 +88,9 @@ func run(args []string) int {
 	}
 	if len(args) > 0 && args[0] == "data-dir" {
 		return runDataDir(args[1:])
+	}
+	if len(args) > 0 && args[0] == "server-url" {
+		return runServerURL(args[1:])
 	}
 	if len(args) > 0 && args[0] == "__service-run" {
 		return runServiceWorker(args[1:])
@@ -430,6 +434,21 @@ func runDataDir(args []string) int {
 		return fail(logger, err)
 	}
 	fmt.Fprintln(os.Stdout, dir)
+	return 0
+}
+
+// runServerURL prints the server this binary reports to. Like the data
+// directory it is fixed at build time and read from nowhere else, so the only
+// way to know where a given binary sends events is to ask it.
+func runServerURL(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki server-url")
+		return 2
+	}
+	if err := config.Validate(); err != nil {
+		return fail(defaultLogger(), err)
+	}
+	fmt.Fprintln(os.Stdout, usageupload.BaseURL())
 	return 0
 }
 
@@ -808,6 +827,7 @@ Commands:
   stats [--days N] [--project NAME]  Report local usage stats as JSON
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
+  server-url                    Show which server this binary reports to
   service SUBCOMMAND            Manage sync service
     install                     Register service
     uninstall                   Unregister service
@@ -910,6 +930,22 @@ Details:
 Example:
   tokitoki data-dir
 `)
+		case "server-url":
+			fmt.Fprint(os.Stderr, `server-url
+
+Show the server this binary reports to.
+
+Details:
+  The server is a build parameter, fixed when the binary is compiled, and
+  nothing in the environment changes it. A development build reports to the
+  local server it was built for; a release reports to https://tokitoki.dev.
+  Every front-end that launches this binary — the desktop app, the editor
+  plugins, a service unit — therefore reaches the same server, whether or
+  not it thought to pass one along.
+
+Example:
+  tokitoki server-url
+`)
 		case "upload":
 			fmt.Fprint(os.Stderr, `upload enable|disable|status
 
@@ -982,6 +1018,7 @@ COMMANDS
   stats [--days N]              Report local usage stats as JSON (default 30 days)
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
+  server-url                    Show which server this binary reports to
   heartbeat [OPTIONS]           Submit a heartbeat event
   update                        Install the latest version
   version                       Show version
@@ -992,8 +1029,10 @@ OPTIONS
   --interval DURATION           Sync interval (for service mode)
 
 ENVIRONMENT
-  TOKITOKI_BASE_URL             Server URL (default: https://tokitoki.dev)
   TOKITOKI_NO_TELEMETRY         Disable the anonymous install ping
+
+  The server URL and the data directory are build parameters, not
+  environment variables: see 'tokitoki server-url' and 'tokitoki data-dir'.
 
 For command-specific help, use: tokitoki help COMMAND
 

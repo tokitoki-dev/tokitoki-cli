@@ -133,7 +133,9 @@ func countingUploadServer(t *testing.T, requests *atomic.Int64) {
 		})
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv(usageupload.BaseURLEnv, server.URL)
+	previousServer := config.ServerURL
+	config.ServerURL = server.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
 }
 
 func pendingEvents(t *testing.T, home string) int {

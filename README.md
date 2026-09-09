@@ -12,8 +12,12 @@ The CLI can run once or install itself as an OS service.
 make build
 ```
 
-`make` without a target builds the CLI and immediately runs it. Set
-`TOKITOKI_BASE_URL=http://localhost:9093` to test against a local server.
+`make` without a target builds the CLI and immediately runs it against the
+local development server. The server URL and the data directory are build
+parameters (`SERVER_URL`, `DATA_DIR`), not environment variables: a local
+build reports to `http://localhost:9093` and keeps its state in
+`~/.tokitoki-dev`, and only a release build points at production. Ask a
+binary with `tokitoki server-url` and `tokitoki data-dir`.
 
 Daily development uses `dev`; releases are merged to protected `main` and
 created automatically from semantic-version tags. The release matrix covers
@@ -56,8 +60,12 @@ Options:
 Environment:
 
 ```text
-TOKITOKI_BASE_URL     Server base URL; defaults to https://tokitoki.dev.
+TOKITOKI_NO_TELEMETRY Disable the anonymous install ping.
 ```
+
+The server URL is not an environment variable. It is fixed when the binary is
+built (`make build` → local development server, releases → https://tokitoki.dev)
+so that every front-end launching the binary reaches the same server.
 
 Commands:
 
@@ -197,10 +205,11 @@ The default upload target is:
 https://tokitoki.dev/api/usage-events/batch
 ```
 
-Override the server for local development or staging:
+Build against a different server for local development or staging:
 
 ```sh
-TOKITOKI_BASE_URL=http://localhost:9093 tokitoki
+make build SERVER_URL=https://staging.tokitoki.dev
+./bin/tokitoki server-url
 ```
 
 ## Local data and the offline queue

@@ -5,8 +5,27 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
+
+// ServerURL is the Tokitoki server this binary talks to — usage uploads,
+// update checks, key verification, the dashboard link, all of it. Like
+// DataDirName it is a build parameter, and for the same reason: which server
+// a binary reports to is a property of the build, not of whoever happens to
+// run it. It is deliberately not read from the environment at run time. A
+// development binary launched from an app, an editor plugin, a systemd unit
+// or a bare shell must reach the same server in every case, and an override
+// that lives in the environment is exactly what is missing in one of them.
+//
+//	-ldflags "-X github.com/tokitoki-dev/tokitoki-cli/internal/config.ServerURL=http://localhost:9093"
+//
+// The default is production, because a binary that carries no stamp at all is
+// an installed one (`go install <module>@vX.Y.Z` bypasses the Makefile). The
+// Makefile stamps localhost into every local target, so `make build` cannot
+// reach production, whatever else goes wrong; only the release targets stamp
+// the production address.
+var ServerURL = "https://tokitoki.dev"
 
 // DataDirName is the hidden directory, under the user's home directory, where
 // this binary keeps all of its state. Every native front-end resolves the same
@@ -46,6 +65,10 @@ func Validate() error {
 	}
 	if strings.ContainsAny(DataDirName, `/\`) || DataDirName == "." || DataDirName == ".." {
 		return fmt.Errorf("data directory name %q must be a single directory name, not a path; check the -X config.DataDirName build stamp", DataDirName)
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ServerURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("server URL %q must be an http(s) URL with a host; check the -X config.ServerURL build stamp", ServerURL)
 	}
 	return nil
 }

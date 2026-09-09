@@ -20,13 +20,9 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
-)
-
-const (
-	DefaultServerURL = "https://tokitoki.dev"
-	BaseURLEnv       = "TOKITOKI_BASE_URL"
 )
 
 const (
@@ -354,13 +350,10 @@ func uploadEndpoint() string {
 }
 
 // BaseURL is the Tokitoki server every subsystem talks to — usage uploads and
-// update checks alike. TOKITOKI_BASE_URL overrides the default.
+// update checks alike. It is fixed at build time (config.ServerURL); nothing
+// in the environment changes it.
 func BaseURL() string {
-	value := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
-	if value == "" {
-		return DefaultServerURL
-	}
-	return value
+	return strings.TrimRight(strings.TrimSpace(config.ServerURL), "/")
 }
 
 // convertEvent maps one loaded entry onto the wire format.
