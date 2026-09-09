@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -82,7 +83,23 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 	}
 }
 
+// LoadedEntry is one event parsed from one transcript line. Kind says which
+// of the two the line produced:
+//
+//   - usage.EventKindAPICall: an assistant line carrying usage. One API round
+//     trip. Claude Code writes such a message as several lines (one per
+//     content block) that share message.id, requestId and usage; each line
+//     yields an entry with the same ID and the same content, and the store
+//     keeps one.
+//   - usage.EventKindFileEdit: a tool_result line carrying a structuredPatch
+//     (or a create). One file modification, keyed on the tool_use id the
+//     result answers.
+//
+// No entry depends on any other line. A transcript can be parsed from any
+// line boundary and produce the same entries for the lines it covers, which
+// is what makes resuming at a byte offset exact rather than approximate.
 type LoadedEntry struct {
+	Kind                string             `json:"kind"`
 	Data                UsageEntry         `json:"data"`
 	ID                  string             `json:"id,omitempty"`
 	SourceFile          string             `json:"source_file,omitempty"`
@@ -103,6 +120,7 @@ type LoadedEntry struct {
 	LinesAdded          uint64             `json:"lines_added,omitempty"`
 	LinesRemoved        uint64             `json:"lines_removed,omitempty"`
 	Files               []usage.FileChange `json:"files,omitempty"`
+	ToolUseID           string             `json:"tool_use_id,omitempty"`
 	UsageLimitResetTime *time.Time         `json:"usage_limit_reset_time,omitempty"`
 }
 
@@ -137,9 +155,14 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 		if entry.Entity != "" {
 			entityType = "file"
 		}
+		var raw map[string]any
+		if entry.ToolUseID != "" {
+			raw = map[string]any{"tool_use_id": entry.ToolUseID}
+		}
 		converted = append(converted, usage.Entry{
 			Provider:     usage.ProviderClaude,
 			ID:           entry.ID,
+			EventKind:    entry.Kind,
 			SourceFile:   entry.SourceFile,
 			SourceLine:   entry.SourceLine,
 			SourceStart:  entry.SourceStart,
@@ -160,6 +183,7 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			LinesAdded:   entry.LinesAdded,
 			LinesRemoved: entry.LinesRemoved,
 			Files:        entry.Files,
+			Raw:          raw,
 			Usage: usage.TokenUsage{
 				InputTokens:                tokens.InputTokens,
 				OutputTokens:               tokens.OutputTokens,
@@ -209,9 +233,14 @@ func SummarizeDailyProjects(entries []LoadedEntry) []DailyProjectSummary {
 	return summaries
 }
 
+// LoadEntriesFromPaths reads every transcript under paths into one list with
+// no two entries sharing an ID. The first occurrence wins, which is also what
+// the store does on insert; duplicates carry identical content, so which copy
+// survives makes no difference.
 func LoadEntriesFromPaths(paths []string, projectFilter string, fileFilter usage.FileFilter) ([]LoadedEntry, error) {
 	files := UsageFiles(paths, projectFilter)
 	entries := make([]LoadedEntry, 0)
+	seen := make(map[string]bool)
 	for _, file := range files {
 		if fileFilter != nil && !fileFilter(file) {
 			continue
@@ -224,12 +253,20 @@ func LoadEntriesFromPaths(paths []string, projectFilter string, fileFilter usage
 			if projectFilter != "" && entry.Project != projectFilter {
 				continue
 			}
-			entries = appendDeduped(entries, entry)
+			if seen[entry.ID] {
+				continue
+			}
+			seen[entry.ID] = true
+			entries = append(entries, entry)
 		}
 	}
 	return entries, nil
 }
 
+// UsageFiles lists the transcripts under paths, most recently modified first,
+// so a scan reaches the sessions a user is working in now before it reaches
+// their history. Order never affects what is parsed — every entry comes from
+// one line — only what is queued first.
 func UsageFiles(paths []string, projectFilter string) []string {
 	files := make([]string, 0)
 	for _, path := range paths {
@@ -240,7 +277,18 @@ func UsageFiles(paths []string, projectFilter string) []string {
 		}
 		collectUsageFiles(projectsDir, &files)
 	}
-	sort.Strings(files)
+	modified := make(map[string]int64, len(files))
+	for _, file := range files {
+		if info, err := os.Stat(file); err == nil {
+			modified[file] = info.ModTime().UnixNano()
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if modified[files[i]] != modified[files[j]] {
+			return modified[files[i]] > modified[files[j]]
+		}
+		return files[i] < files[j]
+	})
 	return files
 }
 
@@ -261,10 +309,9 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 // use is still a line the file has moved beyond; stopping there would turn one
 // malformed record into a permanent roadblock hiding everything after it.
 //
-// Callers resuming mid-file lose the diff-to-message association for a diff
-// written before start, which is a bounded, one-message cost. The alternative —
-// re-reading from zero to rebuild it — is the whole expense this exists to
-// avoid.
+// Each line is parsed on its own. Nothing here remembers a previous line, so
+// resuming at any line boundary yields exactly the entries a whole read would
+// yield for the lines after it.
 func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -283,10 +330,6 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 
 	sessionID := ExtractSessionID(path)
 	entries := make([]LoadedEntry, 0)
-	// A file-modification diff belongs to the assistant message that issued
-	// the edit, which precedes its tool result in the transcript. Diffs seen
-	// before the first usage entry are held and attached to it.
-	pending := make([]patchStats, 0)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
 	offset := start
@@ -310,23 +353,12 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 				consumed = offset
 			}
 			line = bytes.TrimRight(line, "\r\n")
-			if entry, ok := parseUsageLine(line, sessionID); ok {
+			if entry, ok := parseLine(line, sessionID); ok {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
 				entry.SourceStart = lineStart
 				entry.SourceEnd = offset
-				entry.ID = stableEntryID(entry)
 				entries = append(entries, entry)
-				for _, patch := range pending {
-					applyPatch(&entries[len(entries)-1], patch)
-				}
-				pending = pending[:0]
-			} else if patch, ok := parsePatchLine(line); ok {
-				if len(entries) == 0 {
-					pending = append(pending, patch)
-				} else {
-					applyPatch(&entries[len(entries)-1], patch)
-				}
 			}
 		}
 		if complete {
@@ -340,56 +372,180 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 	return entries, consumed, nil
 }
 
-type patchStats struct {
-	file    string
-	added   uint64
-	removed uint64
-}
+// parseLine turns one transcript line into at most one entry. It is a pure
+// function of the line: the same bytes always yield the same entry with the
+// same ID, whichever file or pass they are read in.
+//
+// A panic while decoding — a shape this code never anticipated — is contained
+// to the line. Transcript formats change under us; one strange record must
+// not take down the scan of every file after it.
+func parseLine(line []byte, sessionID string) (entry LoadedEntry, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Debug("claude transcript line skipped after panic", "error", r)
+			entry, ok = LoadedEntry{}, false
+		}
+	}()
 
-// applyPatch accumulates one diff into the entry's totals and per-file
-// breakdown. The entity is always the most-changed file so far.
-func applyPatch(entry *LoadedEntry, patch patchStats) {
-	entry.LinesAdded += patch.added
-	entry.LinesRemoved += patch.removed
-	entry.IsWrite = true
-	if patch.file == "" {
-		return
+	// Cheap byte checks first: the vast majority of lines are prompts, tool
+	// output and bookkeeping that carry neither usage nor a diff.
+	mayBeEdit := bytes.Contains(line, []byte(`"toolUseResult"`)) &&
+		(bytes.Contains(line, []byte(`"structuredPatch"`)) || bytes.Contains(line, []byte(`"type":"create"`)))
+	mayBeCall := bytes.Contains(line, []byte(`"usage":{`))
+	if !mayBeEdit && !mayBeCall {
+		return LoadedEntry{}, false
 	}
 
-	index := -1
-	for i := range entry.Files {
-		if entry.Files[i].Path == patch.file {
-			index = i
-			break
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return LoadedEntry{}, false
+	}
+	data := decodeEnvelope(raw)
+	timestamp, err := time.Parse(time.RFC3339Nano, data.Timestamp)
+	if err != nil {
+		return LoadedEntry{}, false
+	}
+	if !isValidEnvelope(data) {
+		return LoadedEntry{}, false
+	}
+	base := baseEntry(data, timestamp, sessionID)
+
+	if mayBeEdit {
+		if entry, ok := parseEditLine(raw, base); ok {
+			return entry, true
 		}
 	}
-	if index < 0 {
-		entry.Files = append(entry.Files, usage.FileChange{Path: patch.file})
-		index = len(entry.Files) - 1
+	if mayBeCall {
+		return parseCallLine(raw, line, base)
 	}
-	entry.Files[index].LinesAdded += patch.added
-	entry.Files[index].LinesRemoved += patch.removed
-
-	best := index
-	for i := range entry.Files {
-		if entry.Files[i].LinesAdded+entry.Files[i].LinesRemoved > entry.Files[best].LinesAdded+entry.Files[best].LinesRemoved {
-			best = i
-		}
-	}
-	entry.Entity = entry.Files[best].Path
+	return LoadedEntry{}, false
 }
 
-func parsePatchLine(line []byte) (patchStats, bool) {
-	if !bytes.Contains(line, []byte(`"structuredPatch"`)) {
-		return patchStats{}, false
+// decodeEnvelope reads the line-level fields one at a time. Claude Code's
+// transcript schema changes often; a field that has taken on a new shape must
+// not discard the rest of a line that is otherwise perfectly usable.
+func decodeEnvelope(raw map[string]json.RawMessage) UsageEntry {
+	var data UsageEntry
+	decodeField(raw, "sessionId", &data.SessionID)
+	decodeField(raw, "timestamp", &data.Timestamp)
+	decodeField(raw, "version", &data.Version)
+	decodeField(raw, "entrypoint", &data.Entrypoint)
+	decodeField(raw, "cwd", &data.CWD)
+	decodeField(raw, "gitBranch", &data.GitBranch)
+	decodeField(raw, "requestId", &data.RequestID)
+	decodeField(raw, "costUSD", &data.CostUSD)
+	decodeField(raw, "isApiErrorMessage", &data.IsAPIErrorMessage)
+	return data
+}
+
+// decodeField decodes one optional key into value, reporting whether the key
+// was present and decoded. A key that is absent or null leaves value alone.
+func decodeField(raw map[string]json.RawMessage, key string, value any) bool {
+	data, ok := raw[key]
+	if !ok || bytes.Equal(data, []byte("null")) {
+		return false
+	}
+	return json.Unmarshal(data, value) == nil
+}
+
+func isValidEnvelope(data UsageEntry) bool {
+	if data.Version != nil && !isSemverPrefix(*data.Version) {
+		return false
+	}
+	if data.SessionID != nil && *data.SessionID == "" {
+		return false
+	}
+	if data.RequestID != nil && *data.RequestID == "" {
+		return false
+	}
+	return true
+}
+
+func baseEntry(data UsageEntry, timestamp time.Time, sessionID string) LoadedEntry {
+	// The transcript line's cwd is the only trustworthy project source: the
+	// directory name under ~/.claude/projects encodes "/", "-", "_" and "."
+	// identically, so decoding it is guesswork. No cwd means no project.
+	project := usage.UnknownProject
+	projectPath := ""
+	if data.CWD != nil {
+		if path, name, ok := usage.ProjectFromCWD(*data.CWD); ok {
+			projectPath = path
+			project = name
+		}
+	}
+	client := ""
+	if data.Entrypoint != nil {
+		client = usage.NormalizeClient(*data.Entrypoint)
+	}
+	branch := ""
+	if data.GitBranch != nil {
+		branch = strings.TrimSpace(*data.GitBranch)
+	}
+	return LoadedEntry{
+		Data:        data,
+		Timestamp:   timestamp,
+		Date:        timestamp.In(time.Local).Format("2006-01-02"),
+		Project:     project,
+		SessionID:   sessionID,
+		ProjectPath: projectPath,
+		Client:      client,
+		Branch:      branch,
+	}
+}
+
+// parseCallLine builds the api_call entry for an assistant line.
+func parseCallLine(raw map[string]json.RawMessage, line []byte, entry LoadedEntry) (LoadedEntry, bool) {
+	var message map[string]json.RawMessage
+	if !decodeField(raw, "message", &message) {
+		return LoadedEntry{}, false
+	}
+	msg := &entry.Data.Message
+	decodeField(message, "id", &msg.ID)
+	decodeField(message, "model", &msg.Model)
+	decodeField(message, "content", &msg.Content)
+	// Usage is the payload. A usage block this code cannot read is not
+	// something to approximate — the line is skipped rather than billed wrong.
+	usageRaw, ok := message["usage"]
+	if !ok {
+		return LoadedEntry{}, false
+	}
+	if err := json.Unmarshal(usageRaw, &msg.Usage); err != nil {
+		return LoadedEntry{}, false
 	}
 
-	var envelope struct {
-		ToolUseResult json.RawMessage `json:"toolUseResult"`
+	// A message id is what identifies the event. Without one there is nothing
+	// to deduplicate on, and the same message replayed across session files
+	// would be counted once per copy.
+	if msg.ID == nil || *msg.ID == "" {
+		return LoadedEntry{}, false
 	}
-	if err := json.Unmarshal(line, &envelope); err != nil || len(envelope.ToolUseResult) == 0 {
-		return patchStats{}, false
+	if msg.Model != nil && *msg.Model == "" {
+		return LoadedEntry{}, false
 	}
+	// Nothing was billed: synthetic messages, API error echoes. Not a call.
+	if tokenTotal(msg.Usage) == 0 {
+		return LoadedEntry{}, false
+	}
+
+	model := ""
+	if msg.Model != nil && *msg.Model != "<synthetic>" {
+		model = *msg.Model
+		if msg.Usage.Speed != nil && *msg.Usage.Speed == SpeedFast {
+			model += "-fast"
+		}
+	}
+
+	entry.Kind = usage.EventKindAPICall
+	entry.ID = stableEntryID(entry)
+	entry.Model = model
+	entry.Language = languageFromContent(msg.Content)
+	entry.UsageLimitResetTime = usageLimitResetTimeFromLine(line, entry.Data.IsAPIErrorMessage)
+	return entry, true
+}
+
+// parseEditLine builds the file_edit entry for a tool_result line whose
+// toolUseResult records a diff.
+func parseEditLine(raw map[string]json.RawMessage, entry LoadedEntry) (LoadedEntry, bool) {
 	var result struct {
 		Type            string `json:"type"`
 		FilePath        string `json:"filePath"`
@@ -398,34 +554,73 @@ func parsePatchLine(line []byte) (patchStats, bool) {
 			Lines []string `json:"lines"`
 		} `json:"structuredPatch"`
 	}
-	if err := json.Unmarshal(envelope.ToolUseResult, &result); err != nil {
-		return patchStats{}, false
+	if !decodeField(raw, "toolUseResult", &result) || result.FilePath == "" {
+		return LoadedEntry{}, false
 	}
 
-	// Creating a file records no diff hunks, only the full content: every
-	// content line is an added line.
-	if len(result.StructuredPatch) == 0 {
-		if result.Type != "create" || result.FilePath == "" {
-			return patchStats{}, false
+	var added, removed uint64
+	switch {
+	case len(result.StructuredPatch) > 0:
+		for _, hunk := range result.StructuredPatch {
+			for _, hunkLine := range hunk.Lines {
+				if len(hunkLine) == 0 {
+					continue
+				}
+				switch hunkLine[0] {
+				case '+':
+					added++
+				case '-':
+					removed++
+				}
+			}
 		}
-		return patchStats{file: result.FilePath, added: usage.CountLines(result.Content)}, true
+	case result.Type == "create":
+		// Creating a file records no diff hunks, only the full content:
+		// every content line is an added line.
+		added = usage.CountLines(result.Content)
+	default:
+		return LoadedEntry{}, false
 	}
 
-	stats := patchStats{file: result.FilePath}
-	for _, hunk := range result.StructuredPatch {
-		for _, hunkLine := range hunk.Lines {
-			if len(hunkLine) == 0 {
-				continue
-			}
-			switch hunkLine[0] {
-			case '+':
-				stats.added++
-			case '-':
-				stats.removed++
-			}
+	// The tool_use id is the edit's identity: the API assigns it once per
+	// tool call, and Claude Code preserves it when it copies a session's
+	// history into a forked one. No id, no identity, no event.
+	toolUseID := toolUseIDFromResult(raw)
+	if toolUseID == "" {
+		slog.Debug("claude file edit skipped: tool_result has no tool_use_id", "file", result.FilePath)
+		return LoadedEntry{}, false
+	}
+
+	entry.Kind = usage.EventKindFileEdit
+	entry.ID = usage.StableID(string(usage.ProviderClaude), "edit", toolUseID)
+	entry.ToolUseID = toolUseID
+	entry.Entity = result.FilePath
+	entry.IsWrite = true
+	entry.LinesAdded = added
+	entry.LinesRemoved = removed
+	entry.Files = []usage.FileChange{{Path: result.FilePath, LinesAdded: added, LinesRemoved: removed}}
+	entry.Language = langdetect.FromPath(result.FilePath)
+	return entry, true
+}
+
+// toolUseIDFromResult reads the tool_use_id off the tool_result block in the
+// line's message content. Claude Code writes one result per line.
+func toolUseIDFromResult(raw map[string]json.RawMessage) string {
+	var message struct {
+		Content []struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id"`
+		} `json:"content"`
+	}
+	if !decodeField(raw, "message", &message) {
+		return ""
+	}
+	for _, block := range message.Content {
+		if block.Type == "tool_result" && block.ToolUseID != "" {
+			return block.ToolUseID
 		}
 	}
-	return stats, true
+	return ""
 }
 
 // ExtractSessionID derives the session id from a usage file's location under
@@ -458,71 +653,6 @@ func ExtractSessionID(path string) string {
 		return relative[len(relative)-2]
 	}
 	return "unknown"
-}
-
-func parseUsageLine(line []byte, sessionID string) (LoadedEntry, bool) {
-	if !bytes.Contains(line, []byte(`"usage":{`)) {
-		return LoadedEntry{}, false
-	}
-	if hasUnsupportedNullField(line) {
-		return LoadedEntry{}, false
-	}
-
-	var data UsageEntry
-	if err := json.Unmarshal(line, &data); err != nil {
-		return LoadedEntry{}, false
-	}
-	timestamp, err := time.Parse(time.RFC3339Nano, data.Timestamp)
-	if err != nil {
-		return LoadedEntry{}, false
-	}
-	if !isValidUsageEntry(data) {
-		return LoadedEntry{}, false
-	}
-
-	// The transcript line's cwd is the only trustworthy project source: the
-	// directory name under ~/.claude/projects encodes "/", "-", "_" and "."
-	// identically, so decoding it is guesswork. No cwd means no project.
-	project := usage.UnknownProject
-	projectPath := ""
-	if data.CWD != nil {
-		if path, name, ok := usage.ProjectFromCWD(*data.CWD); ok {
-			projectPath = path
-			project = name
-		}
-	}
-
-	model := ""
-	if data.Message.Model != nil && *data.Message.Model != "<synthetic>" {
-		model = *data.Message.Model
-		if data.Message.Usage.Speed != nil && *data.Message.Usage.Speed == SpeedFast {
-			model += "-fast"
-		}
-	}
-
-	client := ""
-	if data.Entrypoint != nil {
-		client = usage.NormalizeClient(*data.Entrypoint)
-	}
-
-	branch := ""
-	if data.GitBranch != nil {
-		branch = strings.TrimSpace(*data.GitBranch)
-	}
-
-	return LoadedEntry{
-		Data:                data,
-		Timestamp:           timestamp,
-		Date:                timestamp.In(time.Local).Format("2006-01-02"),
-		Project:             project,
-		SessionID:           sessionID,
-		ProjectPath:         projectPath,
-		Model:               model,
-		Language:            languageFromContent(data.Message.Content),
-		Client:              client,
-		Branch:              branch,
-		UsageLimitResetTime: usageLimitResetTimeFromLine(line, data.IsAPIErrorMessage),
-	}, true
 }
 
 type contentBlock struct {
@@ -638,9 +768,14 @@ func languageFromPathsInText(text string) string {
 	return langdetect.DominantFromPaths(paths)
 }
 
-// stableEntryID keys an entry on message.id + requestId — matching ccusage.
-// The same message is replayed across multiple session files (e.g. sidechains),
-// so keying on anything file/session/timestamp-specific double-counts tokens.
+// stableEntryID keys an api_call on message.id + requestId. Both are assigned
+// per API round trip and both survive Claude Code copying a session's history
+// into a forked session file, so the copy yields the same ID and is stored
+// once.
+//
+// This composition is frozen: the server dedupes on the ID alone and has no
+// way to recognise an event under a new one, so changing it would re-upload
+// every Claude event ever sent.
 func stableEntryID(entry LoadedEntry) string {
 	requestID := ""
 	if entry.Data.RequestID != nil {
@@ -651,77 +786,6 @@ func stableEntryID(entry LoadedEntry) string {
 		*entry.Data.Message.ID,
 		requestID,
 	)
-}
-
-func isValidUsageEntry(data UsageEntry) bool {
-	if data.Version != nil && !isSemverPrefix(*data.Version) {
-		return false
-	}
-	if data.SessionID != nil && *data.SessionID == "" {
-		return false
-	}
-	if data.RequestID != nil && *data.RequestID == "" {
-		return false
-	}
-	// A message id is required: it is what identifies the event. Without one
-	// there is nothing to deduplicate on, and the same message replayed across
-	// session files would be counted once per copy.
-	if data.Message.ID == nil || *data.Message.ID == "" {
-		return false
-	}
-	if data.Message.Model != nil && *data.Message.Model == "" {
-		return false
-	}
-	return true
-}
-
-func hasUnsupportedNullField(line []byte) bool {
-	offset := 0
-	for {
-		relativeIndex := bytes.Index(line[offset:], []byte(":null"))
-		if relativeIndex < 0 {
-			return false
-		}
-		nullIndex := offset + relativeIndex
-		fieldEnd := nullIndex - 1
-		if fieldEnd < 0 {
-			return false
-		}
-		if line[fieldEnd] != '"' {
-			for fieldEnd > 0 && line[fieldEnd] != '"' {
-				fieldEnd--
-			}
-		}
-		if line[fieldEnd] == '"' {
-			fieldStart := fieldEnd - 1
-			for fieldStart > 0 && line[fieldStart] != '"' {
-				fieldStart--
-			}
-			if line[fieldStart] == '"' && isUnsupportedNullableField(string(line[fieldStart+1:fieldEnd])) {
-				return true
-			}
-		}
-		offset = nullIndex + len(":null")
-	}
-}
-
-func isUnsupportedNullableField(field string) bool {
-	switch field {
-	case "id",
-		"cwd",
-		"model",
-		"speed",
-		"costUSD",
-		"version",
-		"sessionId",
-		"requestId",
-		"isApiErrorMessage",
-		"cache_read_input_tokens",
-		"cache_creation_input_tokens":
-		return true
-	default:
-		return false
-	}
 }
 
 func isSemverPrefix(value string) bool {
@@ -776,43 +840,6 @@ func usageLimitResetTimeFromLine(line []byte, isAPIErrorMessage *bool) *time.Tim
 	return &timestamp
 }
 
-func appendDeduped(entries []LoadedEntry, candidate LoadedEntry) []LoadedEntry {
-	if candidate.Data.Message.ID == nil {
-		return append(entries, candidate)
-	}
-	for i := range entries {
-		if sameDedupeKey(entries[i], candidate) {
-			if shouldReplaceDedupedEntry(candidate, entries[i]) {
-				entries[i] = candidate
-			}
-			return entries
-		}
-	}
-	return append(entries, candidate)
-}
-
-func sameDedupeKey(a, b LoadedEntry) bool {
-	if a.Data.Message.ID == nil || b.Data.Message.ID == nil {
-		return false
-	}
-	if *a.Data.Message.ID != *b.Data.Message.ID {
-		return false
-	}
-	if a.Data.RequestID == nil || b.Data.RequestID == nil {
-		return a.Data.RequestID == b.Data.RequestID
-	}
-	return *a.Data.RequestID == *b.Data.RequestID
-}
-
-func shouldReplaceDedupedEntry(candidate, existing LoadedEntry) bool {
-	candidateTotal := tokenTotal(candidate.Data.Message.Usage)
-	existingTotal := tokenTotal(existing.Data.Message.Usage)
-	if candidateTotal != existingTotal {
-		return candidateTotal > existingTotal
-	}
-	return candidate.Data.Message.Usage.Speed != nil && existing.Data.Message.Usage.Speed == nil
-}
-
 // cacheCreation5m/1h read the TTL breakdown, verbatim. No arithmetic here:
 // the collector ships facts, the server owns clamping and interpretation.
 func cacheCreation5m(usage TokenUsage) uint64 {
@@ -859,33 +886,6 @@ func isProjectPathSegment(value string) bool {
 		value != ".." &&
 		!strings.Contains(value, "/") &&
 		!strings.Contains(value, `\`)
-}
-
-func normalizeClaudeConfigPath(raw string) string {
-	path := expandHomePath(raw)
-	if filepath.Base(path) == "projects" && dirExists(path) {
-		return filepath.Dir(path)
-	}
-	return path
-}
-
-func expandHomePath(raw string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return raw
-	}
-	if raw == "~" {
-		return home
-	}
-	if strings.HasPrefix(raw, "~/") {
-		return filepath.Join(home, strings.TrimPrefix(raw, "~/"))
-	}
-	return raw
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 func pathParts(path string) []string {

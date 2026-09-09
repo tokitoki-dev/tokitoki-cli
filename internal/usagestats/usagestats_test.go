@@ -104,3 +104,32 @@ func TestBuildForProject(t *testing.T) {
 		t.Fatalf("empty sub-report must keep the dense daily window, got %d", len(empty.Project.Daily))
 	}
 }
+
+// A file edit is a side effect of a request already counted. Its lines and
+// activity belong in the report; the request count does not include it.
+func TestBuildDoesNotCountFileEditsAsEvents(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	call := entry(now.Add(-time.Hour), "claude", "claude-fable-5", "tracklm", 1000)
+	edit := usage.Entry{
+		Provider:   usage.ProviderClaude,
+		EventKind:  usage.EventKindFileEdit,
+		Timestamp:  now.Add(-time.Hour).Add(5 * time.Second),
+		Project:    "tracklm",
+		LinesAdded: 12,
+	}
+
+	report := Build([]usage.Entry{call, edit}, 7, now)
+
+	if report.Totals.Events != 1 || report.Daily[6].Events != 1 {
+		t.Fatalf("file edit counted as a request: totals=%d today=%d", report.Totals.Events, report.Daily[6].Events)
+	}
+	if report.Totals.TotalTokens != 1000 {
+		t.Fatalf("tokens = %d, want 1000", report.Totals.TotalTokens)
+	}
+	if len(report.Projects) != 1 || report.Projects[0].Events != 1 {
+		t.Fatalf("project group counted the edit: %+v", report.Projects)
+	}
+	if report.Daily[6].ActiveSeconds != 120 {
+		t.Fatalf("edit in the same bucket must not add activity: %d", report.Daily[6].ActiveSeconds)
+	}
+}

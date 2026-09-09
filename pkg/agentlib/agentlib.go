@@ -499,7 +499,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	entry := usage.Entry{
 		Provider:    usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
 		SourceType:  "ide",
-		EventKind:   "heartbeat",
+		EventKind:   usage.EventKindHeartbeat,
 		Timestamp:   heartbeat.Timestamp.UTC(),
 		Date:        heartbeat.Timestamp.UTC().Format("2006-01-02"),
 		Project:     strings.TrimSpace(heartbeat.Project),

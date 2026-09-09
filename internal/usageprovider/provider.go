@@ -152,6 +152,7 @@ func NonZero(tokens usage.TokenUsage) bool {
 func BaseEntry(provider usage.Provider, timestamp time.Time, project, projectPath, sessionID, model, client string, tokens usage.TokenUsage) usage.Entry {
 	return usage.Entry{
 		Provider:    provider,
+		EventKind:   usage.EventKindAPICall,
 		Timestamp:   timestamp,
 		Date:        formatDate(timestamp),
 		Project:     project,

@@ -311,9 +311,10 @@ func TestOpenStampsFreshDatabaseAtCurrentVersion(t *testing.T) {
 	}
 }
 
-// A database written before resume offsets existed must gain the column with
-// every row defaulting to 0, which means "parse from the beginning" — safe,
-// just not yet incremental.
+// A database written before resume offsets existed must gain the column and
+// still open. Its scanned_files rows do not survive: version 5 clears the
+// table so every transcript is re-read once, and rows written before offsets
+// existed would have been re-read from zero anyway.
 func TestOpenAddsScannedFilesOffsetToLegacyDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 
@@ -350,15 +351,19 @@ func TestOpenAddsScannedFilesOffsetToLegacyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, ok := states["/tmp/a.jsonl"]
-	if !ok {
-		t.Fatal("legacy scanned_files row was lost")
+	if len(states) != 0 {
+		t.Fatalf("scanned_files = %+v, want cleared by the version 5 upgrade", states)
 	}
-	if state.Size != 42 || state.MtimeNS != 7 {
-		t.Fatalf("legacy row = %+v, want size 42 mtime 7", state)
+	// The offset column exists: a full state round-trips.
+	if err := db.UpsertScannedFiles(map[string]FileState{"/tmp/b.jsonl": {Size: 1, MtimeNS: 2, Offset: 3}}); err != nil {
+		t.Fatal(err)
 	}
-	if state.Offset != 0 {
-		t.Fatalf("offset = %d, want 0", state.Offset)
+	states, err = db.ScannedFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["/tmp/b.jsonl"].Offset != 3 {
+		t.Fatalf("offset column missing: %+v", states)
 	}
 
 	var version int
@@ -574,5 +579,84 @@ func TestReleaseClaimsLeavesResolvedEventsAlone(t *testing.T) {
 		t.Fatal(err)
 	} else if n != 0 {
 		t.Fatalf("pending count = %d, want 0: an uploaded event was resurrected", n)
+	}
+}
+
+// Version 5 forgets every scanned file so the next scan re-reads each
+// transcript from the start: that is how file edits recorded before edits
+// became events of their own get into the database. Events already stored
+// keep their rows and their upload state.
+func TestOpenClearsScannedFilesWhenUpgradingToVersion5(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v4.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertScannedFiles(map[string]FileState{"/tmp/a.jsonl": {Size: 42, MtimeNS: 7, Offset: 40}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.InsertEvents([]usage.Entry{{ID: "evt-1", Provider: usage.ProviderClaude, Timestamp: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkEventsUploaded([]string{"evt-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	states, err := reopened.ScannedFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("scanned_files = %+v, want cleared", states)
+	}
+	var status string
+	if err := reopened.db.QueryRow(`SELECT status FROM usage_events WHERE id = 'evt-1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "uploaded" {
+		t.Fatalf("event status = %q, want uploaded (events survive the upgrade)", status)
+	}
+	var version int
+	if err := reopened.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != eventSchemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
+	}
+}
+
+// An entry stored without a kind is an API call: that is all providers ever
+// produced before the field existed.
+func TestInsertEventsDefaultsKindToAPICall(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.InsertEvents([]usage.Entry{
+		{ID: "call", Provider: usage.ProviderClaude, Timestamp: time.Now()},
+		{ID: "edit", Provider: usage.ProviderClaude, Timestamp: time.Now(), EventKind: usage.EventKindFileEdit},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := db.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, entry := range entries {
+		kinds[entry.ID] = entry.EventKind
+	}
+	if kinds["call"] != usage.EventKindAPICall || kinds["edit"] != usage.EventKindFileEdit {
+		t.Fatalf("kinds = %v", kinds)
 	}
 }

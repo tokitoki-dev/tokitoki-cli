@@ -119,10 +119,17 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 			continue
 		}
 
+		// A file edit is not a request: it is a side effect of one that is
+		// already counted. Its lines still matter and its activity still
+		// marks the bucket; only the request count leaves it out.
+		isRequest := entry.EventKind != usage.EventKindFileEdit
+
 		day := &report.Daily[index]
-		day.Events++
+		if isRequest {
+			day.Events++
+			report.Totals.Events++
+		}
 		day.TotalTokens += entry.Usage.TotalTokens
-		report.Totals.Events++
 		report.Totals.TotalTokens += entry.Usage.TotalTokens
 		report.Totals.InputTokens += entry.Usage.InputTokens
 		report.Totals.OutputTokens += entry.Usage.OutputTokens
@@ -134,9 +141,9 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 		}
 		dailyBuckets[index][bucket] = struct{}{}
 
-		accumulate(providers, string(entry.Provider), entry, bucket)
-		accumulate(models, entry.Model, entry, bucket)
-		accumulate(projects, entry.Project, entry, bucket)
+		accumulate(providers, string(entry.Provider), entry, bucket, isRequest)
+		accumulate(models, entry.Model, entry, bucket, isRequest)
+		accumulate(projects, entry.Project, entry, bucket, isRequest)
 	}
 
 	report.Totals.ActiveSeconds = int64(len(activeBuckets)) * int64(activeBucket/time.Second)
@@ -149,7 +156,7 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 	return report
 }
 
-func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, bucket int64) {
+func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, bucket int64, isRequest bool) {
 	if name == "" {
 		return
 	}
@@ -158,7 +165,9 @@ func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, buc
 		group = &groupAgg{GroupStat: GroupStat{Name: name}, buckets: make(map[int64]struct{})}
 		groups[name] = group
 	}
-	group.Events++
+	if isRequest {
+		group.Events++
+	}
 	group.TotalTokens += entry.Usage.TotalTokens
 	group.buckets[bucket] = struct{}{}
 }

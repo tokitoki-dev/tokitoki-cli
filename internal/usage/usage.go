@@ -32,6 +32,25 @@ const (
 
 const UnknownLanguage = "Unknown"
 
+// Event kinds. An AI provider's events are one of the first two; IDE
+// front-ends send the third.
+//
+//   - EventKindAPICall is one API round trip: tokens, model, session. The
+//     unit of cost.
+//   - EventKindFileEdit is one file modification an agent made: entity,
+//     lines added and removed. It carries no tokens — the round trip that
+//     issued the edit already carries them, and counting them here again
+//     would bill the same call twice.
+//   - EventKindHeartbeat is an editor activity sample.
+//
+// The server counts requests over api_call rows and sums line changes over
+// every row, so a provider that emits both kinds reports both correctly.
+const (
+	EventKindAPICall   = "api_call"
+	EventKindFileEdit  = "file_edit"
+	EventKindHeartbeat = "heartbeat"
+)
+
 // UnknownProject is the single spelling every provider uses when a project
 // name cannot be determined.
 const UnknownProject = "Unknown"

@@ -166,3 +166,46 @@ func TestReadUsageFileFromAdvancesPastUnparsableLine(t *testing.T) {
 		t.Fatalf("offset = %d, want %d (bad line must not stall the scan)", offset, info.Size())
 	}
 }
+
+// Because every entry comes from exactly one line, resuming at any line
+// boundary yields the entries a whole read yields for the lines after it —
+// including an edit whose issuing message sits before the boundary.
+func TestReadUsageFileFromAnyLineBoundaryMatchesWholeRead(t *testing.T) {
+	lines := []string{
+		usageLine("1", 1, 2),
+		`{"timestamp":"2026-05-21T01:02:03Z","cwd":"/tmp/p","requestId":"req-1","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"toolu-1","name":"Edit","input":{}}]}}` + "\n",
+		`{"type":"user","timestamp":"2026-05-21T01:02:04Z","cwd":"/tmp/p","message":{"content":[{"type":"tool_result","tool_use_id":"toolu-1"}]},"toolUseResult":{"filePath":"/tmp/p/a.go","structuredPatch":[{"lines":["+x","+y"]}]}}` + "\n",
+		usageLine("2", 3, 4),
+	}
+	body := ""
+	for _, line := range lines {
+		body += line
+	}
+	path := transcript(t, body)
+
+	whole, _, err := ReadUsageFileFrom(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(whole) != 4 {
+		t.Fatalf("whole read = %d entries, want 4", len(whole))
+	}
+
+	offset := int64(0)
+	for i, line := range lines {
+		rest, _, err := ReadUsageFileFrom(path, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := whole[i:]
+		if len(rest) != len(want) {
+			t.Fatalf("resume at line %d: %d entries, want %d", i, len(rest), len(want))
+		}
+		for j := range rest {
+			if rest[j].ID != want[j].ID || rest[j].LinesAdded != want[j].LinesAdded || rest[j].Kind != want[j].Kind {
+				t.Fatalf("resume at line %d entry %d = %+v, want %+v", i, j, rest[j], want[j])
+			}
+		}
+		offset += int64(len(line))
+	}
+}

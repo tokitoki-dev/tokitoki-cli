@@ -128,7 +128,13 @@ func stampVersion(db *sql.DB) error {
 //
 // Version 4 adds usage_events.lease_until, which lets a claimed batch be
 // reclaimed after the process that claimed it died mid-upload.
-const eventSchemaVersion = 4
+//
+// Version 5 clears scanned_files. Claude file edits became events of their
+// own (file_edit) instead of fields folded onto the API call that issued
+// them — a fold that lost most of them. The edits already on disk are only
+// recovered by reading every transcript again from the start; the API call
+// events that re-parse alongside them keep their IDs and are ignored.
+const eventSchemaVersion = 5
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -150,6 +156,11 @@ func migrate(db *sql.DB) error {
 	}
 	if version < 4 {
 		if err := addColumn(db, `ALTER TABLE usage_events ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		if _, err := db.Exec(`DELETE FROM scanned_files`); err != nil {
 			return err
 		}
 	}
@@ -285,6 +296,12 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 		}
 		entry.Language = usage.NormalizeLanguage(entry.Language)
 		entry.Project = usage.NormalizeProject(entry.Project)
+		// Every stored event names its kind. Providers that predate the
+		// field only ever produced API calls, so that is what an unset kind
+		// means — stated here once rather than defaulted by every reader.
+		if entry.EventKind == "" {
+			entry.EventKind = usage.EventKindAPICall
+		}
 		payload, err := json.Marshal(entry)
 		if err != nil {
 			return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
