@@ -43,6 +43,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # The data directory released binaries must own. The Makefile's release
+      # targets stamp it themselves — this is not passed to the build, it is
+      # what the built artifact is checked against, so a Makefile that stopped
+      # stamping it would fail the release instead of shipping quietly.
+      EXPECTED_DATA_DIR: .tokitoki
+      EXPECTED_SERVER_URL: https://tokitoki.dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -72,6 +79,26 @@ jobs:
           want="${GITHUB_REF_NAME#v}"
           if [ "$got" != "$want" ]; then
             echo "binary reports '$got', tag says '$want'" >&2
+            exit 1
+          fi
+
+          # Released binaries must own the data directory installed front-ends
+          # read. Every default in the build points somewhere else, on purpose,
+          # so a binary that lost its release stamp would ship and silently
+          # ignore the state users already have. Asking the artifact itself is
+          # what catches that.
+          got_dir="$(HOME=/tmp/release-check dist/tokitoki-linux-amd64 data-dir)"
+          if [ "$got_dir" != "/tmp/release-check/$EXPECTED_DATA_DIR" ]; then
+            echo "release binary uses '$got_dir', want ~/$EXPECTED_DATA_DIR" >&2
+            exit 1
+          fi
+
+          # Same rule for the server. Every local target stamps the development
+          # server so no local build can reach production; a release that lost
+          # its stamp would ship pointing at localhost and upload nothing.
+          got_url="$(dist/tokitoki-linux-amd64 server-url)"
+          if [ "$got_url" != "$EXPECTED_SERVER_URL" ]; then
+            echo "release binary reports to '$got_url', want $EXPECTED_SERVER_URL" >&2
             exit 1
           fi
 

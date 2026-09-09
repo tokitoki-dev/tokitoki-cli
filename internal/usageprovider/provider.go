@@ -111,7 +111,11 @@ func ApplyTotalFallback(tokens usage.TokenUsage, total uint64) usage.TokenUsage 
 		return tokens
 	}
 	if total > sum {
-		tokens.ReasoningOutputTokens += total - sum
+		// The residual's bucket is unknown — the provider counted something
+		// its breakdown doesn't name (rounding, a field we don't parse). It
+		// stays in TotalTokens as unclassified volume rather than being
+		// guessed into ReasoningOutputTokens, which the server bills at the
+		// output rate — the most expensive bucket of all.
 		tokens.TotalTokens = total
 		return tokens
 	}
@@ -121,6 +125,26 @@ func ApplyTotalFallback(tokens usage.TokenUsage, total uint64) usage.TokenUsage 
 	return tokens
 }
 
+// SubtractCachedOverlap resolves the Google-style ambiguity of whether a
+// prompt token count already includes the cached tokens, returning
+// (uncachedInput, cacheRead). The total is the tiebreaker: when it equals
+// input+output+thoughts+tool, the prompt count contained the cached tokens
+// and counting both would bill the cached portion twice; when it doesn't
+// prove that, the counts are taken at face value. Shared by every provider
+// reading Google-shaped usage metadata so the rule exists exactly once.
+func SubtractCachedOverlap(input, output, thoughts, tool, cached, total uint64, hasTotal bool) (uint64, uint64) {
+	inclusiveTotal := input + output + thoughts + tool
+	exclusiveTotal := inclusiveTotal + cached
+	if cached > 0 && hasTotal && total == inclusiveTotal && total != exclusiveTotal {
+		cachedPortion := input
+		if cached < cachedPortion {
+			cachedPortion = cached
+		}
+		return input - cachedPortion, cached
+	}
+	return input, cached
+}
+
 func NonZero(tokens usage.TokenUsage) bool {
 	return TotalUsage(tokens) > 0 || tokens.TotalTokens > 0
 }
@@ -128,6 +152,7 @@ func NonZero(tokens usage.TokenUsage) bool {
 func BaseEntry(provider usage.Provider, timestamp time.Time, project, projectPath, sessionID, model, client string, tokens usage.TokenUsage) usage.Entry {
 	return usage.Entry{
 		Provider:    provider,
+		EventKind:   usage.EventKindAPICall,
 		Timestamp:   timestamp,
 		Date:        formatDate(timestamp),
 		Project:     project,

@@ -40,24 +40,25 @@ func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
 	if entry.Language != "Unknown" {
 		t.Fatalf("language = %q, want Unknown", entry.Language)
 	}
-	// Usage comes from the cumulative counter (first event: the counter
-	// itself), with input_tokens split into non-cached (100-20) and cache
-	// read (20). last_token_usage only feeds the id.
-	if entry.Usage.InputTokens != 80 {
-		t.Fatalf("input tokens = %d, want non-cached input (100-20)", entry.Usage.InputTokens)
+	// Usage is the turn's own last_token_usage, with input_tokens split into
+	// non-cached (40-8) and cache read (8). The cumulative counter is never
+	// billed: here it already holds 110 tokens of history this turn did not
+	// spend.
+	if entry.Usage.InputTokens != 32 {
+		t.Fatalf("input tokens = %d, want non-cached input (40-8)", entry.Usage.InputTokens)
 	}
-	if entry.Usage.CacheReadInputTokens != 20 {
-		t.Fatalf("cache read tokens = %d, want 20 (cached portion)", entry.Usage.CacheReadInputTokens)
+	if entry.Usage.CacheReadInputTokens != 8 {
+		t.Fatalf("cache read tokens = %d, want 8 (cached portion)", entry.Usage.CacheReadInputTokens)
 	}
-	if entry.Usage.ReasoningOutputTokens != 3 {
-		t.Fatalf("reasoning output tokens = %d, want 3", entry.Usage.ReasoningOutputTokens)
+	if entry.Usage.ReasoningOutputTokens != 2 {
+		t.Fatalf("reasoning output tokens = %d, want 2", entry.Usage.ReasoningOutputTokens)
 	}
-	if entry.Usage.TotalTokens != 110 {
-		t.Fatalf("total tokens = %d, want 110", entry.Usage.TotalTokens)
+	if entry.Usage.TotalTokens != 45 {
+		t.Fatalf("total tokens = %d, want 45", entry.Usage.TotalTokens)
 	}
 }
 
-func TestReadUsageFileUsesCumulativeDeltas(t *testing.T) {
+func TestReadUsageFileSkipsReplaysAndBillsLastUsage(t *testing.T) {
 	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
 {"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
 {"timestamp":"2026-06-04T01:02:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}
@@ -72,7 +73,7 @@ func TestReadUsageFileUsesCumulativeDeltas(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The second event is a duplicate emission (counter unchanged) and must
-	// vanish; the third is the counter delta, not its last_token_usage.
+	// vanish; the third is billed at its own last_token_usage.
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2 (duplicate skipped)", len(entries))
 	}
@@ -81,10 +82,52 @@ func TestReadUsageFileUsesCumulativeDeltas(t *testing.T) {
 	}
 	second := entries[1].Usage
 	if second.InputTokens != 21 || second.CacheReadInputTokens != 4 || second.OutputTokens != 12 || second.TotalTokens != 37 {
-		t.Fatalf("second usage = %+v, want delta 21/4/12/37", second)
+		t.Fatalf("second usage = %+v, want last usage 21/4/12/37", second)
 	}
 	if entries[0].ID == entries[1].ID {
 		t.Fatal("distinct events share an id")
+	}
+}
+
+// A forked session starts with its parent's cumulative total, and a subagent
+// thread shares its parent's counter: the counter jumps by far more than the
+// turn cost. The turn is billed at what it cost, never at the jump.
+func TestReadUsageFileIgnoresCounterJumpsFromForksAndSubagents(t *testing.T) {
+	content := `{"timestamp":"2026-07-17T01:17:55Z","type":"session_meta","payload":{"id":"fork-1","cwd":"/repo/app","forked_from_id":"parent-1"}}
+{"timestamp":"2026-07-17T01:18:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":17000,"cached_input_tokens":0,"output_tokens":342,"reasoning_output_tokens":0,"total_tokens":17342},"total_token_usage":{"input_tokens":21000000,"cached_input_tokens":0,"output_tokens":498389,"reasoning_output_tokens":0,"total_tokens":21498389}}}}
+{"timestamp":"2026-07-17T01:18:30Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":14000,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":14002},"total_token_usage":{"input_tokens":39960000,"cached_input_tokens":0,"output_tokens":512391,"reasoning_output_tokens":0,"total_tokens":40472391}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-fork.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	if entries[0].Usage.TotalTokens != 17342 || entries[1].Usage.TotalTokens != 14002 {
+		t.Fatalf("totals = %d/%d, want the turns' own 17342/14002, not the counter", entries[0].Usage.TotalTokens, entries[1].Usage.TotalTokens)
+	}
+}
+
+// A token_count whose turn cost nothing is not a request.
+func TestReadUsageFileSkipsZeroUsageTurns(t *testing.T) {
+	content := `{"timestamp":"2026-06-04T01:02:03Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app"}}
+{"timestamp":"2026-06-04T01:02:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0},"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-zero.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %d, want none", len(entries))
 	}
 }
 

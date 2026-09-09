@@ -20,8 +20,12 @@ import (
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagestats"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
@@ -49,11 +53,15 @@ func main() {
 }
 
 func run(args []string) int {
-	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+	if len(args) == 0 {
 		usage()
 		return 0
 	}
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+	if len(args) >= 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+		usageDetailed(args)
+		return 0
+	}
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
 		fmt.Fprintln(os.Stdout, version)
 		return 0
 	}
@@ -72,13 +80,34 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "verify" {
 		return runVerify(args[1:])
 	}
+	if len(args) > 0 && args[0] == "stats" {
+		return runStats(args[1:])
+	}
+	if len(args) > 0 && args[0] == "upload" {
+		return runUploadSwitch(args[1:])
+	}
+	if len(args) > 0 && args[0] == "data-dir" {
+		return runDataDir(args[1:])
+	}
+	if len(args) > 0 && args[0] == "server-url" {
+		return runServerURL(args[1:])
+	}
 	if len(args) > 0 && args[0] == "__service-run" {
 		return runServiceWorker(args[1:])
 	}
 	if len(args) > 0 && args[0] == "service" {
 		return runService(args[1:])
 	}
+	// The documented `sync` subcommand and the legacy flags-only spelling
+	// (`tokitoki --check-update`) run the same code; only `tokitoki` with
+	// nothing at all means "show me the usage" (handled above).
+	if args[0] == "sync" {
+		return runSyncCommand(args[1:])
+	}
+	return runSyncCommand(args)
+}
 
+func runSyncCommand(args []string) int {
 	runFlags, ok := parseRunFlags(args)
 	if !ok {
 		return 2
@@ -95,6 +124,10 @@ func run(args []string) int {
 	if runFlags.checkUpdate {
 		maybeCheckUpdate(defaultLogger())
 	}
+	// The ping likewise runs regardless of the sync outcome: an install whose
+	// sync fails (most often: no API key) is exactly the install it exists to
+	// count.
+	telemetry.MaybePing(defaultLogger(), usageupload.BaseURL())
 	if syncErr != nil {
 		return fail(defaultLogger(), syncErr)
 	}
@@ -157,6 +190,11 @@ func runHeartbeat(args []string) int {
 		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --editor")
 		return 2
 	}
+
+	// Editors with no API key configured never reach the sync path — their
+	// front-ends skip it — so a heartbeat attempt is the only run this install
+	// makes. Deferred so it counts the install whether or not the send fails.
+	defer telemetry.MaybePing(defaultLogger(), usageupload.BaseURL())
 
 	heartbeatTime := time.Now().UTC()
 	if *timestamp != 0 {
@@ -225,6 +263,16 @@ func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, o
 	if err != nil {
 		return err
 	}
+	// With uploading switched off the scan still runs and its events stay
+	// queued, which is exactly what a sync without an API key does. Calling
+	// Scan rather than Sync is the whole difference: the queue keeps filling,
+	// so enabling uploads later sends everything collected in between.
+	if store.UploadDisabled(client.DataDir()) {
+		if err := client.Scan(agentlib.SyncOptions{ProviderDirs: providerDirs}); err != nil {
+			return err
+		}
+		return writeJSON(out, map[string]bool{"ok": true})
+	}
 	if err := client.Sync(ctx, agentlib.SyncOptions{ProviderDirs: providerDirs}); err != nil {
 		return err
 	}
@@ -245,6 +293,9 @@ func runSet(args []string) int {
 	if err := client.SetAPIKey(args[1]); err != nil {
 		return fail(logger, err)
 	}
+	// Unthrottled: has_api_key flipping to true is the funnel transition the
+	// server is waiting on, and the daily ping already reported false today.
+	telemetry.Ping(logger, usageupload.BaseURL())
 	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(logger, err)
 	}
@@ -282,8 +333,8 @@ func runGet(args []string) int {
 }
 
 func runVerify(args []string) int {
-	if len(args) != 1 || args[0] != "key" {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki verify key")
+	if len(args) < 1 || len(args) > 2 || args[0] != "key" {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki verify key [<key>]")
 		return 2
 	}
 
@@ -300,11 +351,137 @@ func runVerify(args []string) int {
 
 	// An invalid key is a definite answer, not a failure: exit 0 with
 	// valid:false so callers can tell it apart from "could not check".
-	valid, err := client.VerifyAPIKey(ctx)
+	// With an explicit key argument the stored key is not consulted, so
+	// front-ends can verify a candidate before saving it.
+	var valid bool
+	if len(args) == 2 {
+		valid, err = client.VerifyAPIKeyValue(ctx, args[1])
+	} else {
+		valid, err = client.VerifyAPIKey(ctx)
+	}
 	if err != nil {
 		return fail(logger, err)
 	}
 	if err := writeJSON(os.Stdout, map[string]any{"ok": true, "valid": valid}); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
+// runStats aggregates the local event database into a JSON report. It never
+// touches the network and needs no API key: this is what front-ends render so
+// a fresh install has something to show before any configuration.
+func runStats(args []string) int {
+	flags := flag.NewFlagSet("tokitoki stats", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	days := flags.Int("days", 30, "number of calendar days to report, ending today")
+	project := flags.String("project", "", "additionally nest a report scoped to this project name")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki stats does not accept positional arguments")
+		return 2
+	}
+	if *days < 1 || *days > 366 {
+		fmt.Fprintln(os.Stderr, "tokitoki stats --days must be between 1 and 366")
+		return 2
+	}
+
+	logger := defaultLogger()
+	dataDir, err := store.InitializeDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(dataDir))
+	if err != nil {
+		return fail(logger, err)
+	}
+	defer usageDB.Close()
+
+	// The window starts at local midnight `days-1` days back; querying one
+	// extra day of raw timestamps lets Build apply the local-date boundary
+	// instead of this query approximating it in UTC.
+	now := time.Now()
+	entries, err := usageDB.EventsSince(now.AddDate(0, 0, -*days))
+	if err != nil {
+		return fail(logger, err)
+	}
+	var report usagestats.Report
+	if *project != "" {
+		report = usagestats.BuildForProject(entries, *days, now, *project)
+	} else {
+		report = usagestats.Build(entries, *days, now)
+	}
+	if err := writeJSON(os.Stdout, report); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
+// runDataDir prints the directory this binary keeps its state in. The path is
+// stamped at build time, so with a development and an installed binary on one
+// machine this is how you tell which state you are about to look at — asking
+// the binary beats inferring it from how it was built.
+func runDataDir(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki data-dir")
+		return 2
+	}
+	logger := defaultLogger()
+	dir, err := store.DefaultDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+	fmt.Fprintln(os.Stdout, dir)
+	return 0
+}
+
+// runServerURL prints the server this binary reports to. Like the data
+// directory it is fixed at build time and read from nowhere else, so the only
+// way to know where a given binary sends events is to ask it.
+func runServerURL(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki server-url")
+		return 2
+	}
+	if err := config.Validate(); err != nil {
+		return fail(defaultLogger(), err)
+	}
+	fmt.Fprintln(os.Stdout, usageupload.BaseURL())
+	return 0
+}
+
+// runUploadSwitch flips and reports the upload switch. Scanning is never
+// affected: a disabled install keeps queueing events locally, so enabling it
+// again sends everything that accumulated in between rather than starting
+// from the moment the switch flipped.
+func runUploadSwitch(args []string) int {
+	if len(args) != 1 || (args[0] != "enable" && args[0] != "disable" && args[0] != "status") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki upload <enable|disable|status>")
+		return 2
+	}
+
+	logger := defaultLogger()
+	dataDir, err := store.InitializeDataDir()
+	if err != nil {
+		return fail(logger, err)
+	}
+
+	switch args[0] {
+	case "disable":
+		err = store.DisableUpload(dataDir)
+	case "enable":
+		err = store.EnableUpload(dataDir)
+	}
+	if err != nil {
+		return fail(logger, err)
+	}
+
+	if err := writeJSON(os.Stdout, map[string]any{
+		"ok":      true,
+		"enabled": !store.UploadDisabled(dataDir),
+	}); err != nil {
 		return fail(logger, err)
 	}
 	return 0
@@ -395,12 +572,18 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 			if err := client.Scan(agentlib.SyncOptions{ProviderDirs: flags.providerDirs}); err != nil {
 				logger.Error("tokitoki scan failed", "error", err)
 			}
+			telemetry.MaybePing(logger, usageupload.BaseURL())
 		})
 	}()
 
 	go func() {
 		defer wg.Done()
 		runIntervalLoop(workerCtx, flags.uploadInterval, func(runCtx context.Context) {
+			// Checked every tick, not once at start: flipping the switch
+			// takes effect on a running service without restarting it.
+			if store.UploadDisabled(client.DataDir()) {
+				return
+			}
 			if err := client.Upload(runCtx); err != nil {
 				logger.Error("tokitoki upload failed", "error", err)
 			}
@@ -631,48 +814,233 @@ func copyProviderDirs(providerDirs map[agentlib.Provider][]string) map[agentlib.
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tokitoki — upload local AI usage to the Tokitoki server
+	fmt.Fprint(os.Stderr, `Usage: tokitoki [COMMAND] [OPTIONS]
 
-Usage:
-  tokitoki [--provider-dir PROVIDER=DIR ...] [--check-update]
-  tokitoki set key <API_KEY>
-  tokitoki get key
-  tokitoki get dashboard-url
-  tokitoki verify key
-  tokitoki heartbeat --entity FILE [options]
-  tokitoki version
-  tokitoki update
-  tokitoki service <install|uninstall|start|stop|restart|status> [options]
+Sync local AI usage to Tokitoki server
 
-Each invocation scans the provider roots you pass and uploads their usage
-events to the Tokitoki server (TOKITOKI_BASE_URL, default
-https://tokitoki.dev). By default, tokitoki scans the built-in roots for
-claude, codex, copilot, gemini, kimi, qwen, openclaw, pi, amp, droid, kilo,
-hermes, codebuff, opencode, goose, and workbuddy. Pass one or more
---provider-dir provider=dir values to scan an explicit provider set. The API
-key is read from ~/.tokitoki/api_key; use tokitoki set key <API_KEY> to create
-or update that file.
+Commands:
+  sync                          Scan and upload usage events (default)
+  set key <API_KEY>             Configure API key
+  get key                       Show current API key
+  get dashboard-url             Show dashboard URL
+  verify key [<KEY>]            Test API key connectivity (default: stored key)
+  stats [--days N] [--project NAME]  Report local usage stats as JSON
+  upload enable|disable|status  Turn uploading on or off
+  data-dir                      Show where this binary keeps its state
+  server-url                    Show which server this binary reports to
+  service SUBCOMMAND            Manage sync service
+    install                     Register service
+    uninstall                   Unregister service
+    start|stop|restart|status   Control service
+  update                        Check and install new version
+  heartbeat                     Submit heartbeat event
+  version, -v, --version        Show version
+  help, -h, --help              Show this message
 
-tokitoki update replaces this binary with the newest published release from
-the same server. --check-update does the same after a sync, throttled to once
-per 12 hours, and the resident service worker checks on the same cadence.
-Local builds (version "dev") never self-update.
+Options:
+  --provider-dir PROVIDER=DIR   Scan specific provider directory
+  --check-update                Check for updates after sync
+  --interval DURATION           Sync interval (service mode)
+  --provider-dir PROVIDER=DIR   Scan specific provider (repeatable)
 
-tokitoki service install keeps the sync running on its own. On Linux it
-writes a systemd oneshot service plus timer: run it with sudo on servers to
-get system units that need no login session, or as a plain user to get user
-units (install then enables lingering so the timer survives logout). On macOS
-and Windows it installs a resident worker via the OS service manager.
+Examples:
+  tokitoki                      Upload usage now
+  tokitoki set key tt_live_xxx  Configure API key
+  tokitoki get dashboard-url    Show dashboard
+  tokitoki upload disable       Stop uploading (keeps collecting locally)
+  tokitoki service install      Register sync service (user mode)
+  tokitoki service status       Check service status
+  tokitoki update               Install latest version
+
+For more help: tokitoki help
+`)
+}
+
+func usageDetailed(args []string) {
+	if len(args) > 1 {
+		topic := args[1]
+		switch topic {
+		case "service":
+			fmt.Fprint(os.Stderr, `service SUBCOMMAND [OPTIONS]
+
+Manage the Tokitoki sync service on your system.
+
+Subcommands:
+  install                       Register service for automatic sync
+  uninstall                     Unregister service
+  start                         Start the service
+  stop                          Stop the service
+  restart                        Restart the service
+  status                        Show service status
+
+Options:
+  --interval DURATION           Sync interval (default 5m)
+  --provider-dir PROVIDER=DIR   Custom provider directory
+  --system                      Install as system service (requires root)
+
+Details:
+  On Linux, 'tokitoki service install' creates a systemd user service
+  that runs every 5 minutes. Use 'systemctl --user' to manage it:
+    systemctl --user status toki.timer
+    systemctl --user stop toki.timer
+    systemctl --user start toki.timer
+
+  For system-wide installation (all users), use:
+    sudo tokitoki service install --system
+
+  On macOS and Windows, uses the OS service manager instead.
+`)
+		case "heartbeat":
+			fmt.Fprint(os.Stderr, `heartbeat [OPTIONS]
+
+Submit a heartbeat event (project activity marker).
+
+Required:
+  --entity FILE                 File being edited
+  --project NAME                Project name
+  --project-folder DIR          Project root directory
+  --editor NAME                 Editor name (e.g., vscode, vim)
+
+Optional:
+  --language LANG               Programming language
+  --is-write                    Mark as write operation (default: read)
+
+Example:
+  tokitoki heartbeat \
+    --entity /repo/main.go \
+    --project myrepo \
+    --project-folder /repo \
+    --editor vscode \
+    --language go
+`)
+		case "data-dir":
+			fmt.Fprint(os.Stderr, `data-dir
+
+Show the directory this binary keeps its state in.
+
+Details:
+  The directory is a build parameter, fixed when the binary is compiled.
+  Binaries built with different values share nothing — not the API key,
+  not the event queue, not the locks — so any number of them run on one
+  machine without seeing each other's data.
+
+  Use this when more than one binary is around and you need to know which
+  state you are about to inspect or delete.
+
+Example:
+  tokitoki data-dir
+`)
+		case "server-url":
+			fmt.Fprint(os.Stderr, `server-url
+
+Show the server this binary reports to.
+
+Details:
+  The server is a build parameter, fixed when the binary is compiled, and
+  nothing in the environment changes it. A development build reports to the
+  local server it was built for; a release reports to https://tokitoki.dev.
+  Every front-end that launches this binary — the desktop app, the editor
+  plugins, a service unit — therefore reaches the same server, whether or
+  not it thought to pass one along.
+
+Example:
+  tokitoki server-url
+`)
+		case "upload":
+			fmt.Fprint(os.Stderr, `upload enable|disable|status
+
+Turn uploading on or off.
+
+Subcommands:
+  disable                       Stop uploading to the server
+  enable                        Resume uploading
+  status                        Report whether uploading is on
+
+Details:
+  Only uploading is affected. Scanning keeps running while uploads are
+  disabled, so events pile up in the local database and are all sent once
+  you enable uploading again — nothing recorded in between is lost.
+
+  The switch is one file: ~/.tokitoki/state/upload-disabled. Its existence
+  is the whole setting, so you can flip it without the CLI:
+    touch ~/.tokitoki/state/upload-disabled    # same as: tokitoki upload disable
+    rm -f ~/.tokitoki/state/upload-disabled    # same as: tokitoki upload enable
+
+  Every subcommand is idempotent — enabling an already-enabled install
+  succeeds and changes nothing.
+
+Examples:
+  tokitoki upload disable
+  tokitoki upload status
+  tokitoki upload enable
+`)
+		case "set", "get":
+			fmt.Fprint(os.Stderr, `get|set [SUBCOMMAND]
+
+Manage Tokitoki settings.
+
+Subcommands:
+  key                           API key (get or set)
+  dashboard-url                 Dashboard URL (get only)
+
+The API key is stored in ~/.tokitoki/api_key
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
   tokitoki get dashboard-url
-  tokitoki heartbeat --entity /repo/main.go --project repo --project-folder /repo --editor eclipse
-  tokitoki
-  tokitoki --provider-dir gemini=~/.gemini/tmp --provider-dir amp=~/.local/share/amp
-  tokitoki service install
-  tokitoki service status
+`)
+		default:
+			fmt.Fprintf(os.Stderr, "No detailed help for '%s'\n", topic)
+		}
+		return
+	}
+
+	fmt.Fprint(os.Stderr, `tokitoki — Sync local AI coding usage to the Tokitoki server
+
+DESCRIPTION
+  Tokitoki scans your local Claude Code, Codex, Copilot, and other AI tool
+  data directories, and uploads usage events to your Tokitoki dashboard.
+  It runs once per invocation, or continuously via a registered service.
+
+GETTING STARTED
+  1. Get your API key at https://tokitoki.dev/settings
+  2. Configure it: tokitoki set key <YOUR_KEY>
+  3. Run once: tokitoki
+  4. Or set up service: tokitoki service install
+
+COMMANDS
+  sync [OPTIONS]                Scan and upload usage (default command)
+  service [SUBCOMMAND]          Manage automatic sync service
+  set key <API_KEY>             Store API key
+  get key|dashboard-url         Retrieve stored settings
+  verify key [<KEY>]            Test API key
+  stats [--days N]              Report local usage stats as JSON (default 30 days)
+  upload enable|disable|status  Turn uploading on or off
+  data-dir                      Show where this binary keeps its state
+  server-url                    Show which server this binary reports to
+  heartbeat [OPTIONS]           Submit a heartbeat event
+  update                        Install the latest version
+  version                       Show version
+
+OPTIONS
+  --provider-dir PROVIDER=DIR   Scan a specific provider instead of defaults
+  --check-update                Check for updates after each sync
+  --interval DURATION           Sync interval (for service mode)
+
+ENVIRONMENT
+  TOKITOKI_NO_TELEMETRY         Disable the anonymous install ping
+
+  The server URL and the data directory are build parameters, not
+  environment variables: see 'tokitoki server-url' and 'tokitoki data-dir'.
+
+For command-specific help, use: tokitoki help COMMAND
+
+Examples:
+  tokitoki help service         Service management details
+  tokitoki help upload          Upload switch details
+  tokitoki help heartbeat       Heartbeat event details
+  tokitoki help get             Configuration help
 `)
 }
 

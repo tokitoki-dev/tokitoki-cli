@@ -20,13 +20,9 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
-)
-
-const (
-	DefaultServerURL = "https://tokitoki.dev"
-	BaseURLEnv       = "TOKITOKI_BASE_URL"
 )
 
 const (
@@ -81,18 +77,20 @@ type Event struct {
 	// Australia/Lord_Howe — is a pure function of the two. Sending it as well
 	// would be a second copy of a derived value, and the copy is what goes
 	// stale when tzdata is corrected.
-	Timezone                 string             `json:"timezone,omitempty"`
-	SessionID                string             `json:"session_id,omitempty"`
-	Project                  string             `json:"project"`
-	ProjectPathHash          string             `json:"project_path_hash,omitempty"`
-	Model                    string             `json:"model,omitempty"`
-	Language                 string             `json:"language"`
-	OS                       string             `json:"os,omitempty"`
-	Client                   string             `json:"client,omitempty"`
-	Entity                   string             `json:"entity,omitempty"`
-	EntityType               string             `json:"entity_type,omitempty"`
-	Branch                   string             `json:"branch,omitempty"`
-	Editor                   string             `json:"editor,omitempty"`
+	Timezone        string `json:"timezone,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	Project         string `json:"project"`
+	ProjectPathHash string `json:"project_path_hash,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Language        string `json:"language"`
+	OS              string `json:"os,omitempty"`
+	Client          string `json:"client,omitempty"`
+	Entity          string `json:"entity,omitempty"`
+	EntityType      string `json:"entity_type,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+	// No `editor` field: on a heartbeat it duplicated SourceProvider and
+	// Client, on an AI event it was never set, and the server stopped storing
+	// it (server migration 0060). The server still accepts it from older CLIs.
 	Category                 string             `json:"category,omitempty"`
 	IsWrite                  *bool              `json:"is_write,omitempty"`
 	LinesAdded               uint64             `json:"lines_added,omitempty"`
@@ -103,9 +101,14 @@ type Event struct {
 	OutputTokens             uint64             `json:"output_tokens,omitempty"`
 	CachedInputTokens        uint64             `json:"cached_input_tokens,omitempty"`
 	CacheCreationInputTokens uint64             `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64             `json:"cache_read_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64             `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64             `json:"total_tokens,omitempty"`
+	// The TTL-tiered subsets of CacheCreationInputTokens (Anthropic only;
+	// zero elsewhere). Absent and zero mean the same thing — no tokens in
+	// that tier — so omitempty loses nothing.
+	CacheCreation5mInputTokens uint64 `json:"cache_creation_5m_input_tokens,omitempty"`
+	CacheCreation1hInputTokens uint64 `json:"cache_creation_1h_input_tokens,omitempty"`
+	CacheReadInputTokens       uint64 `json:"cache_read_input_tokens,omitempty"`
+	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens                uint64 `json:"total_tokens,omitempty"`
 }
 
 type Response struct {
@@ -347,13 +350,10 @@ func uploadEndpoint() string {
 }
 
 // BaseURL is the Tokitoki server every subsystem talks to — usage uploads and
-// update checks alike. TOKITOKI_BASE_URL overrides the default.
+// update checks alike. It is fixed at build time (config.ServerURL); nothing
+// in the environment changes it.
 func BaseURL() string {
-	value := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
-	if value == "" {
-		return DefaultServerURL
-	}
-	return value
+	return strings.TrimRight(strings.TrimSpace(config.ServerURL), "/")
 }
 
 // convertEvent maps one loaded entry onto the wire format.
@@ -372,37 +372,38 @@ func BaseURL() string {
 // exact per-event fact.
 func convertEvent(entry usage.Entry, zoneName string) Event {
 	return Event{
-		ID:                       entry.ID,
-		Provider:                 string(entry.Provider),
-		SourceType:               entry.SourceType,
-		SourceProvider:           string(entry.Provider),
-		EventKind:                entry.EventKind,
-		Timestamp:                entry.Timestamp.UTC().Format(time.RFC3339Nano),
-		Timezone:                 zoneName,
-		SessionID:                entry.SessionID,
-		Project:                  entry.Project,
-		ProjectPathHash:          hashProjectPath(entry.ProjectPath),
-		Model:                    entry.Model,
-		Language:                 usage.NormalizeLanguage(entry.Language),
-		OS:                       entry.OS,
-		Client:                   entry.Client,
-		Entity:                   relativeEntity(entry.ProjectPath, entry.Entity),
-		EntityType:               entry.EntityType,
-		Branch:                   entry.Branch,
-		Editor:                   entry.Editor,
-		Category:                 entry.Category,
-		IsWrite:                  entry.IsWrite,
-		LinesAdded:               entry.LinesAdded,
-		LinesRemoved:             entry.LinesRemoved,
-		Files:                    relativeFiles(entry.ProjectPath, entry.Files),
-		Raw:                      entry.Raw,
-		InputTokens:              entry.Usage.InputTokens,
-		OutputTokens:             entry.Usage.OutputTokens,
-		CachedInputTokens:        entry.Usage.CachedInputTokens,
-		CacheCreationInputTokens: entry.Usage.CacheCreationInputTokens,
-		CacheReadInputTokens:     entry.Usage.CacheReadInputTokens,
-		ReasoningOutputTokens:    entry.Usage.ReasoningOutputTokens,
-		TotalTokens:              entry.Usage.TotalTokens,
+		ID:                         entry.ID,
+		Provider:                   string(entry.Provider),
+		SourceType:                 entry.SourceType,
+		SourceProvider:             string(entry.Provider),
+		EventKind:                  entry.EventKind,
+		Timestamp:                  entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		Timezone:                   zoneName,
+		SessionID:                  entry.SessionID,
+		Project:                    entry.Project,
+		ProjectPathHash:            hashProjectPath(entry.ProjectPath),
+		Model:                      entry.Model,
+		Language:                   usage.NormalizeLanguage(entry.Language),
+		OS:                         entry.OS,
+		Client:                     entry.Client,
+		Entity:                     relativeEntity(entry.ProjectPath, entry.Entity),
+		EntityType:                 entry.EntityType,
+		Branch:                     entry.Branch,
+		Category:                   entry.Category,
+		IsWrite:                    entry.IsWrite,
+		LinesAdded:                 entry.LinesAdded,
+		LinesRemoved:               entry.LinesRemoved,
+		Files:                      relativeFiles(entry.ProjectPath, entry.Files),
+		Raw:                        entry.Raw,
+		InputTokens:                entry.Usage.InputTokens,
+		OutputTokens:               entry.Usage.OutputTokens,
+		CachedInputTokens:          entry.Usage.CachedInputTokens,
+		CacheCreationInputTokens:   entry.Usage.CacheCreationInputTokens,
+		CacheCreation5mInputTokens: entry.Usage.CacheCreation5mInputTokens,
+		CacheCreation1hInputTokens: entry.Usage.CacheCreation1hInputTokens,
+		CacheReadInputTokens:       entry.Usage.CacheReadInputTokens,
+		ReasoningOutputTokens:      entry.Usage.ReasoningOutputTokens,
+		TotalTokens:                entry.Usage.TotalTokens,
 	}
 }
 

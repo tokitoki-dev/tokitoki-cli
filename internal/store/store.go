@@ -28,6 +28,9 @@ type FileStore struct {
 }
 
 func DefaultDataDir() (string, error) {
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -62,6 +65,11 @@ func Open(dir string) (*FileStore, error) {
 // UsageDBPath returns the path to the usage database file within the data directory.
 func UsageDBPath(dataDir string) string {
 	return filepath.Join(dataDir, dataDirName, UsageDBFile)
+}
+
+// StatePath returns the path of a state file within the data directory.
+func StatePath(dataDir, name string) string {
+	return filepath.Join(dataDir, stateDirName, name)
 }
 
 // LoadSettings reads the API key from the config/api_key file.

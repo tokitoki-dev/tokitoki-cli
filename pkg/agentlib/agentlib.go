@@ -238,6 +238,13 @@ func (c *Client) VerifyAPIKey(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return c.VerifyAPIKeyValue(ctx, apiKey)
+}
+
+// VerifyAPIKeyValue checks the given key against the server without touching
+// the stored one — front-ends verify a candidate key before saving it. Same
+// answer semantics as VerifyAPIKey.
+func (c *Client) VerifyAPIKeyValue(ctx context.Context, apiKey string) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -492,7 +499,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	entry := usage.Entry{
 		Provider:    usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
 		SourceType:  "ide",
-		EventKind:   "heartbeat",
+		EventKind:   usage.EventKindHeartbeat,
 		Timestamp:   heartbeat.Timestamp.UTC(),
 		Date:        heartbeat.Timestamp.UTC().Format("2006-01-02"),
 		Project:     strings.TrimSpace(heartbeat.Project),
@@ -503,7 +510,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		Entity:      strings.TrimSpace(heartbeat.Entity),
 		EntityType:  "file",
 		Branch:      strings.TrimSpace(heartbeat.Branch),
-		Editor:      strings.TrimSpace(heartbeat.Editor),
 		Category:    strings.TrimSpace(heartbeat.Category),
 		IsWrite:     &isWrite,
 		Raw: map[string]any{
@@ -598,6 +604,9 @@ func (c *Client) withDataLock(fn func() error) error {
 
 // DefaultDataDir returns the shared Tokitoki data directory.
 func DefaultDataDir() (string, error) {
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	lease_until     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_queue ON usage_events(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts);
 CREATE TABLE IF NOT EXISTS scanned_files (
 	path     TEXT PRIMARY KEY,
 	size     INTEGER NOT NULL,
@@ -127,7 +128,13 @@ func stampVersion(db *sql.DB) error {
 //
 // Version 4 adds usage_events.lease_until, which lets a claimed batch be
 // reclaimed after the process that claimed it died mid-upload.
-const eventSchemaVersion = 4
+//
+// Version 5 clears scanned_files. Claude file edits became events of their
+// own (file_edit) instead of fields folded onto the API call that issued
+// them — a fold that lost most of them. The edits already on disk are only
+// recovered by reading every transcript again from the start; the API call
+// events that re-parse alongside them keep their IDs and are ignored.
+const eventSchemaVersion = 5
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -149,6 +156,11 @@ func migrate(db *sql.DB) error {
 	}
 	if version < 4 {
 		if err := addColumn(db, `ALTER TABLE usage_events ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		if _, err := db.Exec(`DELETE FROM scanned_files`); err != nil {
 			return err
 		}
 	}
@@ -284,6 +296,12 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 		}
 		entry.Language = usage.NormalizeLanguage(entry.Language)
 		entry.Project = usage.NormalizeProject(entry.Project)
+		// Every stored event names its kind. Providers that predate the
+		// field only ever produced API calls, so that is what an unset kind
+		// means — stated here once rather than defaulted by every reader.
+		if entry.EventKind == "" {
+			entry.EventKind = usage.EventKindAPICall
+		}
 		payload, err := json.Marshal(entry)
 		if err != nil {
 			return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
@@ -373,6 +391,35 @@ func (s *DB) PendingEvents(now time.Time, limit int) ([]usage.Entry, error) {
 		var entry usage.Entry
 		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
 			return nil, fmt.Errorf("decode usage event: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// EventsSince returns every event recorded at or after since, oldest first,
+// regardless of upload status — local charts care about what happened, not
+// about queue state. A payload that no longer decodes is skipped rather than
+// failing the whole read: one corrupt row must not blank the chart.
+func (s *DB) EventsSince(since time.Time) ([]usage.Entry, error) {
+	rows, err := s.db.Query(`
+		SELECT payload FROM usage_events
+		WHERE ts >= ?
+		ORDER BY ts, id`, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]usage.Entry, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry usage.Entry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
 		}
 		entries = append(entries, entry)
 	}

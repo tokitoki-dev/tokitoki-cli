@@ -10,33 +10,49 @@ import (
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 )
 
-func TestDefaultServerURLIsProduction(t *testing.T) {
-	if DefaultServerURL != "https://tokitoki.dev" {
-		t.Fatalf("DefaultServerURL = %q, want https://tokitoki.dev", DefaultServerURL)
+// The unstamped default is production: a binary built outside the Makefile
+// is an installed one and must report where installed binaries report.
+func TestUnstampedServerURLIsProduction(t *testing.T) {
+	if config.ServerURL != "https://tokitoki.dev" {
+		t.Fatalf("config.ServerURL = %q, want https://tokitoki.dev", config.ServerURL)
 	}
 }
 
-func TestBaseURLDefaultsToProduction(t *testing.T) {
-	t.Setenv(BaseURLEnv, "")
-
-	if got := BaseURL(); got != DefaultServerURL {
-		t.Fatalf("BaseURL() = %q, want %q", got, DefaultServerURL)
-	}
-}
-
-func TestBaseURLUsesEnvironment(t *testing.T) {
-	t.Setenv(BaseURLEnv, " https://tokitoki.example.com/ ")
+func TestBaseURLIsTheStampedServerWithoutTrailingSlash(t *testing.T) {
+	pointAt(t, " https://tokitoki.example.com/ ")
 
 	if got := BaseURL(); got != "https://tokitoki.example.com" {
-		t.Fatalf("BaseURL() = %q, want environment URL without trailing slash", got)
+		t.Fatalf("BaseURL() = %q, want stamped URL without trailing slash", got)
 	}
 }
 
-func TestUploadUsesBaseURLEnvironment(t *testing.T) {
+// The environment must not move a binary to another server: every front-end
+// that launches it would have to agree on the variable, and the one that
+// forgets it reports to production.
+func TestBaseURLIgnoresEnvironment(t *testing.T) {
+	pointAt(t, "https://tokitoki.example.com")
+	t.Setenv("TOKITOKI_BASE_URL", "https://elsewhere.example.com")
+
+	if got := BaseURL(); got != "https://tokitoki.example.com" {
+		t.Fatalf("BaseURL() = %q, environment must not override the build stamp", got)
+	}
+}
+
+// pointAt directs this process at url for the rest of the test, the way a
+// build stamp would.
+func pointAt(t *testing.T, url string) {
+	t.Helper()
+	previous := config.ServerURL
+	config.ServerURL = url
+	t.Cleanup(func() { config.ServerURL = previous })
+}
+
+func TestUploadUsesStampedServer(t *testing.T) {
 	var called bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -56,7 +72,7 @@ func TestUploadUsesBaseURLEnvironment(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv(BaseURLEnv, server.URL+"/")
+	pointAt(t, server.URL+"/")
 
 	resp, err := Upload(context.Background(), agent.Settings{APIKey: "test-key"}, []usage.Entry{{
 		ID:        "event-1",
@@ -124,7 +140,7 @@ func TestSyncPendingKeepsRejectionsVisible(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	t.Setenv(BaseURLEnv, server.URL)
+	pointAt(t, server.URL)
 
 	db, err := usagedb.Open(filepath.Join(t.TempDir(), "usage.db"))
 	if err != nil {

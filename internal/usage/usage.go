@@ -32,6 +32,25 @@ const (
 
 const UnknownLanguage = "Unknown"
 
+// Event kinds. An AI provider's events are one of the first two; IDE
+// front-ends send the third.
+//
+//   - EventKindAPICall is one API round trip: tokens, model, session. The
+//     unit of cost.
+//   - EventKindFileEdit is one file modification an agent made: entity,
+//     lines added and removed. It carries no tokens — the round trip that
+//     issued the edit already carries them, and counting them here again
+//     would bill the same call twice.
+//   - EventKindHeartbeat is an editor activity sample.
+//
+// The server counts requests over api_call rows and sums line changes over
+// every row, so a provider that emits both kinds reports both correctly.
+const (
+	EventKindAPICall   = "api_call"
+	EventKindFileEdit  = "file_edit"
+	EventKindHeartbeat = "heartbeat"
+)
+
 // UnknownProject is the single spelling every provider uses when a project
 // name cannot be determined.
 const UnknownProject = "Unknown"
@@ -55,10 +74,19 @@ type TokenUsage struct {
 	InputTokens              uint64 `json:"input_tokens"`
 	OutputTokens             uint64 `json:"output_tokens"`
 	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens,omitempty"`
-	CachedInputTokens        uint64 `json:"cached_input_tokens,omitempty"`
-	ReasoningOutputTokens    uint64 `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens              uint64 `json:"total_tokens"`
+	// CacheCreation5m/1hInputTokens are the TTL-tiered portions of
+	// CacheCreationInputTokens — classified subsets of it, never additional
+	// tokens, so no total may sum them. Only Anthropic breaks its cache
+	// writes down by TTL; for every other provider both stay 0, which is the
+	// literal truth (no tiered cache) rather than missing data. The 1h tier
+	// bills at 2.0x input where the base rate is 1.25x, which is why the
+	// split must survive to the server.
+	CacheCreation5mInputTokens uint64 `json:"cache_creation_5m_input_tokens,omitempty"`
+	CacheCreation1hInputTokens uint64 `json:"cache_creation_1h_input_tokens,omitempty"`
+	CacheReadInputTokens       uint64 `json:"cache_read_input_tokens,omitempty"`
+	CachedInputTokens          uint64 `json:"cached_input_tokens,omitempty"`
+	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens                uint64 `json:"total_tokens"`
 }
 
 // FileChange records the diff one event applied to a single file.
@@ -175,7 +203,6 @@ type Entry struct {
 	Entity     string `json:"entity,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 	Branch     string `json:"branch,omitempty"`
-	Editor     string `json:"editor,omitempty"`
 	Category   string `json:"category,omitempty"`
 	IsWrite    *bool  `json:"is_write,omitempty"`
 	// LinesAdded/LinesRemoved count the source lines the agent added and
@@ -204,38 +231,16 @@ func NormalizeOS(goos string) string {
 	}
 }
 
-// NormalizeClient maps a provider-specific source token (Claude's "entrypoint"
-// or Codex's "originator") to the real IDE/app source. VS Code plugins should
-// not split by agent; standalone CLI/Desktop/SDK sources should remain
-// product-specific.
-// Unknown tokens are returned as-is so we never lose information; "" stays "".
-func NormalizeClient(provider Provider, raw string) string {
-	token := strings.ToLower(strings.TrimSpace(raw))
-	if token == "" {
-		return ""
-	}
-	switch provider {
-	case ProviderClaude:
-		switch token {
-		case "claude-vscode":
-			return "VS Code"
-		case "claude-desktop":
-			return "Claude Desktop"
-		case "sdk-cli", "cli":
-			return "Claude CLI"
-		case "sdk-ts", "sdk-py", "sdk-python":
-			return "Claude SDK"
-		}
-	case ProviderCodex:
-		switch token {
-		case "codex_vscode":
-			return "VS Code"
-		case "codex desktop", "codex-desktop":
-			return "Codex Desktop"
-		case "codex_cli_rs", "codex_cli", "cli":
-			return "Codex CLI"
-		}
-	}
+// NormalizeClient trims a provider-specific source token (Claude's
+// "entrypoint" or Codex's "originator") and reports it verbatim.
+//
+// The token is deliberately not mapped to a display name here. Every fork of
+// an editor reports its own token, so a client-side table can only ever name
+// the forks that existed when the binary shipped — anything newer would be
+// silently mislabelled as the product it forked from. Reporting the raw token
+// keeps that information intact and leaves naming to the server, which can
+// learn a new source without waiting for clients to update.
+func NormalizeClient(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
