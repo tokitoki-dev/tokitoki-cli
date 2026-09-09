@@ -309,9 +309,12 @@ func ReadUsageFile(path string) ([]LoadedEntry, error) {
 // use is still a line the file has moved beyond; stopping there would turn one
 // malformed record into a permanent roadblock hiding everything after it.
 //
-// Each line is parsed on its own. Nothing here remembers a previous line, so
-// resuming at any line boundary yields exactly the entries a whole read would
-// yield for the lines after it.
+// Each line is parsed on its own: parseLine is a pure function of its bytes,
+// so resuming at any line boundary yields the same entries, with the same
+// ids, that a whole read would yield for the lines after it.
+//
+// Language is the one field that is not a property of a single line, and it
+// is resolved here rather than there. See sessionLanguage.
 func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -330,6 +333,7 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 
 	sessionID := ExtractSessionID(path)
 	entries := make([]LoadedEntry, 0)
+	language := newSessionLanguage(path, start)
 	reader := bufio.NewReader(file)
 	lineNumber := 0
 	offset := start
@@ -358,6 +362,7 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 				entry.SourceLine = lineNumber
 				entry.SourceStart = lineStart
 				entry.SourceEnd = offset
+				entry.Language = language.resolve(entry.Language)
 				entries = append(entries, entry)
 			}
 		}
@@ -370,6 +375,101 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 		return nil, 0, readErr
 	}
 	return entries, consumed, nil
+}
+
+// sessionLanguage carries the language a session is working in across the
+// lines of one transcript.
+//
+// A language is a property of the session, not of the message that happens to
+// mention a file. An assistant turn is either a tool call, whose input names
+// the file being read or written, or prose — an explanation, a question, a
+// plan — that names nothing. Judging each line alone, as this parser used to,
+// files every prose turn under Unknown: in this repository's own transcripts
+// that is 51 of 56 such turns, and prose turns carry the larger token counts,
+// so "Unknown" became the top language by tokens while the work was plainly
+// TypeScript. Codex never had the bug because its loader already threaded a
+// per-session language through its scan (provider/codex/loader.go).
+//
+// The fix is to remember the last language actually observed and lend it to
+// the turns that name nothing. It is the same session, the same files, one
+// turn apart.
+//
+// Resume is the constraint that shapes this. Claude transcripts are read
+// incrementally from a stored byte offset, so a scan can start in the middle
+// of a session whose earlier lines named every file. Sticky state built only
+// from lines this pass happens to read would make an entry's language depend
+// on where the previous scan stopped — the same line yielding TypeScript on a
+// full read and Unknown on a resumed one, with no way to tell which rows in
+// the database came from which. So a resumed scan seeds itself from the
+// prefix it is skipping, and reads exactly what a full read would have known
+// at that point. The seek is bounded work over an already-open file, and only
+// on the first parsed line of a resumed pass.
+//
+// The language still only ever moves forward to a language that was actually
+// seen; nothing is invented for a session that never named a file.
+type sessionLanguage struct {
+	path    string
+	start   int64
+	seeded  bool
+	current string
+}
+
+func newSessionLanguage(path string, start int64) *sessionLanguage {
+	return &sessionLanguage{path: path, start: start}
+}
+
+// resolve records a detected language and fills in an undetected one.
+func (s *sessionLanguage) resolve(detected string) string {
+	if detected != "" && detected != langdetect.Unknown {
+		s.current = detected
+		s.seeded = true
+		return detected
+	}
+	if !s.seeded {
+		s.current = languageBefore(s.path, s.start)
+		s.seeded = true
+	}
+	if s.current == "" {
+		return langdetect.Unknown
+	}
+	return s.current
+}
+
+// languageBefore reports the last language named in path before offset, so a
+// resumed scan inherits what the lines it skipped already established.
+//
+// Returns "" for a scan starting at the beginning of a file — there is no
+// prefix — and for any read failure: an unreadable prefix means the language
+// is unknown, which is exactly what the entry would have said anyway. A
+// transcript is scanned in order and the last match wins, matching what a
+// full read would have been holding when it reached this point.
+func languageBefore(path string, offset int64) string {
+	if offset <= 0 {
+		return ""
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	language := ""
+	reader := bufio.NewReader(io.LimitReader(file, offset))
+	sessionID := ExtractSessionID(path)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			if entry, ok := parseLine(line, sessionID); ok {
+				if entry.Language != "" && entry.Language != langdetect.Unknown {
+					language = entry.Language
+				}
+			}
+		}
+		if readErr != nil {
+			return language
+		}
+	}
 }
 
 // parseLine turns one transcript line into at most one entry. It is a pure

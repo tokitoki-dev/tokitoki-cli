@@ -517,6 +517,88 @@ func TestReadUsageFileDoesNotInferLanguageFromCodeFenceWithoutFilePath(t *testin
 	}
 }
 
+// A session's language carries to the turns that name no file. Prose turns —
+// explanations, questions, plans — are most of an assistant's messages and
+// carry the larger token counts, so judging each line alone made Unknown the
+// top language by tokens on work that was plainly one language.
+func TestReadUsageFileCarriesSessionLanguageToProseTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/repo/internal/server/server.go"}}]}}
+{"timestamp":"2026-05-21T01:02:04Z","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"That handler looks fine to me."}]}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	for i, entry := range entries {
+		if entry.Language != "Go" {
+			t.Fatalf("entries[%d].Language = %q, want Go", i, entry.Language)
+		}
+	}
+}
+
+// Nothing is invented: a session that never named a file stays Unknown.
+func TestReadUsageFileLeavesLanguageUnknownUntilOneIsSeen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"Sure, what would you like to build?"}]}}
+{"timestamp":"2026-05-21T01:02:04Z","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"Happy to help."}]}}
+`)
+
+	entries, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	for i, entry := range entries {
+		if entry.Language != "Unknown" {
+			t.Fatalf("entries[%d].Language = %q, want Unknown", i, entry.Language)
+		}
+	}
+}
+
+// The language a line reports must not depend on where the previous scan
+// stopped. A resumed scan starting after the tool call still has to know what
+// the skipped prefix established, or the same line lands as Go on a full read
+// and Unknown on an incremental one, and no one can tell the rows apart.
+func TestReadUsageFileFromResumesWithTheSessionLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/repo/internal/server/server.go"}}]}}
+{"timestamp":"2026-05-21T01:02:04Z","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"That handler looks fine to me."}]}}
+`)
+
+	full, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 2 {
+		t.Fatalf("len(full) = %d, want 2", len(full))
+	}
+
+	resumed, _, err := ReadUsageFileFrom(path, full[1].SourceStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 1 {
+		t.Fatalf("len(resumed) = %d, want 1", len(resumed))
+	}
+	if resumed[0].Language != full[1].Language {
+		t.Fatalf("resumed language = %q, want %q (same line, full read)",
+			resumed[0].Language, full[1].Language)
+	}
+	if resumed[0].ID != full[1].ID {
+		t.Fatalf("resumed id = %q, want %q", resumed[0].ID, full[1].ID)
+	}
+}
+
 func TestReadUsageFileSkipsUnsupportedSpeed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
 	mkdirAll(t, filepath.Dir(path))
