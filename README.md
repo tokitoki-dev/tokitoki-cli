@@ -1,10 +1,13 @@
 # tokitoki-cli
 
-Command-line uploader for [Tokitoki](https://tokitoki.dev). It scans the
-local data directories of AI coding tools (Claude Code, Codex, Copilot,
-Gemini CLI and others), and uploads usage events to your Tokitoki dashboard.
+The engine behind [Tokitoki](https://tokitoki.dev): one static binary that
+scans the local data of your AI coding agents, Claude Code, Codex, GitHub
+Copilot, Gemini CLI and [a dozen more](#supported-tools), and uploads their
+token usage and cost to your dashboard, grouped by project and shown next to
+your coding time.
 
-Runs once per invocation, or continuously as an OS service.
+Runs once per invocation, or continuously as an OS service. No daemon, no
+runtime, no config file to write.
 
 ## Install
 
@@ -16,6 +19,8 @@ macOS, Linux, or Windows (amd64 / arm64), or build from source:
 make build
 ./bin/tokitoki version
 ```
+
+Every release ships a `checksums.txt`; verify with `sha256sum --check`.
 
 The Tokitoki desktop apps and editor plugins bundle this CLI, so you only
 need to install it yourself for headless machines or scripting.
@@ -81,6 +86,14 @@ release/2026
 Line one is the project name, line two (optional) the branch. `{project}`
 expands to the nearest Git, Mercurial, or Subversion root folder name, e.g.
 `my-company/{project}`.
+
+## Other clients
+
+[VS Code](https://github.com/tokitoki-dev/tokitoki-vscode) ·
+[macOS](https://github.com/tokitoki-dev/tokitoki-macos) ·
+[Windows](https://github.com/tokitoki-dev/tokitoki-windows). All of them
+bundle this CLI. The overview lives at
+[github.com/tokitoki-dev](https://github.com/tokitoki-dev).
 
 ## Development
 
