@@ -20,7 +20,7 @@ func entry(ts time.Time, provider, model, project string, tokens uint64) usage.E
 func TestBuild(t *testing.T) {
 	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
 	entries := []usage.Entry{
-		// Two events in the same 2-minute bucket: one bucket of active time.
+		// Two events 30s apart: the gap counts, plus the day floor.
 		entry(now.Add(-1*time.Hour), "claude", "claude-fable-5", "tracklm", 1000),
 		entry(now.Add(-1*time.Hour).Add(30*time.Second), "claude", "claude-fable-5", "tracklm", 500),
 		// Yesterday, different provider; heartbeats carry zero tokens.
@@ -46,11 +46,14 @@ func TestBuild(t *testing.T) {
 	if report.Daily[6].TotalTokens != 1500 || report.Daily[6].Events != 2 {
 		t.Fatalf("today misaggregated: %+v", report.Daily[6])
 	}
-	if report.Daily[6].ActiveSeconds != 120 {
-		t.Fatalf("two events in one bucket must yield 120s, got %d", report.Daily[6].ActiveSeconds)
+	if report.Daily[6].ActiveSeconds != 90 {
+		t.Fatalf("30s gap plus the 60s floor must yield 90s, got %d", report.Daily[6].ActiveSeconds)
 	}
-	if report.Totals.ActiveSeconds != 240 {
-		t.Fatalf("want 240s across both days, got %d", report.Totals.ActiveSeconds)
+	if report.Daily[5].ActiveSeconds != 60 {
+		t.Fatalf("a lone event is worth the floor alone, got %d", report.Daily[5].ActiveSeconds)
+	}
+	if report.Totals.ActiveSeconds != 150 {
+		t.Fatalf("want 150s across both days, got %d", report.Totals.ActiveSeconds)
 	}
 	if len(report.Providers) != 2 || report.Providers[0].Name != "claude" {
 		t.Fatalf("providers wrong: %+v", report.Providers)
@@ -62,12 +65,13 @@ func TestBuild(t *testing.T) {
 	if len(report.Projects) != 2 || report.Projects[0].Name != "tracklm" {
 		t.Fatalf("projects wrong: %+v", report.Projects)
 	}
-	// tracklm's two events share one bucket; other has its own bucket.
-	if report.Projects[0].ActiveSeconds != 120 {
-		t.Fatalf("tracklm active time: want 120s, got %d", report.Projects[0].ActiveSeconds)
+	// Each group runs its own clock: tracklm's 30s gap plus its floor, other's
+	// single event is its floor.
+	if report.Projects[0].ActiveSeconds != 90 {
+		t.Fatalf("tracklm active time: want 90s, got %d", report.Projects[0].ActiveSeconds)
 	}
-	if report.Projects[1].ActiveSeconds != 120 {
-		t.Fatalf("other active time: want 120s, got %d", report.Projects[1].ActiveSeconds)
+	if report.Projects[1].ActiveSeconds != 60 {
+		t.Fatalf("other active time: want 60s, got %d", report.Projects[1].ActiveSeconds)
 	}
 	if report.Project != nil {
 		t.Fatalf("plain Build must not nest a project report")
@@ -129,7 +133,55 @@ func TestBuildDoesNotCountFileEditsAsEvents(t *testing.T) {
 	if len(report.Projects) != 1 || report.Projects[0].Events != 1 {
 		t.Fatalf("project group counted the edit: %+v", report.Projects)
 	}
-	if report.Daily[6].ActiveSeconds != 120 {
-		t.Fatalf("edit in the same bucket must not add activity: %d", report.Daily[6].ActiveSeconds)
+	if report.Daily[6].ActiveSeconds != 65 {
+		t.Fatalf("the edit moves the clock like any event: want 65s, got %d", report.Daily[6].ActiveSeconds)
+	}
+}
+
+// The idle rule is the server's: a gap within 15 minutes is active time, a
+// longer one is a break and counts nothing. The database hands entries over in
+// no particular order, so the walk must sort them itself.
+func TestBuildIdleRuleMatchesTheServer(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	start := now.Add(-3 * time.Hour)
+	entries := []usage.Entry{
+		entry(start.Add(15*time.Minute), "claude", "m", "p", 1),             // exactly the timeout: counts
+		entry(start, "claude", "m", "p", 1),                                 // out of order on purpose
+		entry(start.Add(30*time.Minute+time.Second), "claude", "m", "p", 1), // one second past: a break
+		entry(start.Add(40*time.Minute), "claude", "m", "p", 1),             // 9m59s after the break: counts
+	}
+
+	report := Build(entries, 7, now)
+
+	want := int64(15*60 + (9*60 + 59) + 60)
+	if report.Daily[6].ActiveSeconds != want {
+		t.Fatalf("active seconds = %d, want %d", report.Daily[6].ActiveSeconds, want)
+	}
+	if report.Totals.ActiveSeconds != want || report.Projects[0].ActiveSeconds != want {
+		t.Fatalf("totals %d and project %d must agree with the day %d",
+			report.Totals.ActiveSeconds, report.Projects[0].ActiveSeconds, want)
+	}
+	if entries[1].Timestamp != start {
+		t.Fatal("Build reordered the caller's slice")
+	}
+}
+
+// A day floor lands once per day, and once per group per day — never once per
+// event, and never once for the whole window.
+func TestBuildFloorIsPerDay(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	entries := []usage.Entry{
+		entry(now.Add(-time.Hour), "claude", "m", "p", 1),
+		entry(now.AddDate(0, 0, -1), "claude", "m", "p", 1),
+		entry(now.AddDate(0, 0, -2), "claude", "m", "p", 1),
+	}
+
+	report := Build(entries, 7, now)
+
+	if report.Totals.ActiveSeconds != 180 {
+		t.Fatalf("three lone days must be three floors, got %d", report.Totals.ActiveSeconds)
+	}
+	if report.Providers[0].ActiveSeconds != 180 {
+		t.Fatalf("the provider spans the same three days, got %d", report.Providers[0].ActiveSeconds)
 	}
 }

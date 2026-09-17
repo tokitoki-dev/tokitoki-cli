@@ -5,17 +5,25 @@
 package usagestats
 
 import (
+	"math"
 	"sort"
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
-// activeBucket is the granularity of the activity estimate. Any event inside
-// a bucket marks the whole bucket active; editor heartbeats are already
-// throttled to one per entity per two minutes, so a finer bucket would only
-// count throttling artifacts, not more activity.
-const activeBucket = 2 * time.Minute
+// The idle rule. It is the server's rule (tracklm-nextjs/lib/active-time.ts),
+// copied by value: events are walked in time order and the gap to the previous
+// one is counted as active when it is within idleTimeout; a longer gap means
+// "stepped away" and counts nothing. Every partition that had any event at all
+// gets dayFloor once per day, so a lone event still registers some time.
+//
+// The same numbers as the dashboard, so the editor panel and the web page
+// never disagree about how long the same day was.
+const (
+	idleTimeout = 15 * time.Minute
+	dayFloor    = time.Minute
+)
 
 type Report struct {
 	Days   int    `json:"days"`
@@ -74,11 +82,33 @@ type GroupStat struct {
 	ActiveSeconds int64  `json:"active_seconds"`
 }
 
-// groupAgg carries a group's activity buckets while aggregating; the bucket
-// set collapses into ActiveSeconds once counting is done.
+// clock accumulates active time for one partition — one calendar day, or one
+// group on one day — under the idle rule.
+type clock struct {
+	last   time.Time
+	active time.Duration
+}
+
+func (c *clock) tick(ts time.Time) {
+	if !c.last.IsZero() {
+		if gap := ts.Sub(c.last); gap <= idleTimeout {
+			c.active += gap
+		}
+	}
+	c.last = ts
+}
+
+// seconds is the partition's credited time: what the gaps added up to plus the
+// floor, rounded once at the end like the server's SUM then round().
+func (c *clock) seconds() int64 {
+	return int64(math.Round((c.active + dayFloor).Seconds()))
+}
+
+// groupAgg carries a group's per-day clocks while aggregating; they collapse
+// into ActiveSeconds once counting is done.
 type groupAgg struct {
 	GroupStat
-	buckets map[int64]struct{}
+	days map[int]*clock
 }
 
 // Build aggregates entries into the report for the window of `days` calendar
@@ -106,13 +136,20 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 		dayIndex[date] = i
 	}
 
+	// The database read is in no particular order and the gap rule needs time
+	// order. Sorted on a copy: the caller's slice is not ours to reorder.
+	ordered := make([]usage.Entry, len(entries))
+	copy(ordered, entries)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Timestamp.Before(ordered[j].Timestamp)
+	})
+
 	providers := make(map[string]*groupAgg)
 	models := make(map[string]*groupAgg)
 	projects := make(map[string]*groupAgg)
-	activeBuckets := make(map[int64]struct{})
-	dailyBuckets := make([]map[int64]struct{}, days)
+	dayClocks := make(map[int]*clock)
 
-	for _, entry := range entries {
+	for _, entry := range ordered {
 		local := entry.Timestamp.Local()
 		index, ok := dayIndex[local.Format(time.DateOnly)]
 		if !ok {
@@ -121,7 +158,7 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 
 		// A file edit is not a request: it is a side effect of one that is
 		// already counted. Its lines still matter and its activity still
-		// marks the bucket; only the request count leaves it out.
+		// moves the clock; only the request count leaves it out.
 		isRequest := entry.EventKind != usage.EventKindFileEdit
 
 		day := &report.Daily[index]
@@ -134,21 +171,16 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 		report.Totals.InputTokens += entry.Usage.InputTokens
 		report.Totals.OutputTokens += entry.Usage.OutputTokens
 
-		bucket := local.Unix() / int64(activeBucket/time.Second)
-		activeBuckets[bucket] = struct{}{}
-		if dailyBuckets[index] == nil {
-			dailyBuckets[index] = make(map[int64]struct{})
-		}
-		dailyBuckets[index][bucket] = struct{}{}
+		tickDay(dayClocks, index, entry.Timestamp)
 
-		accumulate(providers, string(entry.Provider), entry, bucket, isRequest)
-		accumulate(models, entry.Model, entry, bucket, isRequest)
-		accumulate(projects, entry.Project, entry, bucket, isRequest)
+		accumulate(providers, string(entry.Provider), entry, index, isRequest)
+		accumulate(models, entry.Model, entry, index, isRequest)
+		accumulate(projects, entry.Project, entry, index, isRequest)
 	}
 
-	report.Totals.ActiveSeconds = int64(len(activeBuckets)) * int64(activeBucket/time.Second)
-	for i, buckets := range dailyBuckets {
-		report.Daily[i].ActiveSeconds = int64(len(buckets)) * int64(activeBucket/time.Second)
+	for index, c := range dayClocks {
+		report.Daily[index].ActiveSeconds = c.seconds()
+		report.Totals.ActiveSeconds += c.seconds()
 	}
 	report.Providers = sorted(providers)
 	report.Models = sorted(models)
@@ -156,26 +188,37 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 	return report
 }
 
-func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, bucket int64, isRequest bool) {
+func tickDay(days map[int]*clock, index int, ts time.Time) {
+	c := days[index]
+	if c == nil {
+		c = &clock{}
+		days[index] = c
+	}
+	c.tick(ts)
+}
+
+func accumulate(groups map[string]*groupAgg, name string, entry usage.Entry, index int, isRequest bool) {
 	if name == "" {
 		return
 	}
 	group := groups[name]
 	if group == nil {
-		group = &groupAgg{GroupStat: GroupStat{Name: name}, buckets: make(map[int64]struct{})}
+		group = &groupAgg{GroupStat: GroupStat{Name: name}, days: make(map[int]*clock)}
 		groups[name] = group
 	}
 	if isRequest {
 		group.Events++
 	}
 	group.TotalTokens += entry.Usage.TotalTokens
-	group.buckets[bucket] = struct{}{}
+	tickDay(group.days, index, entry.Timestamp)
 }
 
 func sorted(groups map[string]*groupAgg) []GroupStat {
 	result := make([]GroupStat, 0, len(groups))
 	for _, group := range groups {
-		group.ActiveSeconds = int64(len(group.buckets)) * int64(activeBucket/time.Second)
+		for _, c := range group.days {
+			group.ActiveSeconds += c.seconds()
+		}
 		result = append(result, group.GroupStat)
 	}
 	sort.Slice(result, func(i, j int) bool {
