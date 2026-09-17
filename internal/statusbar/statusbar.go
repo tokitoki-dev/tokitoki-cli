@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,18 +35,34 @@ type Report struct {
 	// Text is ready to display: "3h 23m". Formatted by the server so every
 	// client agrees on the spelling.
 	Text string `json:"text"`
+	// Project is the same day narrowed to the project that was asked for;
+	// nil when none was.
+	Project *ProjectReport `json:"project,omitempty"`
 	// Stale marks a report served from the cache because the server could
 	// not be reached: last known, not current.
 	Stale     bool      `json:"stale"`
 	FetchedAt time.Time `json:"fetched_at"`
 }
 
+// ProjectReport is one project's share of the day.
+type ProjectReport struct {
+	Name          string `json:"name"`
+	ActiveSeconds int64  `json:"active_seconds"`
+	TotalTokens   uint64 `json:"total_tokens"`
+	Text          string `json:"text"`
+}
+
 // ErrUnauthorized reports that the server rejected the key.
 var ErrUnauthorized = errors.New("status: API key rejected by server")
 
-// Fetch asks the server for today's figure.
-func Fetch(ctx context.Context, baseURL, apiKey string) (Report, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/statusbar/today", nil)
+// Fetch asks the server for today's figure, narrowed to project as well
+// when one is named.
+func Fetch(ctx context.Context, baseURL, apiKey, project string) (Report, error) {
+	endpoint := baseURL + "/api/statusbar/today"
+	if project != "" {
+		endpoint += "?project=" + url.QueryEscape(project)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Report{}, err
 	}
@@ -100,14 +117,20 @@ func Save(dataDir string, report Report) error {
 }
 
 // Load returns the last saved report, marked stale. ok is false when none
-// was ever saved; an unreadable file counts as none.
-func Load(dataDir string) (report Report, ok bool) {
+// was ever saved; an unreadable file counts as none. The project share is
+// kept only when it is the project asked for now: another window's project
+// is not an answer about this one, while the account total is the same
+// whichever window asks.
+func Load(dataDir, project string) (report Report, ok bool) {
 	data, err := os.ReadFile(store.StatePath(dataDir, CacheFile))
 	if err != nil {
 		return Report{}, false
 	}
 	if err := json.Unmarshal(data, &report); err != nil || report.Date == "" {
 		return Report{}, false
+	}
+	if report.Project != nil && report.Project.Name != project {
+		report.Project = nil
 	}
 	report.Stale = true
 	return report, true

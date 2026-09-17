@@ -379,8 +379,14 @@ func runVerify(args []string) int {
 // it. Network, with the last answer as an offline fallback (marked stale);
 // exit 3 when no key is configured, like every other command that needs one.
 func runToday(args []string) int {
-	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki today")
+	flags := flag.NewFlagSet("tokitoki today", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	project := flags.String("project", "", "also report this project's share of the day")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki today does not accept positional arguments")
 		return 2
 	}
 
@@ -395,7 +401,7 @@ func runToday(args []string) int {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	report, err := client.Today(ctx)
+	report, err := client.Today(ctx, strings.TrimSpace(*project))
 	if err != nil {
 		return fail(logger, err)
 	}
@@ -862,7 +868,7 @@ Commands:
   get dashboard-url             Show dashboard URL
   verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
-  today                         Show today's active time from the server as JSON
+  today [--project NAME]        Show today's active time from the server as JSON
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
   server-url                    Show which server this binary reports to
@@ -1022,11 +1028,16 @@ Examples:
   tokitoki upload enable
 `)
 		case "today":
-			fmt.Fprint(os.Stderr, `today
+			fmt.Fprint(os.Stderr, `today [--project NAME]
 
 Print today's active time and tokens as JSON, computed by the server for
 the account behind the stored API key — the same figure, rule and clock
 as the dashboard, so every machine holding the key shows one number.
+
+Options:
+  --project NAME                Also report NAME's share of the day, as
+                                "project" — what an editor window shows
+                                for the folder it has open
 
 Details:
   The last successful answer is kept in the data directory. When the
@@ -1039,6 +1050,7 @@ Details:
 Output:
   {"date":"2026-09-17","timezone":"Asia/Tokyo","scope":"personal",
    "active_seconds":12204,"total_tokens":1830000,"text":"3h 23m",
+   "project":{"name":"tracklm","active_seconds":5400,"total_tokens":900000,"text":"1h 30m"},
    "stale":false,"fetched_at":"2026-09-17T08:00:00Z"}
 `)
 		case "set", "get":
@@ -1083,7 +1095,7 @@ COMMANDS
   get key|dashboard-url         Retrieve stored settings
   verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
-  today                         Today's active time and tokens, from the server
+  today [--project NAME]        Today's active time and tokens, from the server
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
   server-url                    Show which server this binary reports to

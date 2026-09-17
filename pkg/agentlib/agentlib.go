@@ -244,7 +244,10 @@ func (c *Client) DashboardURL(ctx context.Context) (string, error) {
 // marked stale rather than an error, so a status bar keeps its last figure
 // through an outage the way it keeps queued heartbeats. A rejected key is
 // not an outage: that error is returned so the front-end re-prompts.
-func (c *Client) Today(ctx context.Context) (statusbar.Report, error) {
+//
+// project, when not empty, adds that project's share of the day to the
+// report — the figure a window shows for the folder it has open.
+func (c *Client) Today(ctx context.Context, project string) (statusbar.Report, error) {
 	apiKey, err := c.GetAPIKey()
 	if err != nil {
 		return statusbar.Report{}, err
@@ -252,7 +255,7 @@ func (c *Client) Today(ctx context.Context) (statusbar.Report, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	report, err := statusbar.Fetch(ctx, usageupload.BaseURL(), apiKey)
+	report, err := statusbar.Fetch(ctx, usageupload.BaseURL(), apiKey, project)
 	if err == nil {
 		if saveErr := statusbar.Save(c.dataDir, report); saveErr != nil {
 			c.logger.Warn("today: cache not written", "error", saveErr)
@@ -262,7 +265,7 @@ func (c *Client) Today(ctx context.Context) (statusbar.Report, error) {
 	if errors.Is(err, statusbar.ErrUnauthorized) {
 		return statusbar.Report{}, err
 	}
-	if cached, ok := statusbar.Load(c.dataDir); ok {
+	if cached, ok := statusbar.Load(c.dataDir, project); ok {
 		c.logger.Warn("today: serving cached figure", "error", err)
 		return cached, nil
 	}
