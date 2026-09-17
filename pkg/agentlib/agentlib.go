@@ -21,6 +21,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/deviceauth"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/statusbar"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
@@ -138,6 +139,12 @@ type Heartbeat struct {
 	LineNumber     int
 	CursorPosition int
 	LinesInFile    int
+	// Lines the user typed and deleted in this file since its previous
+	// heartbeat. The server files every line on an IDE heartbeat as human
+	// work, so the editor must count only what a person typed — see the
+	// VS Code extension's lineChanges.ts. Negative values are treated as 0.
+	LinesAdded   int
+	LinesRemoved int
 }
 
 // Client provides local settings and usage sync operations for native clients.
@@ -228,6 +235,41 @@ func (c *Client) DashboardURL(ctx context.Context) (string, error) {
 		ctx = context.Background()
 	}
 	return deviceauth.DashboardURL(ctx, usageupload.BaseURL(), apiKey)
+}
+
+// Today returns today's active time and tokens for the account behind the
+// stored key, as the server computes them — the dashboard's rule and clock,
+// so every machine with the key shows one number. A successful answer is
+// cached; when the server cannot be reached the cached answer comes back
+// marked stale rather than an error, so a status bar keeps its last figure
+// through an outage the way it keeps queued heartbeats. A rejected key is
+// not an outage: that error is returned so the front-end re-prompts.
+//
+// project, when not empty, adds that project's share of the day to the
+// report — the figure a window shows for the folder it has open.
+func (c *Client) Today(ctx context.Context, project string) (statusbar.Report, error) {
+	apiKey, err := c.GetAPIKey()
+	if err != nil {
+		return statusbar.Report{}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	report, err := statusbar.Fetch(ctx, usageupload.BaseURL(), apiKey, project)
+	if err == nil {
+		if saveErr := statusbar.Save(c.dataDir, report); saveErr != nil {
+			c.logger.Warn("today: cache not written", "error", saveErr)
+		}
+		return report, nil
+	}
+	if errors.Is(err, statusbar.ErrUnauthorized) {
+		return statusbar.Report{}, err
+	}
+	if cached, ok := statusbar.Load(c.dataDir, project); ok {
+		c.logger.Warn("today: serving cached figure", "error", err)
+		return cached, nil
+	}
+	return statusbar.Report{}, err
 }
 
 // VerifyAPIKey checks the stored API key against the server. A definite
@@ -497,21 +539,23 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 
 	isWrite := heartbeat.IsWrite
 	entry := usage.Entry{
-		Provider:    usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
-		SourceType:  "ide",
-		EventKind:   usage.EventKindHeartbeat,
-		Timestamp:   heartbeat.Timestamp.UTC(),
-		Date:        heartbeat.Timestamp.UTC().Format("2006-01-02"),
-		Project:     strings.TrimSpace(heartbeat.Project),
-		ProjectPath: strings.TrimSpace(heartbeat.ProjectPath),
-		Language:    usage.NormalizeLanguage(heartbeat.Language),
-		OS:          usage.NormalizeOS(runtime.GOOS),
-		Client:      strings.TrimSpace(heartbeat.Editor),
-		Entity:      strings.TrimSpace(heartbeat.Entity),
-		EntityType:  "file",
-		Branch:      strings.TrimSpace(heartbeat.Branch),
-		Category:    strings.TrimSpace(heartbeat.Category),
-		IsWrite:     &isWrite,
+		Provider:     usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
+		SourceType:   "ide",
+		EventKind:    usage.EventKindHeartbeat,
+		Timestamp:    heartbeat.Timestamp.UTC(),
+		Date:         heartbeat.Timestamp.UTC().Format("2006-01-02"),
+		Project:      strings.TrimSpace(heartbeat.Project),
+		ProjectPath:  strings.TrimSpace(heartbeat.ProjectPath),
+		Language:     usage.NormalizeLanguage(heartbeat.Language),
+		OS:           usage.NormalizeOS(runtime.GOOS),
+		Client:       strings.TrimSpace(heartbeat.Editor),
+		Entity:       strings.TrimSpace(heartbeat.Entity),
+		EntityType:   "file",
+		Branch:       strings.TrimSpace(heartbeat.Branch),
+		Category:     strings.TrimSpace(heartbeat.Category),
+		IsWrite:      &isWrite,
+		LinesAdded:   uint64(max(heartbeat.LinesAdded, 0)),
+		LinesRemoved: uint64(max(heartbeat.LinesRemoved, 0)),
 		Raw: map[string]any{
 			"plugin":          strings.TrimSpace(heartbeat.Plugin),
 			"line_number":     heartbeat.LineNumber,
