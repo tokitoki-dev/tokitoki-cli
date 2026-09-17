@@ -165,6 +165,42 @@ func TestSendHeartbeatWithoutAPIKeyQueuesEvent(t *testing.T) {
 	}
 }
 
+func TestSendHeartbeatCarriesTypedLines(t *testing.T) {
+	client := newTestClient(t)
+
+	err := client.SendHeartbeat(context.Background(), Heartbeat{
+		Entity:       filepath.Join(t.TempDir(), "main.go"),
+		Editor:       "vscode",
+		Category:     "code reviewing",
+		LinesAdded:   3,
+		LinesRemoved: -1,
+	})
+	if err != nil {
+		t.Fatalf("SendHeartbeat() = %v", err)
+	}
+
+	usageDB, err := usagedb.Open(store.UsageDBPath(client.DataDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	pending, err := usageDB.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(pending))
+	}
+	entry := pending[0]
+	if entry.LinesAdded != 3 || entry.LinesRemoved != 0 {
+		t.Fatalf("lines = +%d/-%d, want +3/-0 (a negative count is nothing typed)", entry.LinesAdded, entry.LinesRemoved)
+	}
+	if entry.Category != "code reviewing" {
+		t.Fatalf("category = %q, want it kept verbatim", entry.Category)
+	}
+}
+
 func TestApplyProjectFileOverridesHeartbeatIdentity(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "local-checkout")
 	entity := filepath.Join(projectDir, "src", "main.go")
