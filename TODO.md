@@ -36,8 +36,6 @@ P1 — correctness/robustness:
   responses as uploaded.
 - [ ] Claude streaming token upsert (see notes below) — affects count
   accuracy.
-- [ ] Replace hardcoded `InstallationID: "local-go-agent"` with a per-machine id
-  persisted under `~/.tokitoki/`, so one user's multiple devices stay distinct.
 
 P2 — missing basics:
 

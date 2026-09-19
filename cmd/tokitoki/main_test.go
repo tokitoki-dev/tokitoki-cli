@@ -323,3 +323,31 @@ func TestRunServiceRejectsUnknownAction(t *testing.T) {
 		t.Fatalf("run(service bogus) = %d, want 2", code)
 	}
 }
+
+func TestRunSetHostnameWritesFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if code := run([]string{"set", "hostname", "studio"}); code != 0 {
+		t.Fatalf("run(set hostname) = %d, want 0", code)
+	}
+	data, err := os.ReadFile(filepath.Join(home, config.DataDirName, "config", "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "studio\n" {
+		t.Fatalf("hostname = %q, want saved name", string(data))
+	}
+	if code := run([]string{"get", "hostname"}); code != 0 {
+		t.Fatalf("run(get hostname) = %d, want 0", code)
+	}
+}
+
+func TestRunSetRejectsUnknownSetting(t *testing.T) {
+	if code := run([]string{"set", "colour", "blue"}); code != 2 {
+		t.Fatalf("run(set colour) = %d, want 2", code)
+	}
+	if code := run([]string{"get", "colour"}); code != 2 {
+		t.Fatalf("run(get colour) = %d, want 2", code)
+	}
+}

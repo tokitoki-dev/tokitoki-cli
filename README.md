@@ -43,7 +43,8 @@ tokitoki service start
 sync [OPTIONS]                Scan and upload usage (default command)
 service <action>              install | uninstall | start | stop | restart | status
 set key <API_KEY>             Store API key
-get key | dashboard-url       Retrieve stored settings
+set hostname <NAME>           Name this machine on the dashboard
+get key | hostname | dashboard-url  Retrieve settings
 verify key [<KEY>]            Test an API key
 stats [--days N]              Local usage stats as JSON
 upload enable | disable       Turn uploading on or off
@@ -62,6 +63,11 @@ Options:
 ```
 
 Set `TOKITOKI_NO_TELEMETRY=1` to disable the anonymous install ping.
+
+Every uploaded event is labelled with this machine's hostname (without its
+domain), so the dashboard can split time by machine. `tokitoki set hostname
+<NAME>` overrides it; `TOKITOKI_HOSTNAME` in the environment overrides both,
+for containers and CI runners whose hostname is a random id.
 
 On Linux the service is a systemd timer. Run `service install` with `sudo`
 on servers to install system units that survive reboots; without it, a user

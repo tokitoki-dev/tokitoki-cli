@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,5 +192,43 @@ func TestSyncPendingKeepsRejectionsVisible(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("pending = %+v, want none — a rejected event must not come back", pending)
+	}
+}
+
+// The label falls through env, stored override, system hostname — and the
+// system name loses its domain, because "studio.lan" and "studio.local" are
+// one machine on two networks.
+func TestDeviceNameOverridesThenShortHostname(t *testing.T) {
+	t.Setenv(HostnameEnv, "")
+
+	system, _ := os.Hostname()
+	system, _, _ = strings.Cut(system, ".")
+	if got := DeviceName(agent.Settings{}); got != strings.TrimSpace(system) {
+		t.Fatalf("DeviceName() = %q, want short system hostname %q", got, system)
+	}
+	if strings.Contains(DeviceName(agent.Settings{}), ".") {
+		t.Fatal("DeviceName() kept a domain suffix")
+	}
+
+	// A stored override is used as written — dots and all.
+	if got := DeviceName(agent.Settings{Hostname: " build.corp "}); got != "build.corp" {
+		t.Fatalf("DeviceName(override) = %q, want build.corp", got)
+	}
+
+	t.Setenv(HostnameEnv, "ci-runner")
+	if got := DeviceName(agent.Settings{Hostname: "build.corp"}); got != "ci-runner" {
+		t.Fatalf("DeviceName(env) = %q, want env to win", got)
+	}
+}
+
+// No name means no name: the server records unknown, and is never told the
+// software's name in place of the machine's.
+func TestDevicePayloadOmitsEmptyName(t *testing.T) {
+	body, err := json.Marshal(Payload{Device: DevicePayload{Platform: "macOS"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"name"`) {
+		t.Fatalf("payload = %s, want no device name", body)
 	}
 }

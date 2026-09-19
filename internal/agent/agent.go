@@ -6,11 +6,15 @@ import (
 
 type Settings struct {
 	APIKey string `json:"api_key"`
+	// Hostname is the user's override for the label uploads carry for this
+	// machine. Empty means "the system hostname" — see usageupload.DeviceName.
+	Hostname string `json:"hostname,omitempty"`
 }
 
 type Store interface {
 	LoadSettings() (Settings, error)
 	SaveAPIKey(apiKey string) error
+	SaveHostname(hostname string) error
 }
 
 type Agent struct {
@@ -28,4 +32,8 @@ func (a *Agent) Settings() (Settings, error) {
 
 func (a *Agent) SaveAPIKey(apiKey string) error {
 	return a.store.SaveAPIKey(apiKey)
+}
+
+func (a *Agent) SaveHostname(hostname string) error {
+	return a.store.SaveHostname(hostname)
 }

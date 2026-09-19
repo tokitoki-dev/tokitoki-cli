@@ -288,7 +288,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
-			Name:       deviceName(),
+			Name:       DeviceName(settings),
 			Platform:   usage.NormalizeOS(runtime.GOOS),
 			AppVersion: buildinfo.Resolved(),
 		},
@@ -407,13 +407,30 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 	}
 }
 
-// deviceName labels this device in the dashboard. The hostname is what users
-// already call the machine; it only ever travels to their own server.
-func deviceName() string {
-	name, err := os.Hostname()
-	if err != nil || strings.TrimSpace(name) == "" {
-		return "tokitoki-cli"
+// HostnameEnv overrides the machine label for this process. It outranks the
+// stored override because it is the only handle in the environments that
+// need one: a container or CI runner whose os.Hostname() is a random id and
+// whose data directory does not outlive the job.
+const HostnameEnv = "TOKITOKI_HOSTNAME"
+
+// DeviceName is the label this machine's uploads carry — the machine
+// dimension on the dashboard. It only ever travels to the user's own server.
+//
+// An override is used verbatim: a name someone chose is the name. The system
+// hostname is cut at its first dot, because what follows is the network, not
+// the machine — macOS reports "studio.lan" on one Wi-Fi and "studio.local"
+// on the next, and a Linux box configured with an FQDN reports the domain
+// too — and one machine must not become three slices. "" when nothing names
+// the machine; the server shows that as unknown, which beats a name that is
+// not one.
+func DeviceName(settings agent.Settings) string {
+	for _, name := range []string{os.Getenv(HostnameEnv), settings.Hostname} {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
 	}
+	name, _ := os.Hostname()
+	name, _, _ = strings.Cut(name, ".")
 	return strings.TrimSpace(name)
 }
 

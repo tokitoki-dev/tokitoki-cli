@@ -287,8 +287,8 @@ func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, o
 }
 
 func runSet(args []string) int {
-	if len(args) != 2 || args[0] != "key" {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki set key <API_KEY>")
+	if len(args) != 2 || (args[0] != "key" && args[0] != "hostname") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki set <key|hostname> <VALUE>")
 		return 2
 	}
 
@@ -297,12 +297,20 @@ func runSet(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
-	if err := client.SetAPIKey(args[1]); err != nil {
-		return fail(logger, err)
+	switch args[0] {
+	case "key":
+		if err := client.SetAPIKey(args[1]); err != nil {
+			return fail(logger, err)
+		}
+		// Unthrottled: has_api_key flipping to true is the funnel transition
+		// the server is waiting on, and the daily ping already reported false
+		// today.
+		telemetry.Ping(logger, usageupload.BaseURL())
+	case "hostname":
+		if err := client.SetHostname(args[1]); err != nil {
+			return fail(logger, err)
+		}
 	}
-	// Unthrottled: has_api_key flipping to true is the funnel transition the
-	// server is waiting on, and the daily ping already reported false today.
-	telemetry.Ping(logger, usageupload.BaseURL())
 	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(logger, err)
 	}
@@ -310,8 +318,8 @@ func runSet(args []string) int {
 }
 
 func runGet(args []string) int {
-	if len(args) != 1 || (args[0] != "key" && args[0] != "dashboard-url") {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki get <key|dashboard-url>")
+	if len(args) != 1 || (args[0] != "key" && args[0] != "hostname" && args[0] != "dashboard-url") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki get <key|hostname|dashboard-url>")
 		return 2
 	}
 
@@ -325,6 +333,8 @@ func runGet(args []string) int {
 	switch args[0] {
 	case "key":
 		value, err = client.GetAPIKey()
+	case "hostname":
+		value, err = client.Hostname()
 	case "dashboard-url":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -864,7 +874,9 @@ Sync local AI usage to Tokitoki server
 Commands:
   sync                          Scan and upload usage events (default)
   set key <API_KEY>             Configure API key
+  set hostname <NAME>           Name this machine on the dashboard
   get key                       Show current API key
+  get hostname                  Show the machine name uploads carry
   get dashboard-url             Show dashboard URL
   verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
@@ -1060,13 +1072,22 @@ Manage Tokitoki settings.
 
 Subcommands:
   key                           API key (get or set)
+  hostname                      Machine name on the dashboard (get or set)
   dashboard-url                 Dashboard URL (get only)
 
-The API key is stored in ~/.tokitoki/api_key
+The API key is stored in ~/.tokitoki/config/api_key
+
+The machine name labels every uploaded event, so the dashboard can split
+time by machine. It defaults to the system hostname without its domain.
+"set hostname" stores an override; set hostname "" removes it. The
+TOKITOKI_HOSTNAME environment variable outranks both, for containers and
+CI runners whose hostname is a random id.
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
+  tokitoki set hostname studio
+  tokitoki get hostname
   tokitoki get dashboard-url
 `)
 		default:
@@ -1092,7 +1113,8 @@ COMMANDS
   sync [OPTIONS]                Scan and upload usage (default command)
   service [SUBCOMMAND]          Manage automatic sync service
   set key <API_KEY>             Store API key
-  get key|dashboard-url         Retrieve stored settings
+  set hostname <NAME>           Name this machine on the dashboard
+  get key|hostname|dashboard-url  Retrieve settings
   verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
   today [--project NAME]        Today's active time and tokens, from the server
