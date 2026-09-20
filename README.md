@@ -65,10 +65,23 @@ Options:
 Set `TOKITOKI_NO_TELEMETRY=1` to disable the anonymous install ping.
 
 Every run is recorded in `~/.tokitoki/log/tokitoki.log` — JSON lines, rotated
-at 5 MB with three backups kept. It never leaves the machine. When a sync
-misbehaves, that file is the first thing to look at: each run logs when it
-started and finished, what the scan found, what each upload batch returned,
-and any failure at the level it deserves.
+at 5 MB with three backups kept. When a sync misbehaves, that file is the
+first thing to look at: each run logs when it started and finished, what the
+scan found, what each upload batch returned, and any failure at the level it
+deserves.
+
+The log's `ERROR` lines — and only those — are forwarded to your Tokitoki
+server, so that an install which has stopped uploading can say why. `ERROR`
+is reserved for faults the server cannot see for itself: the local queue will
+not open, a provider's files cannot be read, a run crashed or was killed. A
+report carries the line, the few lines the same run logged before it, and for
+a crash the stack trace; your home directory is replaced with `~` first, though
+a path beneath it can still name a project or file. It is sent with your API
+key when one is set, at most once every ten minutes, and a fault that keeps
+happening is reported once a day with a count. This is part of the upload
+service rather than telemetry, so `TOKITOKI_NO_TELEMETRY` does not govern it;
+`tokitoki upload disable` does — with uploading off, nothing leaves the
+machine.
 
 Every uploaded event is labelled with this machine's hostname (without its
 domain), so the dashboard can split time by machine. `tokitoki set hostname

@@ -86,13 +86,17 @@ const maxCrashBytes = 32 << 10
 // everything that went wrong, crashes included — which matters to anything
 // that later reads it for Error lines, because a crash is otherwise the one
 // error that never becomes one.
-func CaptureCrashes(dataDir string, logger *slog.Logger) {
+//
+// It reports whether the previous run had crashed. A caller that forwards the
+// log wants to know: a crash loop never reaches the end of a run, so the start
+// of the next one is the only moment its crash can be sent anywhere.
+func CaptureCrashes(dataDir string, logger *slog.Logger) (crashed bool) {
 	if dataDir == "" {
-		return
+		return false
 	}
 	path := store.LogPath(dataDir, store.CrashFile)
 	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
-		return
+		return false
 	}
 
 	// Two runs starting together can both read the same report and log it
@@ -105,15 +109,17 @@ func CaptureCrashes(dataDir string, logger *slog.Logger) {
 		}
 		logger.Error("previous run crashed", "trace", string(trace))
 		_ = os.Truncate(path, 0)
+		crashed = true
 	}
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return
+		return crashed
 	}
 	// SetCrashOutput duplicates the descriptor, so ours can go.
 	_ = debug.SetCrashOutput(file, debug.CrashOptions{})
 	_ = file.Close()
+	return crashed
 }
 
 // fanout hands each record to every handler that wants its level.

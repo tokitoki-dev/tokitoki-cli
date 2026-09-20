@@ -23,6 +23,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/applog"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/logship"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
@@ -72,12 +73,58 @@ func run(args []string) int {
 	// finish lines bracket it: a start with no finish under the same pid is a
 	// run that was killed or hung — a front-end's timeout, the OOM killer —
 	// which is a failure no line inside the run could ever have reported.
-	runLogger = openLogger(commandName(args))
+	command := commandName(args)
+	logger, crashed := openLogger(command)
+	runLogger = logger
+	// A crash loop never reaches the end of a run, so the crash the last run
+	// left is forwarded now, before this one does whatever crashed that one.
+	if crashed {
+		forwardLog(true)
+	}
 	started := time.Now()
 	runLogger.Info("run started")
 	code := dispatch(args)
 	runLogger.Info("run finished", "exit_code", code, "duration_ms", time.Since(started).Milliseconds())
+	if forwardsLog(command) {
+		forwardLog(false)
+	}
 	return code
+}
+
+// forwardsLog picks the commands that carry the log's errors to the server
+// when they finish: the ones a front-end already runs on a schedule and
+// already expects to spend time on the network. `today` and `get key` sit in
+// a status bar's or a settings pane's critical path and must not acquire a
+// ten-second worst case for something that is not theirs to do.
+func forwardsLog(command string) bool {
+	return command == "sync" || command == "heartbeat"
+}
+
+// forwardLog sends the log's new Error lines to the server (internal/
+// logship). A failure here is logged below Error on purpose: it must not
+// become an error to forward, or one unreachable server would feed itself.
+func forwardLog(force bool) {
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		return
+	}
+	apiKey := ""
+	if fileStore, err := store.Open(dir); err == nil {
+		if settings, err := fileStore.LoadSettings(); err == nil {
+			apiKey = settings.APIKey
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), logship.Timeout)
+	defer cancel()
+	err = logship.Ship(ctx, logship.Options{
+		DataDir: dir,
+		BaseURL: usageupload.BaseURL(),
+		APIKey:  apiKey,
+		Force:   force,
+	})
+	if err != nil {
+		defaultLogger().Debug("log forwarding failed", "error", err)
+	}
 }
 
 // commandName labels a run in the log. Never the arguments themselves:
@@ -666,6 +713,10 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 			if err := client.Upload(runCtx); err != nil {
 				logFailure(logger, "tokitoki upload failed", err)
 			}
+			// The service is one long run with no finish to hang this on, so
+			// it rides the upload tick; logship's own interval keeps it to
+			// one pass in ten minutes.
+			forwardLog(false)
 		})
 	}()
 
@@ -1189,19 +1240,22 @@ func defaultLogger() *slog.Logger {
 // openLogger opens log/tokitoki.log for this run and makes it the process
 // default, so packages that log through slog directly land in the same file.
 // A data directory that cannot be set up costs the file, never the command.
-func openLogger(command string) *slog.Logger {
+//
+// crashed reports that the previous run died of a panic, which has just been
+// written into this log.
+func openLogger(command string) (logger *slog.Logger, crashed bool) {
 	dir, err := store.InitializeDataDir()
 	if err != nil {
 		dir = ""
 	}
-	logger := applog.New(dir, os.Stderr,
+	logger = applog.New(dir, os.Stderr,
 		slog.String("cmd", command),
 		slog.String("version", version),
 		slog.Int("pid", os.Getpid()),
 	)
-	applog.CaptureCrashes(dir, logger)
+	crashed = applog.CaptureCrashes(dir, logger)
 	slog.SetDefault(logger)
-	return logger
+	return logger, crashed
 }
 
 // exitNoAPIKey marks the one failure a caller can act on: no key is
