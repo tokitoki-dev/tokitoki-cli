@@ -16,6 +16,14 @@ const (
 	configDirName = "config"
 	dataDirName   = "data"
 	stateDirName  = "state"
+	logDirName    = "log"
+
+	// LogFile is the run log every command appends to. CrashFile sits beside
+	// it and holds a fatal panic's trace until the next run copies it into the
+	// log: the Go runtime can only write one to a raw descriptor, never
+	// through a logger. See internal/applog.
+	LogFile   = "tokitoki.log"
+	CrashFile = "crash.log"
 
 	UsageDBFile   = "tokitoki.db"
 	apiKeyFile    = "api_key"
@@ -66,7 +74,18 @@ func Open(dir string) (*FileStore, error) {
 
 // UsageDBPath returns the path to the usage database file within the data directory.
 func UsageDBPath(dataDir string) string {
-	return filepath.Join(dataDir, dataDirName, UsageDBFile)
+	return DataPath(dataDir, UsageDBFile)
+}
+
+// DataPath returns the path of a data file within the data directory: what
+// Tokitoki knows, as opposed to StatePath's bookkeeping about its own runs.
+func DataPath(dataDir, name string) string {
+	return filepath.Join(dataDir, dataDirName, name)
+}
+
+// LogPath returns the path of a log file within the data directory.
+func LogPath(dataDir, name string) string {
+	return filepath.Join(dataDir, logDirName, name)
 }
 
 // StatePath returns the path of a state file within the data directory.
@@ -190,7 +209,7 @@ func (s *FileStore) writeFileLocked(path, value string) error {
 }
 
 func ensureSubdirectoriesExist(dir string) error {
-	subdirs := []string{configDirName, dataDirName, stateDirName}
+	subdirs := []string{configDirName, dataDirName, stateDirName, logDirName}
 	for _, subdir := range subdirs {
 		path := filepath.Join(dir, subdir)
 		if err := os.MkdirAll(path, directoryMod); err != nil {
@@ -224,6 +243,21 @@ func migrateOldDataStructure(dir string) error {
 			return err
 		}
 		if err := os.Rename(oldDBPath, newDBPath); err != nil {
+			return err
+		}
+	}
+
+	// The status bar's cached report moved from state/ to data/: it is
+	// something Tokitoki knows, not a note about its own runs. Moved rather
+	// than dropped because it is the offline fallback — without it the first
+	// `today` after an upgrade with no network has nothing to show.
+	oldTodayPath := filepath.Join(dir, stateDirName, "today.json")
+	newTodayPath := filepath.Join(dir, dataDirName, "today.json")
+	if _, err := os.Stat(oldTodayPath); err == nil && !fileExists(newTodayPath) {
+		if err := os.MkdirAll(filepath.Dir(newTodayPath), directoryMod); err != nil {
+			return err
+		}
+		if err := os.Rename(oldTodayPath, newTodayPath); err != nil {
 			return err
 		}
 	}

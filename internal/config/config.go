@@ -9,47 +9,47 @@ import (
 	"strings"
 )
 
+// A build has an identity: the server it reports to and the directory, under
+// the user's home, where it keeps its state. Both are build parameters, never
+// read from the environment at run time — a binary launched from an app, an
+// editor plugin, a systemd unit or a bare shell must be the same binary in
+// every case, and an override that lives in the environment is exactly what
+// is missing in one of them. `tokitoki server-url` and `tokitoki data-dir`
+// print what a binary was built with.
+//
+// The defaults are the DEVELOPMENT identity, and that direction is the whole
+// design. Stamps get forgotten: `go test`, `go run`, an IDE's debug button and
+// a front-end's build script that remembered the version and nothing else all
+// produce an unstamped binary. When unstamped meant installed, every one of
+// those read the user's real key, wrote to their real queue, and talked to
+// production — tests included, which pinged the live server on every run.
+// Forgetting has to be safe, so forgetting gets you the development server
+// and a directory no installed binary touches.
+//
+// The installed identity is therefore something a build must claim out loud:
+//
+//	-ldflags "-X .../internal/config.ServerURL=https://tokitoki.dev
+//	          -X .../internal/config.DataDirName=.tokitoki"
+//
+// Only the Makefile's release targets do, and the release workflow runs the
+// built binary and refuses to publish one that reports anything else — so the
+// failure mode of a lost stamp is a failed release, not a quiet one. `go
+// install <module>@vX.Y.Z` bypasses the Makefile and so yields a development
+// binary; it is not a supported way to install Tokitoki. Releases are.
+
 // ServerURL is the Tokitoki server this binary talks to — usage uploads,
-// update checks, key verification, the dashboard link, all of it. Like
-// DataDirName it is a build parameter, and for the same reason: which server
-// a binary reports to is a property of the build, not of whoever happens to
-// run it. It is deliberately not read from the environment at run time. A
-// development binary launched from an app, an editor plugin, a systemd unit
-// or a bare shell must reach the same server in every case, and an override
-// that lives in the environment is exactly what is missing in one of them.
-//
-//	-ldflags "-X github.com/tokitoki-dev/tokitoki-cli/internal/config.ServerURL=http://localhost:9093"
-//
-// The default is production, because a binary that carries no stamp at all is
-// an installed one (`go install <module>@vX.Y.Z` bypasses the Makefile). The
-// Makefile stamps localhost into every local target, so `make build` cannot
-// reach production, whatever else goes wrong; only the release targets stamp
-// the production address.
-var ServerURL = "https://tokitoki.dev"
+// update checks, key verification, the dashboard link, all of it.
+var ServerURL = "http://localhost:9093"
 
 // DataDirName is the hidden directory, under the user's home directory, where
-// this binary keeps all of its state. Every native front-end resolves the same
-// path on macOS, Windows, and Linux: filepath.Join(os.UserHomeDir(), config.DataDirName).
-//
-// It is a build parameter. Set it to whatever a given build should own:
-//
-//	-ldflags "-X github.com/tokitoki-dev/tokitoki-cli/internal/config.DataDirName=.tokitoki-dev"
+// this binary keeps all of its state: filepath.Join(os.UserHomeDir(),
+// config.DataDirName) on macOS, Windows, and Linux alike.
 //
 // Nothing in the code knows which values are meaningful, and nothing branches
 // on the value it finds — binaries stamped with different names simply share
 // no state: not the API key, not the event queue, not the locks. That is the
 // whole mechanism, and it is why any number of builds coexist on one machine.
-//
-// The default is the directory installed binaries own, because a build that
-// carries no stamp at all is an installed one: `go install <module>@vX.Y.Z`
-// bypasses the project Makefile, and the binary it produces has to find the
-// user's existing key and history rather than start from an empty directory.
-//
-// Development builds are the ones that get stamped. The Makefile stamps
-// ~/.tokitoki-dev into every local target, so `make` and `make build` cannot
-// touch installed state; only a build run outside the Makefile inherits this
-// default.
-var DataDirName = ".tokitoki"
+var DataDirName = ".tokitoki-dev"
 
 // Validate reports whether DataDirName is a usable directory name. The value
 // arrives from a build command line, where a typo — an absolute path, a stray

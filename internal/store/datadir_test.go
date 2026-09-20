@@ -135,3 +135,47 @@ func underDir(path, dir string) bool {
 	}
 	return filepath.IsLocal(rel)
 }
+
+// An install from before today.json moved keeps its cached report: it is the
+// offline fallback, and the first `today` after an upgrade may have no network.
+func TestInitializeMovesTodayReportFromStateToData(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir, err := DefaultDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, "state", "today.json")
+	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte(`{"date":"2026-09-19"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InitializeDataDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := os.ReadFile(DataPath(dir, "today.json"))
+	if err != nil || string(moved) != `{"date":"2026-09-19"}` {
+		t.Fatalf("report not carried over: %q, %v", moved, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old report left behind in state/: %v", err)
+	}
+
+	// A newer report already in data/ is never overwritten by a stale one.
+	if err := os.WriteFile(old, []byte(`{"date":"stale"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitializeDataDir(); err != nil {
+		t.Fatal(err)
+	}
+	kept, _ := os.ReadFile(DataPath(dir, "today.json"))
+	if string(kept) != `{"date":"2026-09-19"}` {
+		t.Fatalf("existing report was overwritten: %q", kept)
+	}
+}

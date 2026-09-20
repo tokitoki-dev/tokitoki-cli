@@ -183,6 +183,9 @@ func syncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB, m
 			return err
 		}
 
+		slog.Info("usage batch uploaded", "events", len(events), "accepted", len(response.Accepted),
+			"duplicate", len(response.Duplicate), "rejected", len(response.Rejected))
+
 		// Accepted: newly inserted events (never seen before). Mark as uploaded.
 		if len(response.Accepted) > 0 {
 			if err := db.MarkEventsUploaded(response.Accepted); err != nil {
@@ -335,7 +338,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Response{}, fmt.Errorf("usage upload failed: server returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
+		return Response{}, &StatusError{Code: resp.StatusCode, Status: resp.Status, Detail: strings.TrimSpace(string(detail))}
 	}
 
 	var decoded Response
@@ -343,6 +346,23 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 	return decoded, nil
+}
+
+// StatusError is an upload the server answered with something other than 2xx.
+//
+// It is a type, not just text, because callers treat it differently from
+// every other failure: the server saw this request and has its own record of
+// what went wrong, so on this side it is a warning to retry past, not a fault
+// in the install. The text is unchanged from when it was a plain error — it is
+// what the queue stores as last_error.
+type StatusError struct {
+	Code   int
+	Status string
+	Detail string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("usage upload failed: server returned %s: %s", e.Status, e.Detail)
 }
 
 func uploadEndpoint() string {

@@ -17,11 +17,12 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 )
 
-// The unstamped default is production: a binary built outside the Makefile
-// is an installed one and must report where installed binaries report.
-func TestUnstampedServerURLIsProduction(t *testing.T) {
-	if config.ServerURL != "https://tokitoki.dev" {
-		t.Fatalf("config.ServerURL = %q, want https://tokitoki.dev", config.ServerURL)
+// The unstamped default is the development server: `go test` builds carry no
+// stamp, and a test that forgets to point itself at a fake must not be able to
+// reach production. See config.ServerURL.
+func TestUnstampedServerURLIsDevelopment(t *testing.T) {
+	if config.ServerURL != "http://localhost:9093" {
+		t.Fatalf("config.ServerURL = %q, want http://localhost:9093", config.ServerURL)
 	}
 }
 

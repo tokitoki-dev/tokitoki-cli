@@ -6,14 +6,18 @@ import (
 	"testing"
 )
 
-// A build carrying no stamp is an installed one: `go install <module>@vX.Y.Z`
-// bypasses the Makefile, and the binary it produces must find the user's
-// existing key and history instead of an empty directory. Development builds
-// are stamped by the Makefile, so this default is what they are stamped away
-// from.
-func TestDefaultIsTheInstalledDataDir(t *testing.T) {
-	if DataDirName != ".tokitoki" {
-		t.Fatalf("DataDirName = %q by default, want the installed directory so `go install` finds existing state", DataDirName)
+// A build carrying no stamp is a development one. Stamps get forgotten — by
+// `go test`, `go run`, an IDE, a front-end's build script — and what a
+// forgetful build touches has to be the development directory and the
+// development server, never a user's installed state or production. The
+// installed identity is claimed explicitly by the release targets and checked
+// by the release workflow.
+func TestUnstampedBuildIsADevelopmentBuild(t *testing.T) {
+	if DataDirName != ".tokitoki-dev" {
+		t.Fatalf("DataDirName = %q by default, want .tokitoki-dev: an unstamped build must not own installed state", DataDirName)
+	}
+	if ServerURL != "http://localhost:9093" {
+		t.Fatalf("ServerURL = %q by default, want the development server: an unstamped build must not reach production", ServerURL)
 	}
 	if err := Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want the default to be usable", err)

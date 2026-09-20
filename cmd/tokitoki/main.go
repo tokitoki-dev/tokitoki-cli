@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/applog"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
@@ -65,6 +67,30 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stdout, version)
 		return 0
 	}
+
+	// Everything past this point does work worth a record. The start and
+	// finish lines bracket it: a start with no finish under the same pid is a
+	// run that was killed or hung — a front-end's timeout, the OOM killer —
+	// which is a failure no line inside the run could ever have reported.
+	runLogger = openLogger(commandName(args))
+	started := time.Now()
+	runLogger.Info("run started")
+	code := dispatch(args)
+	runLogger.Info("run finished", "exit_code", code, "duration_ms", time.Since(started).Milliseconds())
+	return code
+}
+
+// commandName labels a run in the log. Never the arguments themselves:
+// `set key <KEY>` carries the API key on the command line.
+func commandName(args []string) string {
+	if strings.HasPrefix(args[0], "-") {
+		// The legacy flags-only spelling of sync (`tokitoki --check-update`).
+		return "sync"
+	}
+	return args[0]
+}
+
+func dispatch(args []string) int {
 	if len(args) > 0 && args[0] == "update" {
 		return runUpdate(args[1:])
 	}
@@ -623,7 +649,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 		defer wg.Done()
 		runIntervalLoop(workerCtx, flags.interval, func(context.Context) {
 			if err := client.Scan(agentlib.SyncOptions{ProviderDirs: flags.providerDirs}); err != nil {
-				logger.Error("tokitoki scan failed", "error", err)
+				logFailure(logger, "tokitoki scan failed", err)
 			}
 			telemetry.MaybePing(logger, usageupload.BaseURL())
 		})
@@ -638,7 +664,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 				return
 			}
 			if err := client.Upload(runCtx); err != nil {
-				logger.Error("tokitoki upload failed", "error", err)
+				logFailure(logger, "tokitoki upload failed", err)
 			}
 		})
 	}()
@@ -1146,8 +1172,36 @@ Examples:
 `)
 }
 
+// runLogger is the logger of the command this process is running, opened by
+// run. It is a variable rather than a sync.Once so that each run gets its own:
+// a test that runs two commands under two home directories gets two logs.
+var runLogger *slog.Logger
+
+// defaultLogger returns the run's logger. Code reached without going through
+// run — a test calling a helper directly — gets the stderr half alone.
 func defaultLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if runLogger != nil {
+		return runLogger
+	}
+	return applog.New("", os.Stderr)
+}
+
+// openLogger opens log/tokitoki.log for this run and makes it the process
+// default, so packages that log through slog directly land in the same file.
+// A data directory that cannot be set up costs the file, never the command.
+func openLogger(command string) *slog.Logger {
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		dir = ""
+	}
+	logger := applog.New(dir, os.Stderr,
+		slog.String("cmd", command),
+		slog.String("version", version),
+		slog.Int("pid", os.Getpid()),
+	)
+	applog.CaptureCrashes(dir, logger)
+	slog.SetDefault(logger)
+	return logger
 }
 
 // exitNoAPIKey marks the one failure a caller can act on: no key is
@@ -1156,8 +1210,36 @@ func defaultLogger() *slog.Logger {
 // from the error text.
 const exitNoAPIKey = 3
 
+// logFailure records err at the level it deserves.
+//
+// Error means one thing: this install is broken in a way that will not fix
+// itself and that nobody else can see — the queue will not open, the data
+// lock is never released, the state directory cannot be written. Everything
+// expected is a warning: no key yet, the network is down, the run was
+// cancelled or ran out of time, the server answered with an error (it has its
+// own record of that). The line is drawn here, once, because every command's
+// failure passes through here; the level is what a reader, or anything that
+// later forwards this file, filters on.
+func logFailure(logger *slog.Logger, message string, err error) {
+	logger.Log(context.Background(), failureLevel(err), message, "error", err)
+}
+
+func failureLevel(err error) slog.Level {
+	var status *usageupload.StatusError
+	var transport *url.Error
+	switch {
+	case errors.Is(err, agentlib.ErrMissingAPIKey),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded),
+		errors.As(err, &status),
+		errors.As(err, &transport):
+		return slog.LevelWarn
+	}
+	return slog.LevelError
+}
+
 func fail(logger *slog.Logger, err error) int {
-	logger.Error("tokitoki failed", "error", err)
+	logFailure(logger, "tokitoki failed", err)
 	if errors.Is(err, agentlib.ErrMissingAPIKey) {
 		return exitNoAPIKey
 	}

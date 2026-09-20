@@ -64,6 +64,12 @@ Options:
 
 Set `TOKITOKI_NO_TELEMETRY=1` to disable the anonymous install ping.
 
+Every run is recorded in `~/.tokitoki/log/tokitoki.log` — JSON lines, rotated
+at 5 MB with three backups kept. It never leaves the machine. When a sync
+misbehaves, that file is the first thing to look at: each run logs when it
+started and finished, what the scan found, what each upload batch returned,
+and any failure at the level it deserves.
+
 Every uploaded event is labelled with this machine's hostname (without its
 domain), so the dashboard can split time by machine. `tokitoki set hostname
 <NAME>` overrides it; `TOKITOKI_HOSTNAME` in the environment overrides both,

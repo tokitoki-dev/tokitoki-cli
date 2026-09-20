@@ -1,6 +1,7 @@
 package usagescan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -119,10 +120,43 @@ func (s *Scanner) Scan(providerDirs map[usage.Provider][]string) (Result, error)
 		result.setProviderResult(providerID, providerResult)
 		if err != nil {
 			errs = append(errs, err)
+			// Logged here, where the provider is still known. The caller gets
+			// these joined with whatever else went wrong in the run, and a
+			// joined error names nobody.
+			s.log(slog.LevelError, "provider scan failed", "provider", string(providerID), "error", err)
 		}
 	}
 
+	s.logResult(result)
 	return result, errors.Join(errs...)
+}
+
+func (s *Scanner) log(level slog.Level, message string, args ...any) {
+	if s.Logger != nil {
+		s.Logger.Log(context.Background(), level, message, args...)
+	}
+}
+
+// logResult records what the scan found. Parsed and inserted are both kept
+// because their gap is the interesting part: events parsed and not inserted
+// were already queued, which is every steady-state scan, while a scan that
+// parses nothing week after week from a tool the user runs daily is a parser
+// the tool's format has moved away from — a failure with no error to log.
+func (s *Scanner) logResult(result Result) {
+	parsed, inserted := 0, 0
+	queued := make([]any, 0, len(result.Providers))
+	for provider, r := range result.Providers {
+		parsed += r.EventsParsed
+		inserted += r.EventsInserted
+		if r.EventsInserted > 0 {
+			queued = append(queued, slog.Int(string(provider), r.EventsInserted))
+		}
+	}
+	level := slog.LevelDebug
+	if inserted > 0 {
+		level = slog.LevelInfo
+	}
+	s.log(level, "scan finished", "parsed", parsed, "inserted", inserted, slog.Group("queued", queued...))
 }
 
 func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string, scanned map[string]usagedb.FileState) (ProviderResult, error) {
