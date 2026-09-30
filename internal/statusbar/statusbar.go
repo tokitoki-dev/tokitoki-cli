@@ -18,7 +18,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 )
 
-// CacheFile is the state file holding the last report the server gave.
+// CacheFile is the data file holding the last report the server gave.
 const CacheFile = "today.json"
 
 // Report is the server's answer (tracklm-nextjs lib/statusbar.ts), plus two
@@ -101,7 +101,7 @@ func Fetch(ctx context.Context, baseURL, apiKey, project string) (Report, error)
 // Save writes the report as the last known answer. Written to a sibling and
 // renamed, so a reader never sees a half-written file.
 func Save(dataDir string, report Report) error {
-	path := store.StatePath(dataDir, CacheFile)
+	path := store.DataPath(dataDir, CacheFile)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func Save(dataDir string, report Report) error {
 // is not an answer about this one, while the account total is the same
 // whichever window asks.
 func Load(dataDir, project string) (report Report, ok bool) {
-	data, err := os.ReadFile(store.StatePath(dataDir, CacheFile))
+	data, err := os.ReadFile(store.DataPath(dataDir, CacheFile))
 	if err != nil {
 		return Report{}, false
 	}

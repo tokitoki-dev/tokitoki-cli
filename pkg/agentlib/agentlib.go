@@ -200,6 +200,32 @@ func (c *Client) SetAPIKey(apiKey string) error {
 	})
 }
 
+// SetHostname stores the label this machine's uploads carry. Empty removes
+// the override so the system hostname is used again.
+func (c *Client) SetHostname(hostname string) error {
+	return c.withDataLock(func() error {
+		fileStore, err := store.Open(c.dataDir)
+		if err != nil {
+			return err
+		}
+		return agent.New(fileStore, c.logger).SaveHostname(hostname)
+	})
+}
+
+// Hostname returns the label this machine's uploads carry, every override
+// applied — the name the dashboard will show.
+func (c *Client) Hostname() (string, error) {
+	fileStore, err := store.Open(c.dataDir)
+	if err != nil {
+		return "", err
+	}
+	settings, err := agent.New(fileStore, c.logger).Settings()
+	if err != nil {
+		return "", err
+	}
+	return usageupload.DeviceName(settings), nil
+}
+
 // GetAPIKey returns the configured API key.
 func (c *Client) GetAPIKey() (string, error) {
 	fileStore, err := store.Open(c.dataDir)

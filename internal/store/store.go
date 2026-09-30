@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agent"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
@@ -15,9 +16,18 @@ const (
 	configDirName = "config"
 	dataDirName   = "data"
 	stateDirName  = "state"
+	logDirName    = "log"
+
+	// LogFile is the run log every command appends to. CrashFile sits beside
+	// it and holds a fatal panic's trace until the next run copies it into the
+	// log: the Go runtime can only write one to a raw descriptor, never
+	// through a logger. See internal/applog.
+	LogFile   = "tokitoki.log"
+	CrashFile = "crash.log"
 
 	UsageDBFile   = "tokitoki.db"
 	apiKeyFile    = "api_key"
+	hostnameFile  = "hostname"
 	directoryMod  = 0o700
 	apiKeyFileMod = 0o600
 )
@@ -64,7 +74,18 @@ func Open(dir string) (*FileStore, error) {
 
 // UsageDBPath returns the path to the usage database file within the data directory.
 func UsageDBPath(dataDir string) string {
-	return filepath.Join(dataDir, dataDirName, UsageDBFile)
+	return DataPath(dataDir, UsageDBFile)
+}
+
+// DataPath returns the path of a data file within the data directory: what
+// Tokitoki knows, as opposed to StatePath's bookkeeping about its own runs.
+func DataPath(dataDir, name string) string {
+	return filepath.Join(dataDir, dataDirName, name)
+}
+
+// LogPath returns the path of a log file within the data directory.
+func LogPath(dataDir, name string) string {
+	return filepath.Join(dataDir, logDirName, name)
 }
 
 // StatePath returns the path of a state file within the data directory.
@@ -72,22 +93,29 @@ func StatePath(dataDir, name string) string {
 	return filepath.Join(dataDir, stateDirName, name)
 }
 
-// LoadSettings reads the API key from the config/api_key file.
+// LoadSettings reads the API key from config/api_key and the hostname
+// override from config/hostname. One value per file, like the upload
+// switch: nothing to parse, nothing to half-write.
 func (s *FileStore) LoadSettings() (agent.Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(filepath.Join(s.dir, configDirName, apiKeyFile))
+	apiKey, err := os.ReadFile(filepath.Join(s.dir, configDirName, apiKeyFile))
 	if errors.Is(err, os.ErrNotExist) {
 		if err := s.ensureAPIKeyFileLocked(); err != nil {
 			return agent.Settings{}, err
 		}
-		return agent.Settings{}, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return agent.Settings{}, err
 	}
-	return agent.Settings{APIKey: strings.TrimSpace(string(data))}, nil
+	hostname, err := os.ReadFile(filepath.Join(s.dir, configDirName, hostnameFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return agent.Settings{}, err
+	}
+	return agent.Settings{
+		APIKey:   strings.TrimSpace(string(apiKey)),
+		Hostname: strings.TrimSpace(string(hostname)),
+	}, nil
 }
 
 func (s *FileStore) EnsureAPIKeyFile() error {
@@ -128,6 +156,31 @@ func (s *FileStore) SaveAPIKey(apiKey string) error {
 	return s.writeFileLocked(filepath.Join(configDir, apiKeyFile), apiKey)
 }
 
+// SaveHostname stores the label this machine's uploads carry. Empty removes
+// the override, so the system hostname is used again; a missing file is
+// already that.
+func (s *FileStore) SaveHostname(hostname string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hostname = strings.TrimSpace(hostname)
+	if strings.ContainsFunc(hostname, unicode.IsControl) {
+		return errors.New("hostname must not contain control characters")
+	}
+	path := filepath.Join(s.dir, configDirName, hostnameFile)
+	if hostname == "" {
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), directoryMod); err != nil {
+		return err
+	}
+	return s.writeFileLocked(path, hostname)
+}
+
 // writeFileLocked writes value+"\n" to path with owner-only permissions, via
 // a temp file renamed into place so readers never see a torn write.
 func (s *FileStore) writeFileLocked(path, value string) error {
@@ -156,7 +209,7 @@ func (s *FileStore) writeFileLocked(path, value string) error {
 }
 
 func ensureSubdirectoriesExist(dir string) error {
-	subdirs := []string{configDirName, dataDirName, stateDirName}
+	subdirs := []string{configDirName, dataDirName, stateDirName, logDirName}
 	for _, subdir := range subdirs {
 		path := filepath.Join(dir, subdir)
 		if err := os.MkdirAll(path, directoryMod); err != nil {
@@ -190,6 +243,21 @@ func migrateOldDataStructure(dir string) error {
 			return err
 		}
 		if err := os.Rename(oldDBPath, newDBPath); err != nil {
+			return err
+		}
+	}
+
+	// The status bar's cached report moved from state/ to data/: it is
+	// something Tokitoki knows, not a note about its own runs. Moved rather
+	// than dropped because it is the offline fallback — without it the first
+	// `today` after an upgrade with no network has nothing to show.
+	oldTodayPath := filepath.Join(dir, stateDirName, "today.json")
+	newTodayPath := filepath.Join(dir, dataDirName, "today.json")
+	if _, err := os.Stat(oldTodayPath); err == nil && !fileExists(newTodayPath) {
+		if err := os.MkdirAll(filepath.Dir(newTodayPath), directoryMod); err != nil {
+			return err
+		}
+		if err := os.Rename(oldTodayPath, newTodayPath); err != nil {
 			return err
 		}
 	}

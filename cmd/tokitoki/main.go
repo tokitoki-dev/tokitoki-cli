@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,8 +20,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tokitoki-dev/tokitoki-cli/internal/applog"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/logship"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
@@ -65,6 +68,76 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stdout, version)
 		return 0
 	}
+
+	// Everything past this point does work worth a record. The start and
+	// finish lines bracket it: a start with no finish under the same pid is a
+	// run that was killed or hung — a front-end's timeout, the OOM killer —
+	// which is a failure no line inside the run could ever have reported.
+	command := commandName(args)
+	logger, crashed := openLogger(command)
+	runLogger = logger
+	// A crash loop never reaches the end of a run, so the crash the last run
+	// left is forwarded now, before this one does whatever crashed that one.
+	if crashed {
+		forwardLog(true)
+	}
+	started := time.Now()
+	runLogger.Info("run started")
+	code := dispatch(args)
+	runLogger.Info("run finished", "exit_code", code, "duration_ms", time.Since(started).Milliseconds())
+	if forwardsLog(command) {
+		forwardLog(false)
+	}
+	return code
+}
+
+// forwardsLog picks the commands that carry the log's errors to the server
+// when they finish: the ones a front-end already runs on a schedule and
+// already expects to spend time on the network. `today` and `get key` sit in
+// a status bar's or a settings pane's critical path and must not acquire a
+// ten-second worst case for something that is not theirs to do.
+func forwardsLog(command string) bool {
+	return command == "sync" || command == "heartbeat"
+}
+
+// forwardLog sends the log's new Error lines to the server (internal/
+// logship). A failure here is logged below Error on purpose: it must not
+// become an error to forward, or one unreachable server would feed itself.
+func forwardLog(force bool) {
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		return
+	}
+	apiKey := ""
+	if fileStore, err := store.Open(dir); err == nil {
+		if settings, err := fileStore.LoadSettings(); err == nil {
+			apiKey = settings.APIKey
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), logship.Timeout)
+	defer cancel()
+	err = logship.Ship(ctx, logship.Options{
+		DataDir: dir,
+		BaseURL: usageupload.BaseURL(),
+		APIKey:  apiKey,
+		Force:   force,
+	})
+	if err != nil {
+		defaultLogger().Debug("log forwarding failed", "error", err)
+	}
+}
+
+// commandName labels a run in the log. Never the arguments themselves:
+// `set key <KEY>` carries the API key on the command line.
+func commandName(args []string) string {
+	if strings.HasPrefix(args[0], "-") {
+		// The legacy flags-only spelling of sync (`tokitoki --check-update`).
+		return "sync"
+	}
+	return args[0]
+}
+
+func dispatch(args []string) int {
 	if len(args) > 0 && args[0] == "update" {
 		return runUpdate(args[1:])
 	}
@@ -287,8 +360,8 @@ func runSync(ctx context.Context, providerDirs map[agentlib.Provider][]string, o
 }
 
 func runSet(args []string) int {
-	if len(args) != 2 || args[0] != "key" {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki set key <API_KEY>")
+	if len(args) != 2 || (args[0] != "key" && args[0] != "hostname") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki set <key|hostname> <VALUE>")
 		return 2
 	}
 
@@ -297,12 +370,20 @@ func runSet(args []string) int {
 	if err != nil {
 		return fail(logger, err)
 	}
-	if err := client.SetAPIKey(args[1]); err != nil {
-		return fail(logger, err)
+	switch args[0] {
+	case "key":
+		if err := client.SetAPIKey(args[1]); err != nil {
+			return fail(logger, err)
+		}
+		// Unthrottled: has_api_key flipping to true is the funnel transition
+		// the server is waiting on, and the daily ping already reported false
+		// today.
+		telemetry.Ping(logger, usageupload.BaseURL())
+	case "hostname":
+		if err := client.SetHostname(args[1]); err != nil {
+			return fail(logger, err)
+		}
 	}
-	// Unthrottled: has_api_key flipping to true is the funnel transition the
-	// server is waiting on, and the daily ping already reported false today.
-	telemetry.Ping(logger, usageupload.BaseURL())
 	if err := writeJSON(os.Stdout, map[string]bool{"ok": true}); err != nil {
 		return fail(logger, err)
 	}
@@ -310,8 +391,8 @@ func runSet(args []string) int {
 }
 
 func runGet(args []string) int {
-	if len(args) != 1 || (args[0] != "key" && args[0] != "dashboard-url") {
-		fmt.Fprintln(os.Stderr, "usage: tokitoki get <key|dashboard-url>")
+	if len(args) != 1 || (args[0] != "key" && args[0] != "hostname" && args[0] != "dashboard-url") {
+		fmt.Fprintln(os.Stderr, "usage: tokitoki get <key|hostname|dashboard-url>")
 		return 2
 	}
 
@@ -325,6 +406,8 @@ func runGet(args []string) int {
 	switch args[0] {
 	case "key":
 		value, err = client.GetAPIKey()
+	case "hostname":
+		value, err = client.Hostname()
 	case "dashboard-url":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -613,7 +696,7 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 		defer wg.Done()
 		runIntervalLoop(workerCtx, flags.interval, func(context.Context) {
 			if err := client.Scan(agentlib.SyncOptions{ProviderDirs: flags.providerDirs}); err != nil {
-				logger.Error("tokitoki scan failed", "error", err)
+				logFailure(logger, "tokitoki scan failed", err)
 			}
 			telemetry.MaybePing(logger, usageupload.BaseURL())
 		})
@@ -628,8 +711,12 @@ func runWorkerLoop(ctx context.Context, flags workerFlags) int {
 				return
 			}
 			if err := client.Upload(runCtx); err != nil {
-				logger.Error("tokitoki upload failed", "error", err)
+				logFailure(logger, "tokitoki upload failed", err)
 			}
+			// The service is one long run with no finish to hang this on, so
+			// it rides the upload tick; logship's own interval keeps it to
+			// one pass in ten minutes.
+			forwardLog(false)
 		})
 	}()
 
@@ -864,7 +951,9 @@ Sync local AI usage to Tokitoki server
 Commands:
   sync                          Scan and upload usage events (default)
   set key <API_KEY>             Configure API key
+  set hostname <NAME>           Name this machine on the dashboard
   get key                       Show current API key
+  get hostname                  Show the machine name uploads carry
   get dashboard-url             Show dashboard URL
   verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
@@ -1060,13 +1149,22 @@ Manage Tokitoki settings.
 
 Subcommands:
   key                           API key (get or set)
+  hostname                      Machine name on the dashboard (get or set)
   dashboard-url                 Dashboard URL (get only)
 
-The API key is stored in ~/.tokitoki/api_key
+The API key is stored in ~/.tokitoki/config/api_key
+
+The machine name labels every uploaded event, so the dashboard can split
+time by machine. It defaults to the system hostname without its domain.
+"set hostname" stores an override; set hostname "" removes it. The
+TOKITOKI_HOSTNAME environment variable outranks both, for containers and
+CI runners whose hostname is a random id.
 
 Examples:
   tokitoki set key tt_live_xxx
   tokitoki get key
+  tokitoki set hostname studio
+  tokitoki get hostname
   tokitoki get dashboard-url
 `)
 		default:
@@ -1092,7 +1190,8 @@ COMMANDS
   sync [OPTIONS]                Scan and upload usage (default command)
   service [SUBCOMMAND]          Manage automatic sync service
   set key <API_KEY>             Store API key
-  get key|dashboard-url         Retrieve stored settings
+  set hostname <NAME>           Name this machine on the dashboard
+  get key|hostname|dashboard-url  Retrieve settings
   verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
   today [--project NAME]        Today's active time and tokens, from the server
@@ -1124,8 +1223,39 @@ Examples:
 `)
 }
 
+// runLogger is the logger of the command this process is running, opened by
+// run. It is a variable rather than a sync.Once so that each run gets its own:
+// a test that runs two commands under two home directories gets two logs.
+var runLogger *slog.Logger
+
+// defaultLogger returns the run's logger. Code reached without going through
+// run — a test calling a helper directly — gets the stderr half alone.
 func defaultLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if runLogger != nil {
+		return runLogger
+	}
+	return applog.New("", os.Stderr)
+}
+
+// openLogger opens log/tokitoki.log for this run and makes it the process
+// default, so packages that log through slog directly land in the same file.
+// A data directory that cannot be set up costs the file, never the command.
+//
+// crashed reports that the previous run died of a panic, which has just been
+// written into this log.
+func openLogger(command string) (logger *slog.Logger, crashed bool) {
+	dir, err := store.InitializeDataDir()
+	if err != nil {
+		dir = ""
+	}
+	logger = applog.New(dir, os.Stderr,
+		slog.String("cmd", command),
+		slog.String("version", version),
+		slog.Int("pid", os.Getpid()),
+	)
+	crashed = applog.CaptureCrashes(dir, logger)
+	slog.SetDefault(logger)
+	return logger, crashed
 }
 
 // exitNoAPIKey marks the one failure a caller can act on: no key is
@@ -1134,8 +1264,36 @@ func defaultLogger() *slog.Logger {
 // from the error text.
 const exitNoAPIKey = 3
 
+// logFailure records err at the level it deserves.
+//
+// Error means one thing: this install is broken in a way that will not fix
+// itself and that nobody else can see — the queue will not open, the data
+// lock is never released, the state directory cannot be written. Everything
+// expected is a warning: no key yet, the network is down, the run was
+// cancelled or ran out of time, the server answered with an error (it has its
+// own record of that). The line is drawn here, once, because every command's
+// failure passes through here; the level is what a reader, or anything that
+// later forwards this file, filters on.
+func logFailure(logger *slog.Logger, message string, err error) {
+	logger.Log(context.Background(), failureLevel(err), message, "error", err)
+}
+
+func failureLevel(err error) slog.Level {
+	var status *usageupload.StatusError
+	var transport *url.Error
+	switch {
+	case errors.Is(err, agentlib.ErrMissingAPIKey),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded),
+		errors.As(err, &status),
+		errors.As(err, &transport):
+		return slog.LevelWarn
+	}
+	return slog.LevelError
+}
+
 func fail(logger *slog.Logger, err error) int {
-	logger.Error("tokitoki failed", "error", err)
+	logFailure(logger, "tokitoki failed", err)
 	if errors.Is(err, agentlib.ErrMissingAPIKey) {
 		return exitNoAPIKey
 	}

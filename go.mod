@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/kardianos/service v1.2.4
 	golang.org/x/sys v0.44.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.53.0
 )
 

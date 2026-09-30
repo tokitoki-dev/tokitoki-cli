@@ -262,3 +262,31 @@ func newTestClient(t *testing.T) *Client {
 	}
 	return client
 }
+
+func TestSetAndGetHostname(t *testing.T) {
+	t.Setenv("TOKITOKI_HOSTNAME", "")
+	client := newTestClient(t)
+
+	if err := client.SetHostname(" studio "); err != nil {
+		t.Fatal(err)
+	}
+	name, err := client.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "studio" {
+		t.Fatalf("Hostname() = %q, want stored override", name)
+	}
+
+	// Clearing the override hands the label back to the system.
+	if err := client.SetHostname(""); err != nil {
+		t.Fatal(err)
+	}
+	name, err = client.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name == "studio" {
+		t.Fatal("Hostname() still returns the cleared override")
+	}
+}

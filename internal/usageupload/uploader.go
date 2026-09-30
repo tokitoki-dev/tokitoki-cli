@@ -183,6 +183,9 @@ func syncPending(ctx context.Context, settings agent.Settings, db *usagedb.DB, m
 			return err
 		}
 
+		slog.Info("usage batch uploaded", "events", len(events), "accepted", len(response.Accepted),
+			"duplicate", len(response.Duplicate), "rejected", len(response.Rejected))
+
 		// Accepted: newly inserted events (never seen before). Mark as uploaded.
 		if len(response.Accepted) > 0 {
 			if err := db.MarkEventsUploaded(response.Accepted); err != nil {
@@ -288,7 +291,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 	payload := Payload{
 		BatchID: "usage-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
 		Device: DevicePayload{
-			Name:       deviceName(),
+			Name:       DeviceName(settings),
 			Platform:   usage.NormalizeOS(runtime.GOOS),
 			AppVersion: buildinfo.Resolved(),
 		},
@@ -335,7 +338,7 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Response{}, fmt.Errorf("usage upload failed: server returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
+		return Response{}, &StatusError{Code: resp.StatusCode, Status: resp.Status, Detail: strings.TrimSpace(string(detail))}
 	}
 
 	var decoded Response
@@ -343,6 +346,23 @@ func uploadBatch(ctx context.Context, settings agent.Settings, events []usage.En
 		return Response{}, err
 	}
 	return decoded, nil
+}
+
+// StatusError is an upload the server answered with something other than 2xx.
+//
+// It is a type, not just text, because callers treat it differently from
+// every other failure: the server saw this request and has its own record of
+// what went wrong, so on this side it is a warning to retry past, not a fault
+// in the install. The text is unchanged from when it was a plain error — it is
+// what the queue stores as last_error.
+type StatusError struct {
+	Code   int
+	Status string
+	Detail string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("usage upload failed: server returned %s: %s", e.Status, e.Detail)
 }
 
 func uploadEndpoint() string {
@@ -407,13 +427,30 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 	}
 }
 
-// deviceName labels this device in the dashboard. The hostname is what users
-// already call the machine; it only ever travels to their own server.
-func deviceName() string {
-	name, err := os.Hostname()
-	if err != nil || strings.TrimSpace(name) == "" {
-		return "tokitoki-cli"
+// HostnameEnv overrides the machine label for this process. It outranks the
+// stored override because it is the only handle in the environments that
+// need one: a container or CI runner whose os.Hostname() is a random id and
+// whose data directory does not outlive the job.
+const HostnameEnv = "TOKITOKI_HOSTNAME"
+
+// DeviceName is the label this machine's uploads carry — the machine
+// dimension on the dashboard. It only ever travels to the user's own server.
+//
+// An override is used verbatim: a name someone chose is the name. The system
+// hostname is cut at its first dot, because what follows is the network, not
+// the machine — macOS reports "studio.lan" on one Wi-Fi and "studio.local"
+// on the next, and a Linux box configured with an FQDN reports the domain
+// too — and one machine must not become three slices. "" when nothing names
+// the machine; the server shows that as unknown, which beats a name that is
+// not one.
+func DeviceName(settings agent.Settings) string {
+	for _, name := range []string{os.Getenv(HostnameEnv), settings.Hostname} {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
 	}
+	name, _ := os.Hostname()
+	name, _, _ = strings.Cut(name, ".")
 	return strings.TrimSpace(name)
 }
 

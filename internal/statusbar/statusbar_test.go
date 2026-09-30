@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -84,5 +86,20 @@ func TestSaveThenLoadIsStale(t *testing.T) {
 	report, _ = Load(dir, "b")
 	if report.Project != nil || report.Text != "1h 2m" {
 		t.Fatalf("Load() for another project = %+v, want the total without the project share", report)
+	}
+}
+
+// The cached report is something Tokitoki knows, so it lives with the queue
+// in data/, not with the locks and stamps in state/.
+func TestSaveWritesUnderData(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, Report{Date: "2026-09-20", Text: "0h 5m"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", CacheFile)); err != nil {
+		t.Fatalf("report not under data/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", CacheFile)); err == nil {
+		t.Fatal("report still written under state/")
 	}
 }

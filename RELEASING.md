@@ -60,6 +60,15 @@ binary and fails the release if `tokitoki version` disagrees with the tag.
 Unstamped builds report `dev` and refuse to self-update, which is what keeps a
 local build from overwriting itself with a release.
 
+The same goes for where a binary lives and who it talks to. An unstamped build
+— `go test`, `go run`, an IDE, a front-end script that forgot — is a
+development build: `~/.tokitoki-dev` and `http://localhost:9093`
+(`internal/config`). The installed identity, `~/.tokitoki` and
+`https://tokitoki.dev`, exists only because `make cross` stamps it, and the
+workflow runs the built binary's `data-dir` and `server-url` and fails the
+release if either disagrees. Anything that compiles the CLI for shipping must go
+through the Makefile's release targets, never a bare `go build`.
+
 ## Pushing the tag ships it
 
 Creating the GitHub Release **is** publishing it. There is no second gate.
