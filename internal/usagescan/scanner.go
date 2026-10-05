@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/project"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/amp"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/claude"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codebuff"
@@ -184,7 +184,7 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string, 
 	if err != nil {
 		return result, err
 	}
-	s.applyProjectFiles(entries)
+	s.resolveProjects(entries)
 	inserted, err := s.db.InsertEvents(entries)
 	if err != nil {
 		return result, err
@@ -284,7 +284,7 @@ func (s *Scanner) scanStreaming(streamer streamProvider, scanned map[string]usag
 	}
 
 	emit := func(path string, entries []usage.Entry, offset int64) error {
-		s.applyProjectFiles(entries)
+		s.resolveProjects(entries)
 		inserted, err := s.db.InsertEvents(entries)
 		if err != nil {
 			return err
@@ -306,66 +306,63 @@ func (s *Scanner) scanStreaming(streamer streamProvider, scanned map[string]usag
 	return result, streamer.StreamEntries(resume, emit)
 }
 
-// applyProjectFiles rewrites each entry's identity from the nearest project
-// identity file. An identity file is an optional override: one that exists
-// but cannot be read is warned about and skipped — a stray unreadable
-// .tokitoki file somewhere on disk must never stop usage from flowing.
-func (s *Scanner) applyProjectFiles(entries []usage.Entry) {
+// resolveProjects replaces each entry's project with the one project.Resolve
+// decides. What a provider put there — an agent's working directory and its
+// folder name — is only the input: an agent that cd'd into src/ is still
+// working in the repository around it.
+//
+// It runs after providers have built their event IDs, so a project decided
+// differently never changes an ID and never re-uploads an event.
+func (s *Scanner) resolveProjects(entries []usage.Entry) {
 	type cacheKey struct {
 		entityDir   string
 		projectPath string
+		project     string
 		branch      string
 	}
-	type cacheValue struct {
-		result projectfile.Result
-		found  bool
-	}
-	cache := make(map[cacheKey]cacheValue)
+	cache := make(map[cacheKey]project.Result)
 
 	for i := range entries {
-		input := projectfile.Input{
-			Entity:      entries[i].Entity,
-			ProjectPath: entries[i].ProjectPath,
-			Branch:      entries[i].Branch,
+		// A provider's name is only ever its folder's name or its own label,
+		// never a choice to defend: it is the last resort.
+		input := project.Input{
+			Entity:           entries[i].Entity,
+			ProjectPath:      entries[i].ProjectPath,
+			AlternateProject: entries[i].Project,
+			Branch:           entries[i].Branch,
 		}
+		// Resolve only looks at an entity's folder, so events about sibling
+		// files share one lookup.
 		key := cacheKey{
-			entityDir:   projectSearchDirectory(input.Entity, true),
-			projectPath: projectSearchDirectory(input.ProjectPath, false),
+			entityDir:   entityDir(input.Entity),
+			projectPath: strings.TrimSpace(input.ProjectPath),
+			project:     strings.TrimSpace(input.AlternateProject),
 			branch:      strings.TrimSpace(input.Branch),
 		}
-		cached, ok := cache[key]
+		resolved, ok := cache[key]
 		if !ok {
-			resolved, found, err := projectfile.Resolve(input)
-			if err != nil {
-				if s.Logger != nil {
-					s.Logger.Warn("project identity file ignored", "error", err)
-				}
-				// Cache the miss too: the same broken file would fail
-				// identically for every sibling event.
-				found = false
+			var err error
+			resolved, err = project.Resolve(input)
+			// An unreadable .tokitoki is skipped, never fatal: a stray broken
+			// file somewhere on disk must not stop usage from flowing. Cached
+			// with the rest, it is reported once per batch, not per event.
+			if err != nil && s.Logger != nil {
+				s.Logger.Warn("project identity file ignored", "error", err)
 			}
-			cached = cacheValue{result: resolved, found: found}
-			cache[key] = cached
+			cache[key] = resolved
 		}
-		if !cached.found {
-			continue
-		}
-		entries[i].Project = cached.result.Project
-		entries[i].ProjectPath = cached.result.ProjectPath
-		entries[i].Branch = cached.result.Branch
+		entries[i].Project = resolved.Project
+		entries[i].ProjectPath = resolved.ProjectPath
+		entries[i].Branch = resolved.Branch
 	}
 }
 
-func projectSearchDirectory(path string, isFile bool) string {
-	path = strings.TrimSpace(path)
-	if path == "" || !filepath.IsAbs(path) {
+func entityDir(entity string) string {
+	entity = strings.TrimSpace(entity)
+	if entity == "" || !filepath.IsAbs(entity) {
 		return ""
 	}
-	path = filepath.Clean(path)
-	if isFile {
-		return filepath.Dir(path)
-	}
-	return path
+	return filepath.Dir(filepath.Clean(entity))
 }
 
 type pathConfiguredProvider interface {

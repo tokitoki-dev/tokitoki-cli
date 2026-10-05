@@ -10,6 +10,7 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 )
 
@@ -201,56 +202,132 @@ func TestSendHeartbeatCarriesTypedLines(t *testing.T) {
 	}
 }
 
-func TestApplyProjectFileOverridesHeartbeatIdentity(t *testing.T) {
+func TestSendHeartbeatIdentityFileOverridesEditor(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "local-checkout")
+	mustMkdirAll(t, filepath.Join(projectDir, ".git"))
+	mustWriteFile(t, filepath.Join(projectDir, ".tokitoki"), "stable-dashboard-name\nstable-branch\n")
 	entity := filepath.Join(projectDir, "src", "main.go")
-	if err := os.MkdirAll(filepath.Dir(entity), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(entity, []byte("package main\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki"),
-		[]byte("stable-dashboard-name\nstable-branch\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
 
-	heartbeat := Heartbeat{
+	entry := sendAndQueue(t, Heartbeat{
 		Entity:      entity,
+		Editor:      "vscode",
 		Project:     "editor-detected-name",
 		ProjectPath: filepath.Dir(entity),
 		Branch:      "editor-branch",
-	}
-	if err := applyProjectFile(&heartbeat); err != nil {
-		t.Fatal(err)
-	}
-	if heartbeat.Project != "stable-dashboard-name" {
-		t.Fatalf("project = %q, want stable-dashboard-name", heartbeat.Project)
-	}
-	if heartbeat.ProjectPath != projectDir {
-		t.Fatalf("project path = %q, want %q", heartbeat.ProjectPath, projectDir)
-	}
-	if heartbeat.Branch != "stable-branch" {
-		t.Fatalf("branch = %q, want stable-branch", heartbeat.Branch)
+	})
+	if entry.Project != "stable-dashboard-name" || entry.ProjectPath != projectDir || entry.Branch != "stable-branch" {
+		t.Fatalf("identity = %q %q %q, want the identity file's", entry.Project, entry.ProjectPath, entry.Branch)
 	}
 }
 
-func TestApplyProjectFileKeepsHeartbeatWithoutIdentityFile(t *testing.T) {
-	heartbeat := Heartbeat{
-		Entity:      filepath.Join(t.TempDir(), "main.go"),
-		Project:     "editor-project",
-		ProjectPath: "/editor/project",
-		Branch:      "main",
+// An editor opened on a monorepo package reports the package folder; the
+// work is in the repository, the same project the AI agents there report.
+func TestSendHeartbeatEditorFolderInsideRepositoryIsTheRepository(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "cps-dev")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	folder := filepath.Join(repo, "apps", "web")
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:           filepath.Join(folder, "src", "page.tsx"),
+		Editor:           "vscode",
+		AlternateProject: "web",
+		ProjectPath:      folder,
+		Branch:           "main",
+	})
+	if entry.Project != "cps-dev" || entry.ProjectPath != repo || entry.Branch != "main" {
+		t.Fatalf("identity = %q %q %q, want cps-dev at %q on main", entry.Project, entry.ProjectPath, entry.Branch, repo)
 	}
-	want := heartbeat
-	if err := applyProjectFile(&heartbeat); err != nil {
+}
+
+// An editor opened on a folder of repositories reports that folder; the
+// file edited says which repository the work is in.
+func TestSendHeartbeatEntityRepositoryWinsOverEditorFolder(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "tracklm")
+	repo := filepath.Join(workspace, "tokitoki-cli")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:           filepath.Join(repo, "cmd", "main.go"),
+		Editor:           "vscode",
+		AlternateProject: "tracklm",
+		ProjectPath:      workspace,
+	})
+	if entry.Project != "tokitoki-cli" || entry.ProjectPath != repo {
+		t.Fatalf("identity = %q %q, want tokitoki-cli at %q", entry.Project, entry.ProjectPath, repo)
+	}
+}
+
+func TestSendHeartbeatFolderOutsideRepositoryNamesItself(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "notes")
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:           filepath.Join(folder, "todo.md"),
+		Editor:           "jetbrains",
+		AlternateProject: "My Notes",
+		ProjectPath:      folder,
+	})
+	if entry.Project != "notes" || entry.ProjectPath != folder {
+		t.Fatalf("identity = %q %q, want notes at %q", entry.Project, entry.ProjectPath, folder)
+	}
+}
+
+// IntelliJ and Eclipse builds released before repositories counted send their
+// IDE project name as Project and ask `today --project` for that same name.
+// The shared CLI is replaced under them by other editors' updates, so their
+// heartbeats must keep landing under that name.
+func TestSendHeartbeatExplicitProjectKeepsOlderEditorsWorking(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "cps-dev")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	folder := filepath.Join(repo, "apps", "web")
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:      filepath.Join(folder, "src", "page.tsx"),
+		Editor:      "IntelliJ IDEA",
+		Project:     "Web App",
+		ProjectPath: folder,
+	})
+	if entry.Project != "Web App" || entry.ProjectPath != folder {
+		t.Fatalf("identity = %q %q, want the editor's Web App at %q", entry.Project, entry.ProjectPath, folder)
+	}
+}
+
+// sendAndQueue sends one heartbeat from a fresh client and returns the event
+// it queued.
+func sendAndQueue(t *testing.T, heartbeat Heartbeat) usage.Entry {
+	t.Helper()
+	client := newTestClient(t)
+	if err := client.SendHeartbeat(context.Background(), heartbeat); err != nil {
+		t.Fatalf("SendHeartbeat() = %v", err)
+	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(client.DataDir()))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if heartbeat != want {
-		t.Fatalf("heartbeat = %+v, want unchanged %+v", heartbeat, want)
+	defer usageDB.Close()
+	pending, err := usageDB.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(pending))
+	}
+	return pending[0]
+}
+
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

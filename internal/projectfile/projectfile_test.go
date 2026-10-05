@@ -7,244 +7,130 @@ import (
 	"testing"
 )
 
-func TestResolveProjectAndBranch(t *testing.T) {
-	projectDir, entity := projectTree(t)
+func TestFindReadsProjectAndBranch(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
 	writeProjectFile(t, projectDir, Name, "customer-portal\nrelease/2026\nignored\n")
 
-	result, found, err := Resolve(Input{
-		Entity:      entity,
-		ProjectPath: filepath.Join(projectDir, "wrong-root"),
-		Branch:      "wrong-branch",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("Resolve() found = false, want true")
-	}
-	if result.Project != "customer-portal" {
-		t.Fatalf("project = %q, want customer-portal", result.Project)
-	}
-	if result.Branch != "release/2026" {
-		t.Fatalf("branch = %q, want release/2026", result.Branch)
-	}
-	if result.ProjectPath != projectDir {
-		t.Fatalf("project path = %q, want %q", result.ProjectPath, projectDir)
-	}
-	if result.Filepath != filepath.Join(projectDir, Name) {
-		t.Fatalf("identity file = %q", result.Filepath)
+	file := mustFind(t, entityDir)
+	want := File{Path: filepath.Join(projectDir, Name), Project: "customer-portal", Branch: "release/2026"}
+	if file != want {
+		t.Fatalf("Find() = %+v, want %+v", file, want)
 	}
 }
 
-func TestResolveEmptyFileUsesContainingFolderAndKeepsBranch(t *testing.T) {
-	projectDir, entity := projectTree(t)
+func TestFindKeepsEmptyLinesEmpty(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
 	writeProjectFile(t, projectDir, Name, "")
 
-	result, found, err := Resolve(Input{Entity: entity, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("Resolve() found = false, want true")
-	}
-	if result.Project != filepath.Base(projectDir) {
-		t.Fatalf("project = %q, want folder name %q", result.Project, filepath.Base(projectDir))
-	}
-	if result.Branch != "main" {
-		t.Fatalf("branch = %q, want existing branch", result.Branch)
+	file := mustFind(t, entityDir)
+	if file.Project != "" || file.Branch != "" {
+		t.Fatalf("Find() = %+v, want empty project and branch", file)
 	}
 }
 
-func TestResolvePlaceholderUsesNestedVCSProject(t *testing.T) {
-	root := t.TempDir()
-	companyDir := filepath.Join(root, "my-company")
-	repoDir := filepath.Join(companyDir, "payments-api")
-	entity := filepath.Join(repoDir, "src", "main.go")
-	mustMkdirAll(t, filepath.Dir(entity))
-	mustMkdirAll(t, filepath.Join(repoDir, ".git"))
-	mustWriteFile(t, entity, "package main\n")
-	writeProjectFile(t, companyDir, Name, "my-company/{project}\n")
+func TestFindKeepsPlaceholderForCaller(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
+	writeProjectFile(t, projectDir, Name, "team/"+Placeholder+"\n")
 
-	result, found, err := Resolve(Input{Entity: entity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("Resolve() found = false, want true")
-	}
-	if result.Project != "my-company/payments-api" {
-		t.Fatalf("project = %q, want my-company/payments-api", result.Project)
-	}
-	if result.ProjectPath != companyDir {
-		t.Fatalf("project path = %q, want marker directory %q", result.ProjectPath, companyDir)
+	if file := mustFind(t, entityDir); file.Project != "team/"+Placeholder {
+		t.Fatalf("project = %q, want the template as written", file.Project)
 	}
 }
 
-func TestResolvePlaceholderWithoutVCSUsesMarkerFolder(t *testing.T) {
-	projectDir, entity := projectTree(t)
-	writeProjectFile(t, projectDir, Name, "team/{project}/{project}\n")
+func TestFindNearestFileWins(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
+	writeProjectFile(t, filepath.Dir(projectDir), Name, "outer\n")
+	writeProjectFile(t, projectDir, Name, "inner\n")
 
-	result, found, err := Resolve(Input{Entity: entity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("Resolve() found = false, want true")
-	}
-	want := "team/" + filepath.Base(projectDir) + "/" + filepath.Base(projectDir)
-	if result.Project != want {
-		t.Fatalf("project = %q, want %q", result.Project, want)
+	if file := mustFind(t, entityDir); file.Project != "inner" {
+		t.Fatalf("project = %q, want the nearest file", file.Project)
 	}
 }
 
-func TestResolveEntityTakesPrecedenceOverProjectPath(t *testing.T) {
-	root := t.TempDir()
-	entityProject := filepath.Join(root, "entity-project")
-	providedProject := filepath.Join(root, "provided-project")
-	entity := filepath.Join(entityProject, "main.go")
-	mustMkdirAll(t, entityProject)
-	mustMkdirAll(t, providedProject)
-	mustWriteFile(t, entity, "package main\n")
-	writeProjectFile(t, entityProject, Name, "from-entity\n")
-	writeProjectFile(t, providedProject, Name, "from-project-path\n")
-
-	result, found, err := Resolve(Input{Entity: entity, ProjectPath: providedProject})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "from-entity" {
-		t.Fatalf("Resolve() = (%+v, %t), want entity project", result, found)
+func TestFindNothing(t *testing.T) {
+	_, entityDir := projectTree(t)
+	file, found, err := Find(entityDir)
+	if err != nil || found || file != (File{}) {
+		t.Fatalf("Find() = (%+v, %t, %v), want nothing", file, found, err)
 	}
 }
 
-func TestResolveUsesProjectPathForOutOfTreeEntity(t *testing.T) {
-	root := t.TempDir()
-	projectDir := filepath.Join(root, "real-project")
-	entityDir := filepath.Join(root, "agent-plans")
-	entity := filepath.Join(entityDir, "plan.md")
-	mustMkdirAll(t, projectDir)
-	mustMkdirAll(t, entityDir)
-	mustWriteFile(t, entity, "plan\n")
-	writeProjectFile(t, projectDir, Name, "shared-project-name\n")
-
-	result, found, err := Resolve(Input{Entity: entity, ProjectPath: projectDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "shared-project-name" || result.ProjectPath != projectDir {
-		t.Fatalf("Resolve() = (%+v, %t), want project-path identity", result, found)
-	}
-}
-
-func TestResolvePlaceholderUsesProjectPathVCSForOutOfTreeEntity(t *testing.T) {
-	root := t.TempDir()
-	projectDir := filepath.Join(root, "real-project")
-	entityRepo := filepath.Join(root, "unrelated-agent-repo")
-	entity := filepath.Join(entityRepo, "plan.md")
-	mustMkdirAll(t, filepath.Join(projectDir, ".git"))
-	mustMkdirAll(t, filepath.Join(entityRepo, ".git"))
-	mustWriteFile(t, entity, "plan\n")
-	writeProjectFile(t, projectDir, Name, "team/{project}\n")
-
-	result, found, err := Resolve(Input{Entity: entity, ProjectPath: projectDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "team/real-project" {
-		t.Fatalf("Resolve() = (%+v, %t), want project-path VCS identity", result, found)
-	}
-}
-
-func TestResolveIgnoresOtherToolsProjectFiles(t *testing.T) {
+func TestFindIgnoresOtherToolsProjectFiles(t *testing.T) {
 	root := t.TempDir()
 	outer := filepath.Join(root, "outer")
 	inner := filepath.Join(outer, "inner")
-	entity := filepath.Join(inner, "main.go")
 	mustMkdirAll(t, inner)
-	mustWriteFile(t, entity, "package main\n")
 	writeProjectFile(t, outer, Name, "outer-tokitoki\n")
 	writeProjectFile(t, inner, ".legacy-project", "inner-legacy\nlegacy-branch\n")
+	mustWriteFile(t, filepath.Join(inner, ".toolconfig"), "[settings]\nproject=not-an-identity\n")
 
-	result, found, err := Resolve(Input{Entity: entity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "outer-tokitoki" {
-		t.Fatalf("Resolve() = (%+v, %t), want .legacy-project ignored", result, found)
+	if file := mustFind(t, inner); file.Project != "outer-tokitoki" {
+		t.Fatalf("project = %q, want other dotfiles ignored", file.Project)
 	}
 }
 
-func TestResolveSupportsUTF8BOMAndCRLF(t *testing.T) {
-	projectDir, entity := projectTree(t)
+func TestFindSupportsUTF8BOMAndCRLF(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
 	writeProjectFile(t, projectDir, Name, "\ufeff  日本語プロジェクト  \r\n  feature/name  \r\n")
 
-	result, found, err := Resolve(Input{Entity: entity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || result.Project != "日本語プロジェクト" || result.Branch != "feature/name" {
-		t.Fatalf("Resolve() = (%+v, %t), want trimmed UTF-8 values", result, found)
-	}
-}
-
-func TestResolveNoFilePreservesExistingDetection(t *testing.T) {
-	_, entity := projectTree(t)
-	result, found, err := Resolve(Input{Entity: entity, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if found || result != (Result{}) {
-		t.Fatalf("Resolve() = (%+v, %t), want no result", result, found)
-	}
-}
-
-func TestResolveDoesNotTreatOtherDotfilesAsProjectIdentity(t *testing.T) {
-	projectDir, entity := projectTree(t)
-	mustWriteFile(t, filepath.Join(projectDir, ".toolconfig"), "[settings]\nproject=not-an-identity\n")
-
-	result, found, err := Resolve(Input{Entity: entity, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if found || result != (Result{}) {
-		t.Fatalf("Resolve() = (%+v, %t), want other dotfiles ignored", result, found)
+	file := mustFind(t, entityDir)
+	if file.Project != "日本語プロジェクト" || file.Branch != "feature/name" {
+		t.Fatalf("Find() = %+v, want trimmed UTF-8 values", file)
 	}
 }
 
 // A directory that happens to carry the identity file's name is not an
 // identity file. It must be skipped — never an error that stops the event —
 // and a real identity file further up the tree must still be honored.
-func TestResolveSkipsDirectoryAtIdentityPath(t *testing.T) {
-	projectDir, entity := projectTree(t)
+func TestFindSkipsDirectoryAtIdentityPath(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
 	mustMkdirAll(t, filepath.Join(projectDir, Name))
 	writeProjectFile(t, filepath.Dir(projectDir), Name, "parent-name\n")
 
-	result, found, err := Resolve(Input{Entity: entity})
+	if file := mustFind(t, entityDir); file.Project != "parent-name" {
+		t.Fatalf("project = %q, want parent identity file to win", file.Project)
+	}
+}
+
+func TestFindRejectsOversizedFirstLine(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
+	writeProjectFile(t, projectDir, Name, strings.Repeat("x", maxProjectLineBytes+1)+"\n")
+
+	_, found, err := Find(entityDir)
+	if found || err == nil || !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("Find() = (found %t, %v), want oversized-line error", found, err)
+	}
+}
+
+func TestFindRejectsInvalidUTF8(t *testing.T) {
+	projectDir, entityDir := projectTree(t)
+	writeProjectFile(t, projectDir, Name, "bad\xffname\n")
+
+	_, found, err := Find(entityDir)
+	if found || err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("Find() = (found %t, %v), want UTF-8 error", found, err)
+	}
+}
+
+func mustFind(t *testing.T, dir string) File {
+	t.Helper()
+	file, found, err := Find(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || result.Project != "parent-name" {
-		t.Fatalf("Resolve() = (%+v, %t), want parent identity file to win", result, found)
+	if !found {
+		t.Fatalf("Find(%q) found nothing", dir)
 	}
+	return file
 }
 
-func TestResolveRejectsOversizedFirstLine(t *testing.T) {
-	projectDir, entity := projectTree(t)
-	writeProjectFile(t, projectDir, Name, strings.Repeat("x", maxProjectLineBytes+1)+"\n")
-
-	_, _, err := Resolve(Input{Entity: entity})
-	if err == nil || !strings.Contains(err.Error(), "token too long") {
-		t.Fatalf("Resolve() error = %v, want oversized-line error", err)
-	}
-}
-
+// projectTree returns a project folder and a source folder inside it.
 func projectTree(t *testing.T) (string, string) {
 	t.Helper()
 	projectDir := filepath.Join(t.TempDir(), "sample-project")
-	entity := filepath.Join(projectDir, "src", "main.go")
-	mustMkdirAll(t, filepath.Dir(entity))
-	mustWriteFile(t, entity, "package main\n")
-	return projectDir, entity
+	entityDir := filepath.Join(projectDir, "src")
+	mustMkdirAll(t, entityDir)
+	return projectDir, entityDir
 }
 
 func writeProjectFile(t *testing.T, dir, name, contents string) {

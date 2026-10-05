@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -350,4 +351,50 @@ func TestRunSetRejectsUnknownSetting(t *testing.T) {
 	if code := run([]string{"get", "colour"}); code != 2 {
 		t.Fatalf("run(get colour) = %d, want 2", code)
 	}
+}
+
+// An editor opened on a monorepo package asks for its window's project and
+// gets the repository its heartbeats are filed under.
+func TestRunProjectPrintsRepositoryOfFolder(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "payments-api")
+	folder := filepath.Join(repo, "apps", "web")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout := runCapturingStdout(t, []string{"project", "--project-folder", folder, "--alternate-project", "web"})
+	if code != 0 {
+		t.Fatalf("run(project) = %d, want 0", code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("output %q: %v", stdout, err)
+	}
+	if got["project"] != "payments-api" || got["project_path"] != repo {
+		t.Fatalf("output = %v, want payments-api at %q", got, repo)
+	}
+}
+
+func TestRunProjectRequiresAPath(t *testing.T) {
+	if code := run([]string{"project", "--project", "web"}); code != 2 {
+		t.Fatalf("run(project --project) = %d, want 2", code)
+	}
+}
+
+func runCapturingStdout(t *testing.T, args []string) (int, string) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = writer
+	code := run(args)
+	os.Stdout = stdout
+	writer.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, string(data)
 }

@@ -232,7 +232,7 @@ func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
 	}
 }
 
-func TestApplyProjectFilesPreservesPerEventBranchWithoutOverride(t *testing.T) {
+func TestResolveProjectsPreservesPerEventBranchWithoutOverride(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projectDir, ".tokitoki"),
@@ -245,12 +245,41 @@ func TestApplyProjectFilesPreservesPerEventBranchWithoutOverride(t *testing.T) {
 		{ID: "one", ProjectPath: projectDir, Branch: "main"},
 		{ID: "two", ProjectPath: projectDir, Branch: "feature"},
 	}
-	(&Scanner{}).applyProjectFiles(entries)
+	(&Scanner{}).resolveProjects(entries)
 	if entries[0].Project != "shared-name" || entries[1].Project != "shared-name" {
 		t.Fatalf("projects = %q/%q, want shared-name", entries[0].Project, entries[1].Project)
 	}
 	if entries[0].Branch != "main" || entries[1].Branch != "feature" {
 		t.Fatalf("branches = %q/%q, want preserved", entries[0].Branch, entries[1].Branch)
+	}
+}
+
+// One agent session that cd'd around a repository is one project, and the
+// event IDs the provider built stay exactly as they were.
+func TestResolveProjectsFoldsSubfoldersIntoTheirRepository(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "cps-dev")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries := []usage.Entry{
+		{ID: "root", Project: "cps-dev", ProjectPath: repo},
+		{ID: "web", Project: "web", ProjectPath: filepath.Join(repo, "cps-web", "apps", "web")},
+		{ID: "edit", Project: "src", ProjectPath: filepath.Join(repo, "src"), Entity: filepath.Join(repo, "gateway", "main.py")},
+	}
+	(&Scanner{}).resolveProjects(entries)
+	for i, id := range []string{"root", "web", "edit"} {
+		if entries[i].ID != id || entries[i].Project != "cps-dev" || entries[i].ProjectPath != repo {
+			t.Fatalf("entry %d = %q %q %q, want %q in cps-dev at %q", i, entries[i].ID, entries[i].Project, entries[i].ProjectPath, id, repo)
+		}
+	}
+}
+
+// Providers that know no folder keep the identity they always reported.
+func TestResolveProjectsKeepsFolderlessProviderIdentity(t *testing.T) {
+	entries := []usage.Entry{{ID: "amp", Project: "amp", ProjectPath: "Amp"}}
+	(&Scanner{}).resolveProjects(entries)
+	if entries[0].Project != "amp" || entries[0].ProjectPath != "Amp" {
+		t.Fatalf("identity = %q %q, want amp/Amp unchanged", entries[0].Project, entries[0].ProjectPath)
 	}
 }
 

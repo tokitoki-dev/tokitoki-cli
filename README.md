@@ -100,8 +100,17 @@ scanned automatically; use `--provider-dir` to add or override one.
 
 ## Project names
 
-By default the project name comes from the IDE or agent. To pin a stable name
-across machines and editors, add a `.tokitoki` file to the project root:
+By default a project is the repository the work happens in, whichever
+editor or agent reported it: an agent that `cd`s into `apps/web/src`, an
+editor opened on a monorepo package, and a Git worktree all count toward
+the repository around them. Outside any repository the project is the folder
+the editor or agent was opened in. A repository at your home directory (a
+dotfiles repo) only claims home itself and its dot-folders, so `~/workspace`
+and the like are never filed under it. `tokitoki project --project-folder DIR`
+shows what a folder resolves to.
+
+To pin a stable name across machines and editors, add a `.tokitoki` file to
+the project root:
 
 ```text
 customer-portal
@@ -109,7 +118,7 @@ release/2026
 ```
 
 Line one is the project name, line two (optional) the branch. `{project}`
-expands to the nearest Git, Mercurial, or Subversion root folder name, e.g.
+expands to the repository's name (Git, Mercurial, or Subversion), e.g.
 `my-company/{project}`.
 
 ## Other clients

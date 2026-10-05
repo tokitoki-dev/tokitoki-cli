@@ -1,6 +1,6 @@
-// Package projectfile resolves explicit project identity files for usage
-// events. It is intentionally independent from any editor so IDE heartbeats
-// and local AI-agent scans use the same project naming rules.
+// Package projectfile finds and reads Tokitoki's per-project identity file.
+// It only knows the file; deciding what an event's project is, with or
+// without one, is internal/project's job.
 package projectfile
 
 import (
@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 const (
@@ -20,104 +18,33 @@ const (
 	// but is a directory; the lookup only accepts regular files, so the two
 	// never collide.
 	Name = ".tokitoki"
-	// Placeholder is replaced by the nearest VCS directory name, falling back
-	// to the directory containing the project file.
+	// Placeholder in the project line stands for the name of the repository
+	// the work is in, falling back to the folder holding the file.
 	Placeholder = "{project}"
 
 	maxProjectLineBytes = 4096
 )
 
-// Input contains the paths and existing identity supplied by an event source.
-// Entity is searched first because it represents the file being worked on;
-// ProjectPath is a fallback for out-of-tree entities such as AI plan files.
-type Input struct {
-	Entity      string
-	ProjectPath string
-	Branch      string
+// File is an identity file as written.
+type File struct {
+	// Path is the file itself; the folder holding it is the project root.
+	Path string
+	// Project is line 1: a name, a template holding Placeholder, or empty.
+	Project string
+	// Branch is line 2: a branch override, or empty.
+	Branch string
 }
 
-// Result contains the resolved identity. Found is reported separately by
-// Resolve so callers can preserve their existing detection when no file is
-// present.
-type Result struct {
-	Project     string
-	ProjectPath string
-	Branch      string
-	Filepath    string
-}
-
-// Resolve searches the entity and then the supplied project path for the
-// nearest .tokitoki file. A nearer file wins.
-func Resolve(input Input) (Result, bool, error) {
-	starts := []searchStart{
-		{path: strings.TrimSpace(input.Entity), isFile: true},
-		{path: strings.TrimSpace(input.ProjectPath), isFile: false},
-	}
-
-	var identityPath string
-	var matchedStart searchStart
-	for _, start := range starts {
-		if start.path == "" || !filepath.IsAbs(start.path) {
-			continue
-		}
-		var found bool
-		identityPath, found = find(start)
-		if found {
-			matchedStart = start
-			break
-		}
-	}
-	if identityPath == "" {
-		return Result{}, false, nil
-	}
-
-	projectTemplate, branchOverride, err := read(identityPath)
-	if err != nil {
-		return Result{}, false, err
-	}
-	projectRoot := filepath.Dir(identityPath)
-	project := projectTemplate
-	if project == "" {
-		project = projectName(projectRoot)
-	}
-	if strings.Contains(project, Placeholder) {
-		base := detectVCSProject(matchedStart, projectRoot)
-		project = strings.ReplaceAll(project, Placeholder, base)
-	}
-	project = strings.TrimSpace(project)
-	if project == "" {
-		project = projectName(projectRoot)
-	}
-
-	branch := strings.TrimSpace(input.Branch)
-	if branchOverride != "" {
-		branch = branchOverride
-	}
-
-	return Result{
-		Project:     project,
-		ProjectPath: projectRoot,
-		Branch:      branch,
-		Filepath:    identityPath,
-	}, true, nil
-}
-
-type searchStart struct {
-	path   string
-	isFile bool
-}
-
-func find(start searchStart) (identityPath string, found bool) {
-	dir := filepath.Clean(start.path)
-	if start.isFile {
-		dir = filepath.Dir(dir)
-	}
-
+// Find returns the nearest identity file in dir or its parents. An error
+// means the nearest file exists but cannot be read.
+func Find(dir string) (File, bool, error) {
+	dir = filepath.Clean(dir)
 	for {
 		path := filepath.Join(dir, Name)
 		info, statErr := os.Stat(path)
 		if statErr == nil && info.Mode().IsRegular() {
-			return path, true
+			file, err := read(path)
+			return file, err == nil, err
 		}
 		// Anything else — the file is absent, the directory denies stat
 		// (network mounts, tightened parents), or the name is a directory
@@ -128,16 +55,16 @@ func find(start searchStart) (identityPath string, found bool) {
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false
+			return File{}, false, nil
 		}
 		dir = parent
 	}
 }
 
-func read(path string) (project, branch string, err error) {
+func read(path string) (File, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", "", fmt.Errorf("open project identity file %s: %w", path, err)
+		return File{}, fmt.Errorf("open project identity file %s: %w", path, err)
 	}
 	defer file.Close()
 
@@ -150,52 +77,20 @@ func read(path string) (project, branch string, err error) {
 			line = strings.TrimPrefix(line, "\ufeff")
 		}
 		if !utf8.ValidString(line) {
-			return "", "", fmt.Errorf("project identity file %s is not valid UTF-8", path)
+			return File{}, fmt.Errorf("project identity file %s is not valid UTF-8", path)
 		}
 		lines = append(lines, strings.TrimSpace(line))
 	}
 	if err := scanner.Err(); err != nil {
-		return "", "", fmt.Errorf("read project identity file %s: %w", path, err)
+		return File{}, fmt.Errorf("read project identity file %s: %w", path, err)
 	}
+
+	result := File{Path: path}
 	if len(lines) > 0 {
-		project = lines[0]
+		result.Project = lines[0]
 	}
 	if len(lines) > 1 {
-		branch = lines[1]
+		result.Branch = lines[1]
 	}
-	return project, branch, nil
-}
-
-func detectVCSProject(start searchStart, fallback string) string {
-	if root, ok := findVCSRoot(start); ok {
-		return projectName(root)
-	}
-	return projectName(fallback)
-}
-
-func findVCSRoot(start searchStart) (string, bool) {
-	dir := filepath.Clean(start.path)
-	if start.isFile {
-		dir = filepath.Dir(dir)
-	}
-	for {
-		for _, marker := range []string{".git", ".hg", ".svn"} {
-			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-				return dir, true
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
-}
-
-func projectName(path string) string {
-	name := filepath.Base(filepath.Clean(path))
-	if name == "." || name == string(filepath.Separator) || name == "" {
-		return usage.UnknownProject
-	}
-	return name
+	return result, nil
 }
