@@ -80,9 +80,13 @@ func parseSettingsFile(path string) (usage.Entry, bool, error) {
 	if sessionID == "" {
 		sessionID = "unknown"
 	}
-	entry := usageprovider.BaseEntry(usage.ProviderDroid, timestamp, "droid", "Droid", sessionID, model, "Droid", tokens)
+	// The launch cwd sits in the session record of the transcript next door.
+	projectPath := "Droid"
+	if dir, _, ok := usage.ProjectFromCWD(usageprovider.HeadCWD(sidecarPath(path), "session_start", "session")); ok {
+		projectPath = dir
+	}
+	entry := usageprovider.BaseEntry(usage.ProviderDroid, timestamp, "droid", projectPath, sessionID, model, "Droid", tokens)
 	usageprovider.SetSource(&entry, path, 1, 0, 0)
-	entry.ID = usageprovider.StableEntryID(entry, sessionID)
 	return entry, true, nil
 }
 
@@ -159,13 +163,23 @@ func defaultModel(provider string) string {
 	}
 }
 
-func sidecarModel(settingsPath string) (string, error) {
+// sidecarPath is the <id>.jsonl transcript next to a <id>.settings.json, or
+// "" when the name does not have that shape.
+func sidecarPath(settingsPath string) string {
 	name := filepath.Base(settingsPath)
 	prefix := strings.TrimSuffix(name, ".settings.json")
 	if prefix == name || prefix == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(settingsPath), prefix+".jsonl")
+}
+
+func sidecarModel(settingsPath string) (string, error) {
+	sidecar := sidecarPath(settingsPath)
+	if sidecar == "" {
 		return "", nil
 	}
-	file, err := os.Open(filepath.Join(filepath.Dir(settingsPath), prefix+".jsonl"))
+	file, err := os.Open(sidecar)
 	if os.IsNotExist(err) {
 		return "", nil
 	}

@@ -83,7 +83,6 @@ func rowEntry(path string, sessionRaw, modelRaw, startedAt, input, output, cache
 	}
 	entry := usageprovider.BaseEntry(usage.ProviderHermes, timestamp, "hermes", "Hermes", sessionID, model, "Hermes Agent", tokens)
 	usageprovider.SetSource(&entry, path, 0, 0, 0)
-	entry.ID = usageprovider.StableEntryID(entry, "hermes:"+sessionID)
 	return entry, true
 }
 

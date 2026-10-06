@@ -103,7 +103,7 @@ func parseWireFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
 		}
 		entry := usageprovider.BaseEntry(usage.ProviderKimi, timestamp, "kimi", "Kimi", sessionID, model, "Kimi", record.tokens)
 		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = usageprovider.StableEntryID(entry, record.messageID)
+		entry.ID = usageprovider.MessageID(entry, record.messageID)
 		entries = append(entries, entry)
 	}
 	return entries, consumed, nil

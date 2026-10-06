@@ -119,7 +119,8 @@ func parseChatFile(path string) ([]usage.Entry, error) {
 		}
 		entry := usageprovider.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens)
 		usageprovider.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = usageprovider.StableEntryID(entry, dedupKey(message, sessionID, timestamp, model, tokens, index))
+		// The position tells apart id-less messages otherwise alike.
+		entry.ID = usageprovider.MessageID(entry, agentdata.StringField(message, "id"), strconv.Itoa(index))
 		entries = append(entries, entry)
 	}
 	return entries, nil
@@ -272,13 +273,6 @@ func parseChatTimestamp(chatID string) (time.Time, bool) {
 		}
 	}
 	return agentdata.ParseTimestampString(date + "T" + clock)
-}
-
-func dedupKey(message map[string]any, sessionID string, timestamp time.Time, model string, tokens usage.TokenUsage, index int) string {
-	if id := agentdata.StringField(message, "id"); id != "" {
-		return "codebuff:" + sessionID + ":" + id
-	}
-	return usageprovider.StableEntryID(usageprovider.BaseEntry(usage.ProviderCodebuff, timestamp, "codebuff", "Codebuff", sessionID, model, "Codebuff", tokens), strconv.Itoa(index))
 }
 
 func firstUint(record map[string]any, keys ...string) uint64 {

@@ -42,6 +42,12 @@ func parseSessionFileFrom(path string, start int64) ([]usage.Entry, int64, error
 	}
 	project := project(path)
 	sessionID := sessionID(path)
+	// The cwd lives only in the session header at the head of the file, which
+	// a resumed parse starts past, so it is read from there every time.
+	projectPath := project
+	if dir, _, ok := usage.ProjectFromCWD(usageprovider.HeadCWD(path, "session")); ok {
+		projectPath = dir
+	}
 	entries := make([]usage.Entry, 0)
 	for _, line := range lines {
 		if typ := agentdata.StringField(line.Value, "type"); typ != "" && typ != "message" {
@@ -73,9 +79,9 @@ func parseSessionFileFrom(path string, start int64) ([]usage.Entry, int64, error
 		if model != "" {
 			model = "[pi] " + model
 		}
-		entry := usageprovider.BaseEntry(usage.ProviderPi, timestamp, project, project, sessionID, model, "pi-agent", tokens)
+		entry := usageprovider.BaseEntry(usage.ProviderPi, timestamp, project, projectPath, sessionID, model, "pi-agent", tokens)
 		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = usageprovider.StableEntryID(entry)
+		entry.ID = usageprovider.MessageID(entry, agentdata.StringField(line.Value, "id"))
 		entries = append(entries, entry)
 	}
 	return entries, consumed, nil

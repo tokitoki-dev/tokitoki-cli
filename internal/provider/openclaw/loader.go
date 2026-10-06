@@ -110,7 +110,7 @@ func parseSessionFile(path string) ([]usage.Entry, error) {
 		}
 		entry := usageprovider.BaseEntry(usage.ProviderOpenClaw, timestamp, "openclaw", "OpenClaw", sessionID, "[openclaw] "+model, "OpenClaw", tokens)
 		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = usageprovider.StableEntryID(entry, provider)
+		entry.ID = usageprovider.MessageID(entry, agentdata.StringField(record, "id"), provider)
 		entries = append(entries, entry)
 	}
 	return entries, nil

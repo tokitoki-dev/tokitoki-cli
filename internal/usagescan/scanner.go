@@ -185,7 +185,11 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string, 
 		return result, err
 	}
 	s.resolveProjects(entries)
-	inserted, err := s.db.InsertEvents(entries)
+	insert := s.db.InsertEvents
+	if totals, ok := configured.(totalsProvider); ok && totals.ReportsRunningTotals() {
+		insert = s.db.InsertGrowth
+	}
+	inserted, err := insert(entries)
 	if err != nil {
 		return result, err
 	}
@@ -385,6 +389,15 @@ type streamProvider interface {
 	// emit returning an error aborts the scan: it means the events could not
 	// be stored, and continuing would advance past data that was never saved.
 	StreamEntries(resume func(path string) int64, emit func(path string, entries []usage.Entry, offset int64) error) error
+}
+
+// totalsProvider is implemented by providers whose source keeps one running
+// total per session, rewritten as the session grows, instead of one record per
+// API call. Their entries are those totals, which the store turns into the
+// growth between reads (usagedb.InsertGrowth); stored as they are, a session
+// read twice while it grows would be counted twice.
+type totalsProvider interface {
+	ReportsRunningTotals() bool
 }
 
 // filterConfiguredProvider is implemented by providers that can skip source

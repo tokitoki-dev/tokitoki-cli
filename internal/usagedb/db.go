@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS scanned_files (
 	mtime_ns INTEGER NOT NULL,
 	offset   INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS session_totals (
+	provider   TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	usage      TEXT NOT NULL,
+	PRIMARY KEY (provider, session_id)
+);
 `
 
 // FileState is the stat snapshot of a source file at the time it was last
@@ -283,7 +289,7 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO usage_events (id, ts, payload) VALUES (?, ?, ?)`)
+	stmt, err := prepareInsert(tx)
 	if err != nil {
 		return 0, err
 	}
@@ -291,30 +297,110 @@ func (s *DB) InsertEvents(entries []usage.Entry) (int, error) {
 
 	inserted := 0
 	for _, entry := range entries {
-		if entry.ID == "" {
-			return 0, fmt.Errorf("usage event id is required")
-		}
-		entry.Language = usage.NormalizeLanguage(entry.Language)
-		entry.Project = usage.NormalizeProject(entry.Project)
-		// Every stored event names its kind. Providers that predate the
-		// field only ever produced API calls, so that is what an unset kind
-		// means — stated here once rather than defaulted by every reader.
-		if entry.EventKind == "" {
-			entry.EventKind = usage.EventKindAPICall
-		}
-		payload, err := json.Marshal(entry)
-		if err != nil {
-			return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
-		}
-		result, err := stmt.Exec(entry.ID, entry.Timestamp.UTC().Unix(), string(payload))
-		if err != nil {
-			return 0, fmt.Errorf("save usage event %q: %w", entry.ID, err)
-		}
-		affected, err := result.RowsAffected()
+		n, err := insertEvent(stmt, entry)
 		if err != nil {
 			return 0, err
 		}
-		inserted += int(affected)
+		inserted += n
+	}
+	return inserted, tx.Commit()
+}
+
+func prepareInsert(tx *sql.Tx) (*sql.Stmt, error) {
+	return tx.Prepare(`INSERT OR IGNORE INTO usage_events (id, ts, payload) VALUES (?, ?, ?)`)
+}
+
+// insertEvent queues one event unless its id is already stored, reporting
+// whether it was new.
+func insertEvent(stmt *sql.Stmt, entry usage.Entry) (int, error) {
+	if entry.ID == "" {
+		return 0, fmt.Errorf("usage event id is required")
+	}
+	entry.Language = usage.NormalizeLanguage(entry.Language)
+	entry.Project = usage.NormalizeProject(entry.Project)
+	// Every stored event names its kind. Providers that predate the
+	// field only ever produced API calls, so that is what an unset kind
+	// means — stated here once rather than defaulted by every reader.
+	if entry.EventKind == "" {
+		entry.EventKind = usage.EventKindAPICall
+	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return 0, fmt.Errorf("encode usage event %q: %w", entry.ID, err)
+	}
+	result, err := stmt.Exec(entry.ID, entry.Timestamp.UTC().Unix(), string(payload))
+	if err != nil {
+		return 0, fmt.Errorf("save usage event %q: %w", entry.ID, err)
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
+}
+
+// InsertGrowth stores running totals: entries from sources that keep one row
+// per session and rewrite it as the session grows (Goose, Hermes, Droid),
+// each the session's total as last read. A total cannot be an event — it
+// would be counted again every time it is read while it grows — so what is
+// stored is each session's growth since the previous read, as an event of
+// its own, keyed by the session and the total it brought the session to.
+// Re-reading an unchanged session stores nothing, and a session's events add
+// up to its latest total. session_totals holds the last total read; it is
+// updated in the same transaction as the events, so a failed write can never
+// count a stretch of growth twice.
+func (s *DB) InsertGrowth(totals []usage.Entry) (int, error) {
+	if len(totals) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := prepareInsert(tx)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	inserted := 0
+	for _, total := range totals {
+		if total.SessionID == "" {
+			return 0, fmt.Errorf("running total for %s has no session", total.Provider)
+		}
+		var stored string
+		var last usage.TokenUsage
+		err := tx.QueryRow(`SELECT usage FROM session_totals WHERE provider = ? AND session_id = ?`,
+			string(total.Provider), total.SessionID).Scan(&stored)
+		switch {
+		case err == sql.ErrNoRows:
+		case err != nil:
+			return 0, err
+		default:
+			if err := json.Unmarshal([]byte(stored), &last); err != nil {
+				return 0, fmt.Errorf("decode %s session %s total: %w", total.Provider, total.SessionID, err)
+			}
+		}
+
+		reached, err := json.Marshal(total.Usage)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO session_totals (provider, session_id, usage) VALUES (?, ?, ?)`,
+			string(total.Provider), total.SessionID, string(reached)); err != nil {
+			return 0, err
+		}
+
+		growth := total
+		growth.Usage = total.Usage.Since(last)
+		if growth.Usage == (usage.TokenUsage{}) {
+			continue
+		}
+		growth.ID = usage.StableID(string(total.Provider), "growth", total.SessionID, string(reached))
+		n, err := insertEvent(stmt, growth)
+		if err != nil {
+			return 0, err
+		}
+		inserted += n
 	}
 	return inserted, tx.Commit()
 }

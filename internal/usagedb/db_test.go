@@ -660,3 +660,93 @@ func TestInsertEventsDefaultsKindToAPICall(t *testing.T) {
 		t.Fatalf("kinds = %v", kinds)
 	}
 }
+
+// A source that keeps one running total per session is stored as the growth
+// between reads: re-reading an unchanged total stores nothing, and a
+// session's events always add up to its latest total.
+func TestInsertGrowthStoresGrowthBetweenReads(t *testing.T) {
+	db := openTestDB(t)
+	total := func(input, output uint64) usage.Entry {
+		entry := testUsageEntry("")
+		entry.Provider = usage.ProviderHermes
+		entry.SessionID = "s1"
+		entry.Usage = usage.TokenUsage{InputTokens: input, OutputTokens: output, TotalTokens: input + output}
+		return entry
+	}
+
+	for i, read := range []struct {
+		entry usage.Entry
+		want  int
+	}{
+		{total(1000, 200), 1}, // first read: everything so far
+		{total(1000, 200), 0}, // unchanged: nothing new
+		{total(2500, 500), 1}, // grown: only the growth
+	} {
+		inserted, err := db.InsertGrowth([]usage.Entry{read.entry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inserted != read.want {
+			t.Fatalf("read %d inserted = %d, want %d", i, inserted, read.want)
+		}
+	}
+
+	events, err := db.PendingEvents(time.Now().Add(time.Hour), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum usage.TokenUsage
+	for _, event := range events {
+		sum.InputTokens += event.Usage.InputTokens
+		sum.OutputTokens += event.Usage.OutputTokens
+		sum.TotalTokens += event.Usage.TotalTokens
+	}
+	if want := (usage.TokenUsage{InputTokens: 2500, OutputTokens: 500, TotalTokens: 3000}); sum != want || len(events) != 2 {
+		t.Fatalf("%d events summing to %+v, want 2 summing to %+v", len(events), sum, want)
+	}
+}
+
+// A total that shrinks — a source that reset its count — adds nothing, and
+// growth is counted again from where it restarted.
+func TestInsertGrowthAfterReset(t *testing.T) {
+	db := openTestDB(t)
+	total := func(n uint64) []usage.Entry {
+		entry := testUsageEntry("")
+		entry.Provider = usage.ProviderDroid
+		entry.SessionID = "s1"
+		entry.Usage = usage.TokenUsage{InputTokens: n, TotalTokens: n}
+		return []usage.Entry{entry}
+	}
+	for _, step := range []struct {
+		total uint64
+		want  int
+	}{{500, 1}, {100, 0}, {300, 1}} {
+		inserted, err := db.InsertGrowth(total(step.total))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inserted != step.want {
+			t.Fatalf("total %d inserted = %d, want %d", step.total, inserted, step.want)
+		}
+	}
+	events, err := db.PendingEvents(time.Now().Add(time.Hour), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum uint64
+	for _, event := range events {
+		sum += event.Usage.TotalTokens
+	}
+	if sum != 700 {
+		t.Fatalf("tokens = %d, want 500 before the reset + 200 after it", sum)
+	}
+}
+
+func TestInsertGrowthRequiresSession(t *testing.T) {
+	db := openTestDB(t)
+	entry := testUsageEntry("")
+	entry.SessionID = ""
+	if _, err := db.InsertGrowth([]usage.Entry{entry}); err == nil {
+		t.Fatal("InsertGrowth() error = nil, want a missing-session error")
+	}
+}

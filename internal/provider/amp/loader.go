@@ -94,7 +94,7 @@ func ledgerEntries(path, threadID string, messages []any, events []any) []usage.
 		messageID := agentdata.StringValue(event["id"])
 		entry := usageprovider.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
 		usageprovider.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = usageprovider.StableEntryID(entry, messageID)
+		entry.ID = usageprovider.MessageID(entry, messageID)
 		entries = append(entries, entry)
 	}
 	return entries
@@ -138,7 +138,7 @@ func messageEntries(path, threadID string, messages []any) []usage.Entry {
 		messageID := agentdata.StringValue(message["messageId"])
 		entry := usageprovider.BaseEntry(usage.ProviderAmp, timestamp, "amp", "Amp", threadID, model, "Amp", tokens)
 		usageprovider.SetSource(&entry, path, index+1, 0, 0)
-		entry.ID = usageprovider.StableEntryID(entry, messageID)
+		entry.ID = usageprovider.MessageID(entry, messageID)
 		entries = append(entries, entry)
 	}
 	return entries

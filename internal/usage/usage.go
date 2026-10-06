@@ -89,6 +89,30 @@ type TokenUsage struct {
 	TotalTokens                uint64 `json:"total_tokens"`
 }
 
+// Since is the growth from earlier to u, field by field. A field that shrank
+// — a source that reset its count — grew by nothing rather than by a negative
+// amount. Every field must be listed: one left out reads as zero growth.
+func (u TokenUsage) Since(earlier TokenUsage) TokenUsage {
+	return TokenUsage{
+		InputTokens:                grown(u.InputTokens, earlier.InputTokens),
+		OutputTokens:               grown(u.OutputTokens, earlier.OutputTokens),
+		CacheCreationInputTokens:   grown(u.CacheCreationInputTokens, earlier.CacheCreationInputTokens),
+		CacheCreation5mInputTokens: grown(u.CacheCreation5mInputTokens, earlier.CacheCreation5mInputTokens),
+		CacheCreation1hInputTokens: grown(u.CacheCreation1hInputTokens, earlier.CacheCreation1hInputTokens),
+		CacheReadInputTokens:       grown(u.CacheReadInputTokens, earlier.CacheReadInputTokens),
+		CachedInputTokens:          grown(u.CachedInputTokens, earlier.CachedInputTokens),
+		ReasoningOutputTokens:      grown(u.ReasoningOutputTokens, earlier.ReasoningOutputTokens),
+		TotalTokens:                grown(u.TotalTokens, earlier.TotalTokens),
+	}
+}
+
+func grown(now, before uint64) uint64 {
+	if now > before {
+		return now - before
+	}
+	return 0
+}
+
 // FileChange records the diff one event applied to a single file.
 type FileChange struct {
 	Path         string `json:"path"`
