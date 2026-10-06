@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/shellcmd"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
@@ -84,7 +85,7 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 }
 
 // LoadedEntry is one event parsed from one transcript line. Kind says which
-// of the two the line produced:
+// kind of event it is:
 //
 //   - usage.EventKindAPICall: an assistant line carrying usage. One API round
 //     trip. Claude Code writes such a message as several lines (one per
@@ -94,8 +95,14 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 //   - usage.EventKindFileEdit: a tool_result line carrying a structuredPatch
 //     (or a create). One file modification, keyed on the tool_use id the
 //     result answers.
+//   - usage.EventKindToolCall: a tool_use block — the tool an assistant line
+//     invokes. Claude Code writes one content block per line, so the line
+//     that carries it is also an api_call line.
+//   - usage.EventKindToolResult: a tool_result block — the outcome of the
+//     call it names. The same line may also be a file_edit.
 //
-// No entry depends on any other line. A transcript can be parsed from any
+// A line yields one entry per kind it carries. No entry depends on any other
+// line. A transcript can be parsed from any
 // line boundary and produce the same entries for the lines it covers, which
 // is what makes resuming at a byte offset exact rather than approximate.
 type LoadedEntry struct {
@@ -121,6 +128,7 @@ type LoadedEntry struct {
 	LinesRemoved        uint64             `json:"lines_removed,omitempty"`
 	Files               []usage.FileChange `json:"files,omitempty"`
 	ToolUseID           string             `json:"tool_use_id,omitempty"`
+	Tool                *usage.ToolCall    `json:"tool,omitempty"`
 	UsageLimitResetTime *time.Time         `json:"usage_limit_reset_time,omitempty"`
 }
 
@@ -184,6 +192,7 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			LinesRemoved: entry.LinesRemoved,
 			Files:        entry.Files,
 			Raw:          raw,
+			Tool:         entry.Tool,
 			Usage: usage.TokenUsage{
 				InputTokens:                tokens.InputTokens,
 				OutputTokens:               tokens.OutputTokens,
@@ -357,7 +366,7 @@ func ReadUsageFileFrom(path string, start int64) ([]LoadedEntry, int64, error) {
 				consumed = offset
 			}
 			line = bytes.TrimRight(line, "\r\n")
-			if entry, ok := parseLine(line, sessionID); ok {
+			for _, entry := range parseLine(line, sessionID) {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
 				entry.SourceStart = lineStart
@@ -460,7 +469,7 @@ func languageBefore(path string, offset int64) string {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			line = bytes.TrimRight(line, "\r\n")
-			if entry, ok := parseLine(line, sessionID); ok {
+			for _, entry := range parseLine(line, sessionID) {
 				if entry.Language != "" && entry.Language != langdetect.Unknown {
 					language = entry.Language
 				}
@@ -472,53 +481,60 @@ func languageBefore(path string, offset int64) string {
 	}
 }
 
-// parseLine turns one transcript line into at most one entry. It is a pure
-// function of the line: the same bytes always yield the same entry with the
-// same ID, whichever file or pass they are read in.
+// parseLine turns one transcript line into its entries, at most one of each
+// kind. It is a pure function of the line: the same bytes always yield the
+// same entries with the same IDs, whichever file or pass they are read in.
 //
 // A panic while decoding — a shape this code never anticipated — is contained
 // to the line. Transcript formats change under us; one strange record must
 // not take down the scan of every file after it.
-func parseLine(line []byte, sessionID string) (entry LoadedEntry, ok bool) {
+func parseLine(line []byte, sessionID string) (entries []LoadedEntry) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Debug("claude transcript line skipped after panic", "error", r)
-			entry, ok = LoadedEntry{}, false
+			entries = nil
 		}
 	}()
 
 	// Cheap byte checks first: the vast majority of lines are prompts, tool
-	// output and bookkeeping that carry neither usage nor a diff.
+	// output and bookkeeping that carry no usage, no diff and no tool block.
 	mayBeEdit := bytes.Contains(line, []byte(`"toolUseResult"`)) &&
 		(bytes.Contains(line, []byte(`"structuredPatch"`)) || bytes.Contains(line, []byte(`"type":"create"`)))
 	mayBeCall := bytes.Contains(line, []byte(`"usage":{`))
-	if !mayBeEdit && !mayBeCall {
-		return LoadedEntry{}, false
+	mayBeTool := bytes.Contains(line, []byte(`"type":"tool_use"`)) ||
+		bytes.Contains(line, []byte(`"type":"tool_result"`))
+	if !mayBeEdit && !mayBeCall && !mayBeTool {
+		return nil
 	}
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
-		return LoadedEntry{}, false
+		return nil
 	}
 	data := decodeEnvelope(raw)
 	timestamp, err := time.Parse(time.RFC3339Nano, data.Timestamp)
 	if err != nil {
-		return LoadedEntry{}, false
+		return nil
 	}
 	if !isValidEnvelope(data) {
-		return LoadedEntry{}, false
+		return nil
 	}
 	base := baseEntry(data, timestamp, sessionID)
 
 	if mayBeEdit {
 		if entry, ok := parseEditLine(raw, base); ok {
-			return entry, true
+			entries = append(entries, entry)
 		}
 	}
 	if mayBeCall {
-		return parseCallLine(raw, line, base)
+		if entry, ok := parseCallLine(raw, line, base); ok {
+			entries = append(entries, entry)
+		}
 	}
-	return LoadedEntry{}, false
+	if mayBeTool {
+		entries = append(entries, parseToolBlocks(raw, base)...)
+	}
+	return entries
 }
 
 // decodeEnvelope reads the line-level fields one at a time. Claude Code's
@@ -701,6 +717,89 @@ func parseEditLine(raw map[string]json.RawMessage, entry LoadedEntry) (LoadedEnt
 	entry.Files = []usage.FileChange{{Path: result.FilePath, LinesAdded: added, LinesRemoved: removed}}
 	entry.Language = langdetect.FromPath(result.FilePath)
 	return entry, true
+}
+
+// parseToolBlocks builds a tool_call entry for each tool_use block in the
+// line's message and a tool_result entry for each tool_result block. Both are
+// built from base, never from the api_call entry of the same line: a tool
+// event carries no tokens, and copying the line's usage onto it would count
+// the call twice.
+//
+// Each half is keyed on the tool_use id, the one id that survives Claude Code
+// copying a session's history into a forked one. A block without an id has
+// no identity and yields nothing; neither does a tool_use without a name,
+// which the server would reject for good.
+func parseToolBlocks(raw map[string]json.RawMessage, base LoadedEntry) []LoadedEntry {
+	var message struct {
+		Model   string `json:"model"`
+		Content []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			// Raw: an input is whatever the tool takes, and one shaped
+			// unlike Bash's must not fail the decode of the whole line.
+			Input     json.RawMessage `json:"input"`
+			ToolUseID string          `json:"tool_use_id"`
+			IsError   bool            `json:"is_error"`
+		} `json:"content"`
+	}
+	if !decodeField(raw, "message", &message) {
+		return nil
+	}
+	model := message.Model
+	if model == "<synthetic>" {
+		model = ""
+	}
+
+	var entries []LoadedEntry
+	for _, block := range message.Content {
+		switch {
+		case block.Type == "tool_use" && block.ID != "" && block.Name != "":
+			server, name := splitToolName(block.Name)
+			call := &usage.ToolCall{CallID: block.ID, MCPServer: server, Name: name}
+			// Bash is the one built-in that runs a command line; everything
+			// else names its work in the tool itself.
+			if block.Name == "Bash" {
+				var input struct {
+					Command string `json:"command"`
+				}
+				if json.Unmarshal(block.Input, &input) == nil {
+					call.Programs = shellcmd.Programs(input.Command)
+				}
+			}
+			entry := base
+			entry.Kind = usage.EventKindToolCall
+			entry.ID = usage.StableID(string(usage.ProviderClaude), usage.EventKindToolCall, block.ID)
+			entry.Model = model
+			entry.Tool = call
+			entries = append(entries, entry)
+		case block.Type == "tool_result" && block.ToolUseID != "":
+			status := usage.ToolStatusOK
+			if block.IsError {
+				status = usage.ToolStatusError
+			}
+			entry := base
+			entry.Kind = usage.EventKindToolResult
+			entry.ID = usage.StableID(string(usage.ProviderClaude), usage.EventKindToolResult, block.ToolUseID)
+			entry.Tool = &usage.ToolCall{CallID: block.ToolUseID, Status: status}
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+// splitToolName reads Claude Code's MCP naming, mcp__<server>__<tool>, into
+// its server and tool. Anything else is a built-in tool with no server.
+func splitToolName(name string) (server, tool string) {
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
+		return "", name
+	}
+	server, tool, ok = strings.Cut(rest, "__")
+	if !ok || server == "" || tool == "" {
+		return "", name
+	}
+	return server, tool
 }
 
 // toolUseIDFromResult reads the tool_use_id off the tool_result block in the

@@ -138,6 +138,37 @@ func TestBuildDoesNotCountFileEditsAsEvents(t *testing.T) {
 	}
 }
 
+// Tool calls are side effects of a request too, both halves of them. They
+// count no request and no token, and add no model of their own.
+func TestBuildDoesNotCountToolCallsAsEvents(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	call := entry(now.Add(-time.Hour), "claude", "claude-fable-5", "tracklm", 1000)
+	invoked := usage.Entry{
+		Provider:  usage.ProviderClaude,
+		EventKind: usage.EventKindToolCall,
+		Timestamp: now.Add(-time.Hour),
+		Project:   "tracklm",
+		Model:     "claude-fable-5",
+		Tool:      &usage.ToolCall{CallID: "toolu-1", Name: "Bash"},
+	}
+	finished := usage.Entry{
+		Provider:  usage.ProviderClaude,
+		EventKind: usage.EventKindToolResult,
+		Timestamp: now.Add(-time.Hour).Add(3 * time.Second),
+		Project:   "tracklm",
+		Tool:      &usage.ToolCall{CallID: "toolu-1", Status: usage.ToolStatusOK},
+	}
+
+	report := Build([]usage.Entry{call, invoked, finished}, 7, now)
+
+	if report.Totals.Events != 1 || report.Totals.TotalTokens != 1000 {
+		t.Fatalf("tool halves counted: events=%d tokens=%d", report.Totals.Events, report.Totals.TotalTokens)
+	}
+	if len(report.Models) != 1 || report.Models[0].Events != 1 {
+		t.Fatalf("models = %+v, want the one call", report.Models)
+	}
+}
+
 // The idle rule is the server's: a gap within 15 minutes is active time, a
 // longer one is a break and counts nothing. The database hands entries over in
 // no particular order, so the walk must sort them itself.

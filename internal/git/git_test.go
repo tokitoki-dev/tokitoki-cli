@@ -48,24 +48,26 @@ func TestFindNearestCheckoutWins(t *testing.T) {
 	assertRepo(t, filepath.Join(inner, "src"), Repo{Root: inner, Name: "inner"})
 }
 
-func TestFindLinkedWorktreeReportsMainCheckout(t *testing.T) {
+// A linked worktree is its repository by name, but its files are under its
+// own folder: that is the root they are relative to, wherever it lives.
+func TestFindLinkedWorktreeTakesRepositoryName(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "payments-api")
 	worktree := filepath.Join(root, "payments-api-feature")
 	linkWorktree(t, filepath.Join(repo, ".git"), worktree, "feature", false)
 
-	assertRepo(t, filepath.Join(worktree, "src"), Repo{Root: repo, Name: "payments-api"})
+	assertRepo(t, filepath.Join(worktree, "src"), Repo{Root: worktree, Name: "payments-api"})
 }
 
 // Claude Code puts its worktrees inside the repository. The worktree's own
 // .git file is nearer than the repository's .git directory and must still
-// resolve to the repository, not to the worktree's folder name.
-func TestFindWorktreeInsideRepositoryReportsMainCheckout(t *testing.T) {
+// name the repository, not the worktree's folder.
+func TestFindWorktreeInsideRepositoryTakesRepositoryName(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "payments-api")
 	worktree := filepath.Join(repo, ".claude", "worktrees", "fix-login")
 	linkWorktree(t, filepath.Join(repo, ".git"), worktree, "fix-login", true)
 
-	assertRepo(t, worktree, Repo{Root: repo, Name: "payments-api"})
+	assertRepo(t, worktree, Repo{Root: worktree, Name: "payments-api"})
 }
 
 func TestFindBareRepositoryWorktree(t *testing.T) {
@@ -74,7 +76,23 @@ func TestFindBareRepositoryWorktree(t *testing.T) {
 	worktree := filepath.Join(root, "main")
 	linkWorktree(t, bare, worktree, "main", false)
 
-	assertRepo(t, worktree, Repo{Root: bare, Name: "payments-api"})
+	assertRepo(t, worktree, Repo{Root: worktree, Name: "payments-api"})
+}
+
+// A bare clone kept as project/.bare, with project/.git pointing at it and
+// the worktrees beside it: every one of them, and the folder itself, is
+// "project" — never ".bare".
+func TestFindBareCloneBesideItsWorktrees(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "payments-api")
+	bare := filepath.Join(project, ".bare")
+	worktree := filepath.Join(project, "main")
+	mustMkdirAll(t, bare)
+	mustWriteFile(t, filepath.Join(bare, "HEAD"), "ref: refs/heads/main\n")
+	mustWriteFile(t, filepath.Join(project, ".git"), "gitdir: ./.bare\n")
+	linkWorktree(t, bare, worktree, "main", true)
+
+	assertRepo(t, filepath.Join(worktree, "src"), Repo{Root: worktree, Name: "payments-api"})
+	assertRepo(t, project, Repo{Root: project, Name: "payments-api"})
 }
 
 func TestFindSubmoduleIsItsOwnRepository(t *testing.T) {
@@ -111,7 +129,26 @@ func TestFindRealWorktree(t *testing.T) {
 	runGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "init")
 	runGit(t, repo, "worktree", "add", "--quiet", worktree)
 
-	assertRepo(t, worktree, Repo{Root: repo, Name: "payments-api"})
+	assertRepo(t, worktree, Repo{Root: worktree, Name: "payments-api"})
+}
+
+func TestFindRealBareCloneBesideItsWorktrees(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := realPath(t, t.TempDir())
+	source := filepath.Join(root, "source")
+	project := filepath.Join(root, "payments-api")
+	mustMkdirAll(t, source)
+	runGit(t, source, "init", "--quiet")
+	runGit(t, source, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "init")
+	mustMkdirAll(t, project)
+	runGit(t, project, "clone", "--quiet", "--bare", source, ".bare")
+	mustWriteFile(t, filepath.Join(project, ".git"), "gitdir: ./.bare\n")
+	runGit(t, project, "worktree", "add", "--quiet", "main")
+
+	assertRepo(t, filepath.Join(project, "main"), Repo{Root: filepath.Join(project, "main"), Name: "payments-api"})
+	assertRepo(t, project, Repo{Root: project, Name: "payments-api"})
 }
 
 // linkWorktree writes what `git worktree add` leaves behind: a .git file in

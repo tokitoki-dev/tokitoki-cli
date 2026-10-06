@@ -140,7 +140,12 @@ func stampVersion(db *sql.DB) error {
 // them — a fold that lost most of them. The edits already on disk are only
 // recovered by reading every transcript again from the start; the API call
 // events that re-parse alongside them keep their IDs and are ignored.
-const eventSchemaVersion = 5
+//
+// Version 6 clears scanned_files again, for the same reason: Claude and Codex
+// tool calls became events (tool_call, tool_result), and the history they
+// were never read from is only reached by reading it again. Every event the
+// re-read produces besides those already exists and is ignored.
+const eventSchemaVersion = 6
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -165,7 +170,9 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	if version < 5 {
+	// One full re-read serves both: a database older than 5 gains its edits
+	// and its tool calls from the same pass.
+	if version < 6 {
 		if _, err := db.Exec(`DELETE FROM scanned_files`); err != nil {
 			return err
 		}

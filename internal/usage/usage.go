@@ -32,8 +32,8 @@ const (
 
 const UnknownLanguage = "Unknown"
 
-// Event kinds. An AI provider's events are one of the first two; IDE
-// front-ends send the third.
+// Event kinds. IDE front-ends send heartbeats; every other kind is an AI
+// provider's.
 //
 //   - EventKindAPICall is one API round trip: tokens, model, session. The
 //     unit of cost.
@@ -41,14 +41,57 @@ const UnknownLanguage = "Unknown"
 //     lines added and removed. It carries no tokens — the round trip that
 //     issued the edit already carries them, and counting them here again
 //     would bill the same call twice.
+//   - EventKindToolCall and EventKindToolResult are the two halves of one
+//     tool an agent ran: the invocation and, from a later line, its outcome.
+//     Both carry Tool and nothing else — no tokens, no lines. The server
+//     merges them by call id into a table of their own.
 //   - EventKindHeartbeat is an editor activity sample.
 //
 // The server counts requests over api_call rows and sums line changes over
 // every row, so a provider that emits both kinds reports both correctly.
 const (
-	EventKindAPICall   = "api_call"
-	EventKindFileEdit  = "file_edit"
-	EventKindHeartbeat = "heartbeat"
+	EventKindAPICall    = "api_call"
+	EventKindFileEdit   = "file_edit"
+	EventKindToolCall   = "tool_call"
+	EventKindToolResult = "tool_result"
+	EventKindHeartbeat  = "heartbeat"
+)
+
+// CountsAsRequest reports whether an event of this kind is a request: an API
+// call, or an editor heartbeat. Edits and tool calls are side effects of a
+// request that is already counted. An empty kind is an API call — the only
+// thing a provider that predates the field ever produced.
+func CountsAsRequest(kind string) bool {
+	switch kind {
+	case EventKindFileEdit, EventKindToolCall, EventKindToolResult:
+		return false
+	default:
+		return true
+	}
+}
+
+// ToolCall is one half of a tool an agent ran, keyed by the agent's own call
+// id. The invocation half sets Name (and MCPServer, Programs); the outcome
+// half sets Status. Neither sets the other's fields.
+type ToolCall struct {
+	// CallID is the id the API or the agent's runtime gave the call: toolu_…,
+	// call_…, exec-<uuid>. It survives a session being forked, which is what
+	// makes it the call's identity.
+	CallID string `json:"call_id"`
+	// MCPServer names the server of an MCP tool, as the agent spells it.
+	// Empty for the agent's built-in tools.
+	MCPServer string `json:"mcp_server,omitempty"`
+	Name      string `json:"name,omitempty"`
+	// Programs are the command names a shell call ran, as shellcmd reads
+	// them. Never the arguments: commands carry paths and secrets.
+	Programs []string `json:"programs,omitempty"`
+	// Status is ToolStatusOK or ToolStatusError.
+	Status string `json:"status,omitempty"`
+}
+
+const (
+	ToolStatusOK    = "ok"
+	ToolStatusError = "error"
 )
 
 // UnknownProject is the single spelling every provider uses when a project
@@ -239,6 +282,8 @@ type Entry struct {
 	Files []FileChange   `json:"files,omitempty"`
 	Raw   map[string]any `json:"raw,omitempty"`
 	Usage TokenUsage     `json:"usage"`
+	// Tool is set on tool_call and tool_result events, and only there.
+	Tool *ToolCall `json:"tool,omitempty"`
 }
 
 // NormalizeOS maps a Go runtime.GOOS value to a human-readable name.

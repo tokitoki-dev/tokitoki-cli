@@ -46,6 +46,8 @@ func TestResolveOutOfTreeEntityFallsBackToFolderRepository(t *testing.T) {
 		Result{Project: "payments-api", ProjectPath: repo})
 }
 
+// A worktree is its repository's project, but its files live under its own
+// folder — the path their names are made relative to when uploaded.
 func TestResolveWorktreeIsItsRepository(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "payments-api")
 	gitDir := filepath.Join(repo, ".git", "worktrees", "fix-login")
@@ -55,8 +57,8 @@ func TestResolveWorktreeIsItsRepository(t *testing.T) {
 	mustMkdirAll(t, worktree)
 	mustWriteFile(t, filepath.Join(worktree, ".git"), "gitdir: "+gitDir+"\n")
 
-	assertResult(t, Input{ProjectPath: worktree},
-		Result{Project: "payments-api", ProjectPath: repo})
+	assertResult(t, Input{Entity: filepath.Join(worktree, "src", "main.go"), ProjectPath: worktree},
+		Result{Project: "payments-api", ProjectPath: worktree})
 }
 
 func TestResolveMercurialAndSubversionCheckouts(t *testing.T) {

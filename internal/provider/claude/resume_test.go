@@ -169,7 +169,8 @@ func TestReadUsageFileFromAdvancesPastUnparsableLine(t *testing.T) {
 
 // Because every entry comes from exactly one line, resuming at any line
 // boundary yields the entries a whole read yields for the lines after it —
-// including an edit whose issuing message sits before the boundary.
+// including an edit whose issuing message sits before the boundary, and the
+// outcome of a tool call invoked before it.
 func TestReadUsageFileFromAnyLineBoundaryMatchesWholeRead(t *testing.T) {
 	lines := []string{
 		usageLine("1", 1, 2),
@@ -187,8 +188,9 @@ func TestReadUsageFileFromAnyLineBoundaryMatchesWholeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(whole) != 4 {
-		t.Fatalf("whole read = %d entries, want 4", len(whole))
+	// call; call + tool_call; edit + tool_result; call.
+	if len(whole) != 6 {
+		t.Fatalf("whole read = %d entries, want 6", len(whole))
 	}
 
 	offset := int64(0)
@@ -197,7 +199,12 @@ func TestReadUsageFileFromAnyLineBoundaryMatchesWholeRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := whole[i:]
+		var want []LoadedEntry
+		for _, entry := range whole {
+			if entry.SourceStart >= offset {
+				want = append(want, entry)
+			}
+		}
 		if len(rest) != len(want) {
 			t.Fatalf("resume at line %d: %d entries, want %d", i, len(rest), len(want))
 		}

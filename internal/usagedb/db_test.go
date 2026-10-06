@@ -2,6 +2,7 @@ package usagedb
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -586,55 +587,62 @@ func TestReleaseClaimsLeavesResolvedEventsAlone(t *testing.T) {
 // transcript from the start: that is how file edits recorded before edits
 // became events of their own get into the database. Events already stored
 // keep their rows and their upload state.
-func TestOpenClearsScannedFilesWhenUpgradingToVersion5(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v4.db")
+// Versions 5 and 6 each made the scanner read every transcript again (file
+// edits, then tool calls). A database left at either older version re-reads;
+// the events it already holds survive untouched.
+func TestOpenClearsScannedFilesWhenUpgradingFromOlderVersions(t *testing.T) {
+	for _, from := range []int{4, 5} {
+		t.Run(fmt.Sprintf("from v%d", from), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "old.db")
 
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.UpsertScannedFiles(map[string]FileState{"/tmp/a.jsonl": {Size: 42, MtimeNS: 7, Offset: 40}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.InsertEvents([]usage.Entry{{ID: "evt-1", Provider: usage.ProviderClaude, Timestamp: time.Now()}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.MarkEventsUploaded([]string{"evt-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.db.Exec(`PRAGMA user_version = 4`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+			db, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.UpsertScannedFiles(map[string]FileState{"/tmp/a.jsonl": {Size: 42, MtimeNS: 7, Offset: 40}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.InsertEvents([]usage.Entry{{ID: "evt-1", Provider: usage.ProviderClaude, Timestamp: time.Now()}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.MarkEventsUploaded([]string{"evt-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, from)); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
 
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
+			reopened, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
 
-	states, err := reopened.ScannedFiles()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(states) != 0 {
-		t.Fatalf("scanned_files = %+v, want cleared", states)
-	}
-	var status string
-	if err := reopened.db.QueryRow(`SELECT status FROM usage_events WHERE id = 'evt-1'`).Scan(&status); err != nil {
-		t.Fatal(err)
-	}
-	if status != "uploaded" {
-		t.Fatalf("event status = %q, want uploaded (events survive the upgrade)", status)
-	}
-	var version int
-	if err := reopened.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != eventSchemaVersion {
-		t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
+			states, err := reopened.ScannedFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(states) != 0 {
+				t.Fatalf("scanned_files = %+v, want cleared", states)
+			}
+			var status string
+			if err := reopened.db.QueryRow(`SELECT status FROM usage_events WHERE id = 'evt-1'`).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			if status != "uploaded" {
+				t.Fatalf("event status = %q, want uploaded (events survive the upgrade)", status)
+			}
+			var version int
+			if err := reopened.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			if version != eventSchemaVersion {
+				t.Fatalf("user_version = %d, want %d", version, eventSchemaVersion)
+			}
+		})
 	}
 }
 

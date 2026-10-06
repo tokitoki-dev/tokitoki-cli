@@ -109,6 +109,9 @@ type Event struct {
 	CacheReadInputTokens       uint64 `json:"cache_read_input_tokens,omitempty"`
 	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
 	TotalTokens                uint64 `json:"total_tokens,omitempty"`
+	// Tool is the tool_call / tool_result payload. Sent as stored: no paths
+	// in it to make relative, and nothing in it that identifies a machine.
+	Tool *usage.ToolCall `json:"tool,omitempty"`
 }
 
 type Response struct {
@@ -424,6 +427,7 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		CacheReadInputTokens:       entry.Usage.CacheReadInputTokens,
 		ReasoningOutputTokens:      entry.Usage.ReasoningOutputTokens,
 		TotalTokens:                entry.Usage.TotalTokens,
+		Tool:                       entry.Tool,
 	}
 }
 

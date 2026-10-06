@@ -7,6 +7,7 @@ require (
 	golang.org/x/sys v0.44.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.53.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (

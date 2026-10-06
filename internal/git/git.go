@@ -15,13 +15,14 @@ import (
 // one short line; anything longer is not a pointer git wrote.
 const maxPointerBytes = 4096
 
-// Repo is the git repository a directory belongs to.
+// Repo is the git checkout a directory belongs to.
 type Repo struct {
-	// Root is the repository's working tree. A linked worktree (git worktree
-	// add, Claude Code's .claude/worktrees) reports its main checkout, so all
-	// worktrees of one repository are one repository.
+	// Root is the checkout holding the directory — for a linked worktree (git
+	// worktree add, Claude Code's .claude/worktrees) the worktree's own
+	// folder, not the main checkout: the files worked on are under it.
 	Root string
-	// Name is the repository's name: the main checkout's folder name.
+	// Name is the repository's name, the same from every worktree of it, so
+	// all of them are one project.
 	Name string
 }
 
@@ -46,21 +47,23 @@ func Find(dir string) (Repo, bool) {
 //
 // A .git directory is an ordinary checkout. A .git file points elsewhere:
 // a linked worktree's to <common>/worktrees/<name>, which carries a commondir
-// back to the repository, and a submodule's to <super>/.git/modules/<name>,
-// which does not — a submodule is a repository of its own. A pointer that
-// cannot be followed still marks dir as a checkout; git put it there.
+// back to the repository whose name the worktree takes, and a submodule's to
+// <super>/.git/modules/<name>, which does not — a submodule is a repository
+// of its own. Either way dir is the checkout, and a pointer that cannot be
+// followed still marks it as one; git put it there.
 func open(dir string) (Repo, bool) {
 	dotGit := filepath.Join(dir, ".git")
 	info, err := os.Stat(dotGit)
 	if err != nil {
 		return Repo{}, false
 	}
+	repo := Repo{Root: dir, Name: filepath.Base(dir)}
 	if !info.IsDir() {
 		if common, ok := commonDir(dotGit); ok {
-			return mainCheckout(common), true
+			repo.Name = repoName(common)
 		}
 	}
-	return Repo{Root: dir, Name: filepath.Base(dir)}, true
+	return repo, true
 }
 
 // commonDir follows a .git file to a linked worktree's shared git directory.
@@ -82,15 +85,16 @@ func commonDir(dotGit string) (string, bool) {
 	return resolve(gitDir, common), true
 }
 
-// mainCheckout names the repository behind a shared git directory: the
-// checkout holding it when it is a .git folder, and the directory itself,
-// less a .git suffix, for a bare repository.
-func mainCheckout(common string) Repo {
-	if filepath.Base(common) == ".git" {
-		root := filepath.Dir(common)
-		return Repo{Root: root, Name: filepath.Base(root)}
+// repoName names a repository after its shared git directory: repo.git is
+// "repo", and a directory left without a name once .git is dropped — the .git
+// of a main checkout, or the .bare of a bare clone kept beside its worktrees —
+// is named after the folder holding it.
+func repoName(common string) string {
+	name := strings.TrimSuffix(filepath.Base(common), ".git")
+	if name == "" || strings.HasPrefix(name, ".") {
+		return filepath.Base(filepath.Dir(common))
 	}
-	return Repo{Root: common, Name: strings.TrimSuffix(filepath.Base(common), ".git")}
+	return name
 }
 
 func resolve(base, path string) string {

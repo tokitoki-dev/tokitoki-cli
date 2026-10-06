@@ -157,12 +157,20 @@ func TestReadUsageFileEmitsOneFileEditPerToolResult(t *testing.T) {
 {"timestamp":"2026-05-21T01:02:06Z","cwd":"/repo/app","message":{"id":"msg-2","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}
 `)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
 	if len(entries) != 4 {
 		t.Fatalf("len(entries) = %d, want 4 (2 api calls + 2 edits)", len(entries))
+	}
+	// Each tool_result line is also the outcome of its call.
+	results := ofKind(all, usage.EventKindToolResult)
+	if len(results) != 2 || results[0].Tool == nil || results[0].Tool.CallID != "toolu-1" ||
+		results[0].Tool.Status != usage.ToolStatusOK ||
+		results[0].ID != usage.StableID("claude", usage.EventKindToolResult, "toolu-1") {
+		t.Fatalf("tool results = %+v", results)
 	}
 
 	call := entries[0]
@@ -228,10 +236,11 @@ func TestReadUsageFileSplitMessageYieldsOneIDAndKeepsItsEdit(t *testing.T) {
 {"type":"user","timestamp":"2026-05-21T01:02:05Z","cwd":"/repo/app","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-1","content":"ok"}]},"toolUseResult":{"filePath":"/repo/app/a.go","structuredPatch":[{"lines":["+a","+b","+c","-d"]}]}}
 `)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
 	if len(entries) != 3 {
 		t.Fatalf("len(entries) = %d, want 3 (two copies + one edit)", len(entries))
 	}
@@ -242,10 +251,11 @@ func TestReadUsageFileSplitMessageYieldsOneIDAndKeepsItsEdit(t *testing.T) {
 		t.Fatalf("edit after split message = %+v", entries[2])
 	}
 
-	deduped, err := LoadEntriesFromPaths([]string{filepath.Dir(filepath.Dir(filepath.Dir(path)))}, "", nil)
+	allDeduped, err := LoadEntriesFromPaths([]string{filepath.Dir(filepath.Dir(filepath.Dir(path)))}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	deduped := withoutTools(allDeduped)
 	if len(deduped) != 2 {
 		t.Fatalf("len(deduped) = %d, want 2 (one call + one edit)", len(deduped))
 	}
@@ -275,10 +285,10 @@ func TestLoadEntriesForkedSessionCopyAddsNoEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("len(entries) = %d, want 3 (copied call + copied edit once, plus the fork's own call)", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("len(entries) = %d, want 4 (copied call, edit and tool result once, plus the fork's own call)", len(entries))
 	}
-	var calls, edits int
+	var calls, edits, results int
 	var tokens uint64
 	for _, entry := range entries {
 		switch entry.Kind {
@@ -287,10 +297,12 @@ func TestLoadEntriesForkedSessionCopyAddsNoEvents(t *testing.T) {
 			tokens += tokenTotal(entry.Data.Message.Usage)
 		case usage.EventKindFileEdit:
 			edits++
+		case usage.EventKindToolResult:
+			results++
 		}
 	}
-	if calls != 2 || edits != 1 || tokens != 14 {
-		t.Fatalf("calls=%d edits=%d tokens=%d, want 2/1/14", calls, edits, tokens)
+	if calls != 2 || edits != 1 || results != 1 || tokens != 14 {
+		t.Fatalf("calls=%d edits=%d results=%d tokens=%d, want 2/1/1/14", calls, edits, results, tokens)
 	}
 }
 
@@ -341,24 +353,56 @@ func TestParseLineIgnoresNonEditToolResults(t *testing.T) {
 		[]byte(`{"timestamp":"2026-05-21T01:02:03Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu-1"}]},"toolUseResult":{"type":"text","file":{"filePath":"/a.json","content":"{\"type\":\"create\"}"}}}`),
 	}
 	for _, line := range lines {
-		if _, ok := parseLine(line, "session"); ok {
-			t.Fatalf("parseLine(%s) ok = true, want false", line)
+		if edit, ok := entryOfKind(parseLine(line, "session"), usage.EventKindFileEdit); ok {
+			t.Fatalf("parseLine(%s) produced edit %+v, want none", line, edit)
 		}
 	}
 }
 
+// withoutTools drops tool_call and tool_result entries, for the tests about
+// what a transcript bills and edits.
+func withoutTools(entries []LoadedEntry) []LoadedEntry {
+	var kept []LoadedEntry
+	for _, entry := range entries {
+		if entry.Tool == nil {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+func ofKind(entries []LoadedEntry, kind string) []LoadedEntry {
+	var matched []LoadedEntry
+	for _, entry := range entries {
+		if entry.Kind == kind {
+			matched = append(matched, entry)
+		}
+	}
+	return matched
+}
+
+// entryOfKind picks a line's entry of one kind: a line carries at most one.
+func entryOfKind(entries []LoadedEntry, kind string) (LoadedEntry, bool) {
+	for _, entry := range entries {
+		if entry.Kind == kind {
+			return entry, true
+		}
+	}
+	return LoadedEntry{}, false
+}
+
 func TestParseLineCountsCreatedFileContent(t *testing.T) {
 	line := []byte(`{"timestamp":"2026-05-21T01:02:03Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu-1"}]},"toolUseResult":{"type":"create","filePath":"/repo/new.go","content":"package main\n\nfunc main() {}\n","structuredPatch":[]}}`)
-	entry, ok := parseLine(line, "session")
+	entry, ok := entryOfKind(parseLine(line, "session"), usage.EventKindFileEdit)
 	if !ok {
-		t.Fatal("parseLine ok = false, want true")
+		t.Fatal("parseLine produced no edit")
 	}
 	if entry.Entity != "/repo/new.go" || entry.LinesAdded != 3 || entry.LinesRemoved != 0 {
 		t.Fatalf("entry = %+v, want new.go +3/-0", entry)
 	}
 
 	empty := []byte(`{"timestamp":"2026-05-21T01:02:03Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu-2"}]},"toolUseResult":{"type":"create","filePath":"/repo/empty.go","content":"","structuredPatch":[]}}`)
-	entry, ok = parseLine(empty, "session")
+	entry, ok = entryOfKind(parseLine(empty, "session"), usage.EventKindFileEdit)
 	if !ok || entry.LinesAdded != 0 || !entry.IsWrite {
 		t.Fatalf("empty create = %+v ok=%v, want +0 write ok=true", entry, ok)
 	}
@@ -369,7 +413,7 @@ func TestParseLineCountsCreatedFileContent(t *testing.T) {
 // mid-write is simply not a record yet.
 func TestParseLineToleratesNullFieldsAndTornLines(t *testing.T) {
 	nullModel := []byte(`{"timestamp":"2026-05-21T01:02:03Z","sessionId":null,"requestId":null,"message":{"id":"msg-1","model":null,"usage":{"input_tokens":1,"output_tokens":1,"speed":null},"content":null}}`)
-	entry, ok := parseLine(nullModel, "session")
+	entry, ok := entryOfKind(parseLine(nullModel, "session"), usage.EventKindAPICall)
 	if !ok {
 		t.Fatal("line with null fields rejected")
 	}
@@ -382,8 +426,8 @@ func TestParseLineToleratesNullFieldsAndTornLines(t *testing.T) {
 		[]byte(`{"timestamp":"2026-05-21T01:02:03Z","message":{"id":"msg-1","usage":{"input_tokens":1`),
 		[]byte(`{"message":{"usage":{"input_tokens":"lots"}}}`),
 	} {
-		if _, ok := parseLine(torn, "session"); ok {
-			t.Fatalf("torn line %s produced an entry", torn)
+		if entries := parseLine(torn, "session"); len(entries) != 0 {
+			t.Fatalf("torn line %s produced %+v", torn, entries)
 		}
 	}
 }
@@ -707,5 +751,63 @@ func TestReadUsageFileParsesCacheCreationBreakdown(t *testing.T) {
 		withoutBreakdown.Usage.CacheCreation1hInputTokens != 0 ||
 		withoutBreakdown.Usage.CacheCreationInputTokens != 7 {
 		t.Fatalf("plain entry gained a breakdown: %+v", withoutBreakdown.Usage)
+	}
+}
+
+// A tool_use block is an invocation and a tool_result block its outcome, each
+// keyed on the tool_use id. The invocation's line is also an API call; the
+// two share nothing but the line — the tool half carries no tokens.
+func TestReadUsageFileEmitsToolCallHalves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"timestamp":"2026-10-06T01:00:00Z","requestId":"req-1","cwd":"/repo/app","message":{"id":"msg-1","model":"claude-opus-5-5","usage":{"input_tokens":3,"output_tokens":40},"content":[{"type":"tool_use","id":"toolu-bash","name":"Bash","input":{"command":"rg -n \"a|b\" src | head -5"}}]}}
+{"type":"user","timestamp":"2026-10-06T01:00:02Z","cwd":"/repo/app","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-bash","content":"boom","is_error":true}]}}
+{"timestamp":"2026-10-06T01:00:03Z","requestId":"req-2","cwd":"/repo/app","message":{"id":"msg-2","model":"claude-opus-5-5","usage":{"input_tokens":3,"output_tokens":40},"content":[{"type":"tool_use","id":"toolu-mcp","name":"mcp__plugin_stripe_stripe__stripe_api_read","input":{"command":{"not":"a string"}}}]}}
+{"type":"user","timestamp":"2026-10-06T01:00:04Z","cwd":"/repo/app","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-mcp","content":"ok"}]}}
+{"timestamp":"2026-10-06T01:00:05Z","cwd":"/repo/app","message":{"id":"msg-3","model":"<synthetic>","content":[{"type":"tool_use","id":"toolu-read","name":"Read","input":{"file_path":"/repo/app/a.go"}},{"type":"tool_use","id":"","name":"Read"},{"type":"tool_use","id":"toolu-noname"}]}}
+`)
+
+	all, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := ofKind(all, usage.EventKindToolCall)
+	results := ofKind(all, usage.EventKindToolResult)
+	if len(calls) != 3 || len(results) != 2 || len(ofKind(all, usage.EventKindAPICall)) != 2 {
+		t.Fatalf("calls=%d results=%d api=%d, want 3/2/2", len(calls), len(results), len(ofKind(all, usage.EventKindAPICall)))
+	}
+
+	bash := calls[0]
+	if bash.ID != usage.StableID("claude", usage.EventKindToolCall, "toolu-bash") || bash.Model != "claude-opus-5-5" ||
+		bash.Tool.Name != "Bash" || bash.Tool.MCPServer != "" || bash.Project != "app" || bash.SessionID != "session-a" {
+		t.Fatalf("bash call = %+v tool %+v", bash, bash.Tool)
+	}
+	if len(bash.Tool.Programs) != 2 || bash.Tool.Programs[0] != "rg" || bash.Tool.Programs[1] != "head" {
+		t.Fatalf("bash programs = %q, want [rg head]", bash.Tool.Programs)
+	}
+	if bash.Data.Message.Usage != (TokenUsage{}) {
+		t.Fatalf("tool call carries the line's tokens: %+v", bash.Data.Message.Usage)
+	}
+
+	mcp := calls[1]
+	if mcp.Tool.MCPServer != "plugin_stripe_stripe" || mcp.Tool.Name != "stripe_api_read" || mcp.Tool.Programs != nil {
+		t.Fatalf("mcp call tool = %+v", mcp.Tool)
+	}
+	if read := calls[2]; read.Tool.Name != "Read" || read.Model != "" {
+		t.Fatalf("synthetic-model call = %+v tool %+v", read, read.Tool)
+	}
+
+	if results[0].Tool.CallID != "toolu-bash" || results[0].Tool.Status != usage.ToolStatusError || results[0].Tool.Name != "" {
+		t.Fatalf("bash result = %+v", results[0].Tool)
+	}
+	if results[1].Tool.CallID != "toolu-mcp" || results[1].Tool.Status != usage.ToolStatusOK {
+		t.Fatalf("mcp result = %+v", results[1].Tool)
+	}
+
+	for _, converted := range ConvertEntries(append(calls, results...)) {
+		if converted.Tool == nil || converted.Usage != (usage.TokenUsage{}) || converted.LinesAdded != 0 || converted.IsWrite != nil {
+			t.Fatalf("converted tool event = %+v", converted)
+		}
 	}
 }

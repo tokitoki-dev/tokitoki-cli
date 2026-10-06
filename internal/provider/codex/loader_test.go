@@ -3,7 +3,11 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
+
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
 )
 
 func TestReadUsageFileParsesTokenCountEvents(t *testing.T) {
@@ -285,10 +289,12 @@ func TestReadUsageFileAttributesConfirmedPatches(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, content)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
+	assertToolCall(t, all, "c1", "apply_patch", nil, usage.ToolStatusOK)
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(entries))
 	}
@@ -323,10 +329,12 @@ func TestReadUsageFileIgnoresFailedPatches(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, content)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
+	assertToolCall(t, all, "c1", "apply_patch", nil, usage.ToolStatusError)
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -345,10 +353,12 @@ func TestReadUsageFileParsesHeredocPatchInShellCall(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, content)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
+	assertToolCall(t, all, "c1", "exec_command", []string{"apply_patch"}, usage.ToolStatusOK)
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -367,10 +377,12 @@ func TestReadUsageFileConfirmsPatchViaPatchApplyEnd(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, content)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
+	assertToolCall(t, all, "c1", "apply_patch", nil, usage.ToolStatusOK)
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -394,11 +406,131 @@ func TestReadUsageFileRejectsPatchApplyEndFailure(t *testing.T) {
 	mkdirAll(t, filepath.Dir(path))
 	writeFile(t, path, content)
 
-	entries, err := ReadUsageFile(path)
+	all, err := ReadUsageFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entries := withoutTools(all)
+	assertToolCall(t, all, "c1", "apply_patch", nil, usage.ToolStatusError)
 	if len(entries) != 1 || entries[0].IsWrite != nil {
 		t.Fatalf("failed patch counted: %+v", entries[0])
+	}
+}
+
+func withoutTools(entries []usage.Entry) []usage.Entry {
+	var kept []usage.Entry
+	for _, entry := range entries {
+		if entry.Tool == nil {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+// assertToolCall checks that entries hold call id's invocation half, naming
+// tool and programs, and its outcome half with status ("" for none).
+func assertToolCall(t *testing.T, entries []usage.Entry, id, tool string, programs []string, status string) {
+	t.Helper()
+	var call, result *usage.Entry
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Tool == nil || entry.Tool.CallID != id {
+			continue
+		}
+		switch entry.EventKind {
+		case usage.EventKindToolCall:
+			call = entry
+		case usage.EventKindToolResult:
+			result = entry
+		}
+	}
+	if call == nil || call.Tool.Name != tool || !slices.Equal(call.Tool.Programs, programs) ||
+		call.ID != usage.StableID("codex", usage.EventKindToolCall, id) || call.Usage != (usage.TokenUsage{}) {
+		t.Fatalf("call %s = %+v, want %s %q", id, call, tool, programs)
+	}
+	switch {
+	case status == "" && result != nil:
+		t.Fatalf("call %s has outcome %+v, want none", id, result.Tool)
+	case status != "" && (result == nil || result.Tool.Status != status || result.Tool.Name != ""):
+		t.Fatalf("call %s outcome = %+v, want %s", id, result, status)
+	}
+}
+
+// Every shape codex has recorded a tool call in, and every place it records an
+// outcome. One call is one call however many lines speak of it.
+func TestReadUsageFileEmitsToolCallsInEveryShape(t *testing.T) {
+	content := `{"timestamp":"2026-10-06T01:00:00Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app","originator":"codex_vscode"}}
+{"timestamp":"2026-10-06T01:00:00Z","type":"turn_context","payload":{"cwd":"/repo/app","model":"gpt-5.5"}}
+{"timestamp":"2026-10-06T01:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"c-flat","name":"mcp__supabase__execute_sql","arguments":"{\"query\":\"select 1\"}"}}
+{"timestamp":"2026-10-06T01:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-flat","output":"Wall time: 0.1 seconds\nOutput:\nExit code: 1"}}
+{"timestamp":"2026-10-06T01:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"c-ns","name":"click","namespace":"mcp__computer_use","arguments":"{}"}}
+{"timestamp":"2026-10-06T01:00:04Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"c-ns","server":"computer-use","tool":"click","status":"failed"}}}
+{"timestamp":"2026-10-06T01:00:05Z","type":"response_item","payload":{"type":"function_call","call_id":"c-under","name":"js","namespace":"mcp__node_repl__","arguments":"{}"}}
+{"timestamp":"2026-10-06T01:00:06Z","type":"response_item","payload":{"type":"function_call","call_id":"c-web","name":"run","namespace":"web","arguments":"{}"}}
+{"timestamp":"2026-10-06T01:00:07Z","type":"response_item","payload":{"type":"function_call","call_id":"c-exec","name":"exec_command","arguments":"{\"cmd\":\"rg -n \\\"a|b\\\" src | sed -n 1p\"}"}}
+{"timestamp":"2026-10-06T01:00:08Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-exec","output":"Chunk ID: ab12\nWall time: 0.1 seconds\nProcess exited with code 1\nOriginal token count: 3\nOutput:\nExit code: 0\n"}}
+{"timestamp":"2026-10-06T01:00:09Z","type":"response_item","payload":{"type":"function_call","call_id":"c-long","name":"exec_command","arguments":"{\"cmd\":\"pnpm dev\"}"}}
+{"timestamp":"2026-10-06T01:00:10Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-long","output":"Chunk ID: cd34\nWall time: 10.0 seconds\nProcess running with session ID 4242\nOutput:\nready"}}
+{"timestamp":"2026-10-06T01:00:11Z","type":"response_item","payload":{"type":"function_call","call_id":"c-argv","name":"shell","arguments":"{\"command\":[\"zsh\",\"-lc\",\"git status\"]}"}}
+{"timestamp":"2026-10-06T01:00:12Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-argv","output":"{\"output\":\"clean\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"}}
+{"timestamp":"2026-10-06T01:00:13Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c-wrap","name":"exec","input":"text(await tools.exec_command({cmd:'nl -ba f'}))"}}
+{"timestamp":"2026-10-06T01:00:20Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","command":["/bin/zsh","-lc","nl -ba f | sed -n 1p"],"status":"failed","exit_code":2,"duration":{"secs":2,"nanos":500000000}}}}
+{"timestamp":"2026-10-06T01:00:21Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"exec-2","server":"node_repl","tool":"js","status":"completed"}}}
+{"timestamp":"2026-10-06T01:00:22Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c-wrap","output":[{"type":"input_text","text":"Script completed\nWall time 9.0 seconds"}]}}
+{"timestamp":"2026-10-06T01:00:23Z","type":"response_item","payload":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"x"}}}
+{"timestamp":"2026-10-06T01:00:24Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"WebSearch","id":"ws_1","query":"x"}}}
+{"timestamp":"2026-10-06T01:00:25Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"SubAgentActivity","id":"c-web","kind":"started"}}}
+{"timestamp":"2026-10-06T01:00:26Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"item-9"}}}
+{"timestamp":"2026-10-06T01:00:27Z","type":"response_item","payload":{"type":"function_call_output","call_id":"never-called","output":"Exit code: 0"}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	all, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertToolCall(t, all, "c-flat", "execute_sql", nil, "") // an MCP tool's own text is not an outcome
+	assertToolCall(t, all, "c-ns", "click", nil, usage.ToolStatusError)
+	assertToolCall(t, all, "c-under", "js", nil, "")
+	assertToolCall(t, all, "c-web", "web.run", nil, "")
+	assertToolCall(t, all, "c-exec", "exec_command", []string{"rg", "sed"}, usage.ToolStatusError)
+	assertToolCall(t, all, "c-long", "exec_command", []string{"pnpm"}, "")
+	assertToolCall(t, all, "c-argv", "shell", []string{"git"}, usage.ToolStatusOK)
+	assertToolCall(t, all, "c-wrap", "exec", nil, "")
+	assertToolCall(t, all, "exec-1", "exec_command", []string{"nl", "sed"}, usage.ToolStatusError)
+	assertToolCall(t, all, "exec-2", "js", nil, usage.ToolStatusOK)
+	assertToolCall(t, all, "ws_1", "web_search", nil, "")
+
+	servers := map[string]string{}
+	var calls, results int
+	for _, entry := range all {
+		switch entry.EventKind {
+		case usage.EventKindToolCall:
+			calls++
+			servers[entry.Tool.CallID] = entry.Tool.MCPServer
+			if entry.SessionID != "session-1" || entry.Project != "app" || entry.Model != "gpt-5.5" || entry.Client != "codex_vscode" {
+				t.Fatalf("call context = %+v", entry)
+			}
+			if entry.Tool.CallID == "exec-1" && !entry.Timestamp.Equal(time.Date(2026, 10, 6, 1, 0, 17, 500000000, time.UTC)) {
+				t.Fatalf("code-mode call started at %v, want its finish minus its duration", entry.Timestamp)
+			}
+		case usage.EventKindToolResult:
+			results++
+			if entry.Model != "" {
+				t.Fatalf("outcome carries a model: %+v", entry)
+			}
+		}
+	}
+	if calls != 11 || results != 5 {
+		t.Fatalf("calls=%d results=%d, want 11/5 — one per call, however many lines name it", calls, results)
+	}
+	want := map[string]string{"c-flat": "supabase", "c-ns": "computer_use", "c-under": "node_repl", "exec-2": "node_repl", "c-web": "", "c-exec": ""}
+	for id, server := range want {
+		if servers[id] != server {
+			t.Fatalf("server of %s = %q, want %q", id, servers[id], server)
+		}
 	}
 }

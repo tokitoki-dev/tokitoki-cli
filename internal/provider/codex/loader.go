@@ -41,7 +41,10 @@ type eventPayload struct {
 	Type    string `json:"type"`
 	CallID  string `json:"call_id"`
 	Success *bool  `json:"success"`
-	Info    struct {
+	// item_completed only. Raw: items are every kind of thing a turn
+	// produces, and only the tool kinds are read.
+	Item json.RawMessage `json:"item"`
+	Info struct {
 		LastTokenUsage  *tokenUsagePayload `json:"last_token_usage"`
 		TotalTokenUsage *tokenUsagePayload `json:"total_token_usage"`
 	} `json:"info"`
@@ -110,7 +113,7 @@ func ReadUsageFile(path string) ([]usage.Entry, error) {
 			start := offset
 			offset += int64(len(line))
 			line = bytes.TrimRight(line, "\r\n")
-			if entry, ok := parseLine(line, &state); ok {
+			for _, entry := range parseLine(line, &state) {
 				entry.SourceFile = path
 				entry.SourceLine = lineNumber
 				entry.SourceStart = start
@@ -143,6 +146,11 @@ type fileState struct {
 	// prevTotal is the last seen cumulative token counter. A token_count
 	// that leaves it unchanged is a replay and is skipped.
 	prevTotal *tokenUsagePayload
+	// toolCalls maps each call id this file has invoked to the tool's name:
+	// the name decides how its output is read, and the id says whether an
+	// item_completed is the outcome of a call already seen or a call of its
+	// own.
+	toolCalls map[string]string
 }
 
 type patchFile struct {
@@ -151,14 +159,16 @@ type patchFile struct {
 	removed uint64
 }
 
-func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
+// parseLine turns one rollout line into its entries: a token_count's api_call,
+// or the tool_call and tool_result halves a tool line carries.
+func parseLine(line []byte, state *fileState) []usage.Entry {
 	if !bytes.Contains(line, []byte(`"type"`)) {
-		return usage.Entry{}, false
+		return nil
 	}
 
 	var envelope codexLine
 	if err := json.Unmarshal(line, &envelope); err != nil {
-		return usage.Entry{}, false
+		return nil
 	}
 
 	if language := languageFromPayload(envelope.Payload); language != langdetect.Unknown {
@@ -168,11 +178,11 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 	switch envelope.Type {
 	case "response_item":
 		handleResponseItem(envelope.Payload, state)
-		return usage.Entry{}, false
+		return toolEntriesFromResponseItem(envelope, state)
 	case "session_meta":
 		var payload sessionMetaPayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return usage.Entry{}, false
+			return nil
 		}
 		if strings.TrimSpace(payload.ID) != "" {
 			state.sessionID = payload.ID
@@ -183,11 +193,11 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		if client := usage.NormalizeClient(payload.Originator); client != "" {
 			state.client = client
 		}
-		return usage.Entry{}, false
+		return nil
 	case "turn_context":
 		var payload turnContextPayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return usage.Entry{}, false
+			return nil
 		}
 		if strings.TrimSpace(payload.CWD) != "" {
 			state.projectPath = payload.CWD
@@ -195,11 +205,11 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		if strings.TrimSpace(payload.Model) != "" {
 			state.model = payload.Model
 		}
-		return usage.Entry{}, false
+		return nil
 	case "event_msg":
 		var payload eventPayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return usage.Entry{}, false
+			return nil
 		}
 		// Newer codex confirms patches with a dedicated event instead of a
 		// tool output; either resolves the same awaiting call_id.
@@ -210,14 +220,20 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 					state.pending = append(state.pending, patches...)
 				}
 			}
-			return usage.Entry{}, false
+			if payload.Success == nil {
+				return nil
+			}
+			return state.toolResult(envelope.Timestamp, payload.CallID, statusOf(*payload.Success))
+		}
+		if payload.Type == "item_completed" {
+			return toolEntriesFromItem(envelope.Timestamp, payload.Item, state)
 		}
 		if payload.Type != "token_count" || payload.Info.LastTokenUsage == nil {
-			return usage.Entry{}, false
+			return nil
 		}
 		timestamp, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
 		if err != nil {
-			return usage.Entry{}, false
+			return nil
 		}
 		last := *payload.Info.LastTokenUsage
 
@@ -236,13 +252,13 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		// phantom tokens on the other 18.
 		if total := payload.Info.TotalTokenUsage; total != nil {
 			if state.prevTotal != nil && *total == *state.prevTotal {
-				return usage.Entry{}, false
+				return nil
 			}
 			state.prevTotal = total
 		}
 		// A turn that cost nothing is not a request.
 		if last == (tokenUsagePayload{}) {
-			return usage.Entry{}, false
+			return nil
 		}
 
 		entry := usage.Entry{
@@ -261,9 +277,9 @@ func parseLine(line []byte, state *fileState) (usage.Entry, bool) {
 		entry.ID = StableEntryID(entry)
 		applyPatches(&entry, state.pending)
 		state.pending = nil
-		return entry, true
+		return []usage.Entry{entry}
 	default:
-		return usage.Entry{}, false
+		return nil
 	}
 }
 
@@ -431,15 +447,27 @@ func resolvePatchPath(cwd, path string) string {
 }
 
 // outputSucceeded reports whether a tool output confirms the patch applied.
-// The output is either a plain string or an object with output/exit_code;
 // apply_patch prints "Success." and shell wrappers prepend "Exit code: 0".
 func outputSucceeded(raw json.RawMessage) bool {
-	if len(raw) == 0 {
+	text, exitCode, ok := outputText(raw)
+	if !ok {
 		return false
 	}
-	var text string
+	if exitCode != nil {
+		return *exitCode == 0
+	}
+	return patchOutputOK(text)
+}
+
+// outputText reads a tool output in any of the shapes codex has written it:
+// a plain string, a list of text items, or an object with output and
+// metadata.exit_code. exitCode is set only by the last.
+func outputText(raw json.RawMessage) (text string, exitCode *int, ok bool) {
+	if len(raw) == 0 {
+		return "", nil, false
+	}
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return patchOutputOK(text)
+		return text, nil, true
 	}
 	var items []struct {
 		Text string `json:"text"`
@@ -450,7 +478,7 @@ func outputSucceeded(raw json.RawMessage) bool {
 			joined.WriteString(item.Text)
 			joined.WriteByte('\n')
 		}
-		return patchOutputOK(joined.String())
+		return joined.String(), nil, true
 	}
 	var structured struct {
 		Output   string `json:"output"`
@@ -459,12 +487,9 @@ func outputSucceeded(raw json.RawMessage) bool {
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(raw, &structured); err != nil {
-		return false
+		return "", nil, false
 	}
-	if structured.Metadata.ExitCode != nil {
-		return *structured.Metadata.ExitCode == 0
-	}
-	return patchOutputOK(structured.Output)
+	return structured.Output, structured.Metadata.ExitCode, true
 }
 
 func patchOutputOK(text string) bool {
