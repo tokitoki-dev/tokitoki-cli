@@ -245,7 +245,6 @@ func runHeartbeat(args []string) int {
 	entity := flags.String("entity", "", "absolute path of the active file")
 	timestamp := flags.Float64("time", 0, "heartbeat time as Unix seconds")
 	project := flags.String("project", "", "project name; only a .tokitoki file outranks it")
-	alternateProject := flags.String("alternate-project", "", "project name to use when nothing on disk names one")
 	projectFolder := flags.String("project-folder", "", "absolute project root")
 	language := flags.String("language", "", "file language")
 	branch := flags.String("branch", "", "source-control branch")
@@ -293,22 +292,21 @@ func runHeartbeat(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), agentlib.DefaultUploadTimeout)
 	defer cancel()
 	err = client.SendHeartbeat(ctx, agentlib.Heartbeat{
-		Entity:           *entity,
-		Timestamp:        heartbeatTime,
-		Project:          *project,
-		AlternateProject: *alternateProject,
-		ProjectPath:      *projectFolder,
-		Language:         *language,
-		Branch:           *branch,
-		Editor:           *editor,
-		Plugin:           *plugin,
-		Category:         *category,
-		IsWrite:          *write,
-		LineNumber:       *lineNumber,
-		CursorPosition:   *cursorPosition,
-		LinesInFile:      *linesInFile,
-		LinesAdded:       *linesAdded,
-		LinesRemoved:     *linesRemoved,
+		Entity:         *entity,
+		Timestamp:      heartbeatTime,
+		Project:        *project,
+		ProjectPath:    *projectFolder,
+		Language:       *language,
+		Branch:         *branch,
+		Editor:         *editor,
+		Plugin:         *plugin,
+		Category:       *category,
+		IsWrite:        *write,
+		LineNumber:     *lineNumber,
+		CursorPosition: *cursorPosition,
+		LinesInFile:    *linesInFile,
+		LinesAdded:     *linesAdded,
+		LinesRemoved:   *linesRemoved,
 	})
 	if err != nil {
 		return fail(defaultLogger(), err)
@@ -509,7 +507,6 @@ func runProject(args []string) int {
 	flags.SetOutput(os.Stderr)
 	entity := flags.String("entity", "", "absolute path of the active file")
 	name := flags.String("project", "", "project name; only a .tokitoki file outranks it")
-	alternateName := flags.String("alternate-project", "", "project name to use when nothing on disk names one")
 	projectFolder := flags.String("project-folder", "", "the editor's folder")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -525,10 +522,9 @@ func runProject(args []string) int {
 
 	logger := defaultLogger()
 	resolved, err := project.Resolve(project.Input{
-		Entity:           *entity,
-		ProjectPath:      *projectFolder,
-		Project:          *name,
-		AlternateProject: *alternateName,
+		Entity:      *entity,
+		ProjectPath: *projectFolder,
+		Project:     *name,
 	})
 	if err != nil {
 		logger.Warn("project identity file ignored", "error", err)
@@ -1083,11 +1079,10 @@ Required:
 
 Optional:
   --time SECONDS                Unix time of the activity (default: now)
+  --project-folder DIR          The editor's root folder
   --project NAME                Name the project; only a .tokitoki file
-                                outranks it (see Project)
-  --alternate-project NAME      The editor's name for the project, used only
-                                when nothing on disk names it
-  --project-folder DIR          The folder the editor has open
+                                outranks it (see Project). Editors leave it
+                                out and let the CLI decide
   --language LANG               Programming language (default: from the path)
   --branch NAME                 Source-control branch
   --category NAME               coding, code reviewing, debugging, building
@@ -1106,7 +1101,6 @@ Project:
     3. the repository holding the entity, then --project-folder
        (a git worktree counts as its repository; a submodule as its own)
     4. the --project-folder folder itself
-    5. --alternate-project
   Without --project the project is decided the way it is for AI agents
   working in the same folder. 'tokitoki project' prints the answer without
   recording anything.
@@ -1114,7 +1108,6 @@ Project:
 Example:
   tokitoki heartbeat \
     --entity /repo/main.go \
-    --alternate-project myrepo \
     --project-folder /repo \
     --editor vscode \
     --language go
@@ -1190,11 +1183,9 @@ to show the name their heartbeats land in, and to pass it on to
 
 Options (at least one of --entity, --project-folder):
   --entity FILE                 File being edited
-  --project-folder DIR          The folder the editor has open
+  --project-folder DIR          The editor's root folder
   --project NAME                Name the project; only a .tokitoki file
                                 outranks it
-  --alternate-project NAME      The editor's name for the project, used only
-                                when nothing on disk names it
 
 The rules are the heartbeat's: see 'tokitoki help heartbeat'.
 

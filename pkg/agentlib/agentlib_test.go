@@ -228,11 +228,10 @@ func TestSendHeartbeatEditorFolderInsideRepositoryIsTheRepository(t *testing.T) 
 	folder := filepath.Join(repo, "apps", "web")
 
 	entry := sendAndQueue(t, Heartbeat{
-		Entity:           filepath.Join(folder, "src", "page.tsx"),
-		Editor:           "vscode",
-		AlternateProject: "web",
-		ProjectPath:      folder,
-		Branch:           "main",
+		Entity:      filepath.Join(folder, "src", "page.tsx"),
+		Editor:      "vscode",
+		ProjectPath: folder,
+		Branch:      "main",
 	})
 	if entry.Project != "cps-dev" || entry.ProjectPath != repo || entry.Branch != "main" {
 		t.Fatalf("identity = %q %q %q, want cps-dev at %q on main", entry.Project, entry.ProjectPath, entry.Branch, repo)
@@ -247,10 +246,9 @@ func TestSendHeartbeatEntityRepositoryWinsOverEditorFolder(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(repo, ".git"))
 
 	entry := sendAndQueue(t, Heartbeat{
-		Entity:           filepath.Join(repo, "cmd", "main.go"),
-		Editor:           "vscode",
-		AlternateProject: "tracklm",
-		ProjectPath:      workspace,
+		Entity:      filepath.Join(repo, "cmd", "main.go"),
+		Editor:      "vscode",
+		ProjectPath: workspace,
 	})
 	if entry.Project != "tokitoki-cli" || entry.ProjectPath != repo {
 		t.Fatalf("identity = %q %q, want tokitoki-cli at %q", entry.Project, entry.ProjectPath, repo)
@@ -261,10 +259,9 @@ func TestSendHeartbeatFolderOutsideRepositoryNamesItself(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "notes")
 
 	entry := sendAndQueue(t, Heartbeat{
-		Entity:           filepath.Join(folder, "todo.md"),
-		Editor:           "jetbrains",
-		AlternateProject: "My Notes",
-		ProjectPath:      folder,
+		Entity:      filepath.Join(folder, "todo.md"),
+		Editor:      "jetbrains",
+		ProjectPath: folder,
 	})
 	if entry.Project != "notes" || entry.ProjectPath != folder {
 		t.Fatalf("identity = %q %q, want notes at %q", entry.Project, entry.ProjectPath, folder)

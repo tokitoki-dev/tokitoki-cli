@@ -326,17 +326,17 @@ func (s *Scanner) resolveProjects(entries []usage.Entry) {
 		// A provider's name is only ever its folder's name or its own label,
 		// never a choice to defend: it is the last resort.
 		input := project.Input{
-			Entity:           entries[i].Entity,
-			ProjectPath:      entries[i].ProjectPath,
-			AlternateProject: entries[i].Project,
-			Branch:           entries[i].Branch,
+			Entity:      entries[i].Entity,
+			ProjectPath: entries[i].ProjectPath,
+			Fallback:    entries[i].Project,
+			Branch:      entries[i].Branch,
 		}
 		// Resolve only looks at an entity's folder, so events about sibling
 		// files share one lookup.
 		key := cacheKey{
 			entityDir:   entityDir(input.Entity),
 			projectPath: strings.TrimSpace(input.ProjectPath),
-			project:     strings.TrimSpace(input.AlternateProject),
+			project:     strings.TrimSpace(input.Fallback),
 			branch:      strings.TrimSpace(input.Branch),
 		}
 		resolved, ok := cache[key]

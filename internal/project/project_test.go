@@ -18,7 +18,7 @@ func TestResolveSubfolderOfRepositoryIsTheRepository(t *testing.T) {
 	cwd := filepath.Join(repo, "cps-web", "apps", "web", "src")
 	mustMkdirAll(t, cwd)
 
-	assertResult(t, Input{ProjectPath: cwd, AlternateProject: "src", Branch: "main"},
+	assertResult(t, Input{ProjectPath: cwd, Fallback: "src", Branch: "main"},
 		Result{Project: "cps-dev", ProjectPath: repo, Branch: "main"})
 }
 
@@ -30,7 +30,7 @@ func TestResolveEntityRepositoryWinsOverFolder(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(repo, ".git"))
 	entity := filepath.Join(repo, "cmd", "main.go")
 
-	assertResult(t, Input{Entity: entity, ProjectPath: workspace, AlternateProject: "tracklm"},
+	assertResult(t, Input{Entity: entity, ProjectPath: workspace, Fallback: "tracklm"},
 		Result{Project: "tokitoki-cli", ProjectPath: repo})
 }
 
@@ -74,7 +74,7 @@ func TestResolveMercurialAndSubversionCheckouts(t *testing.T) {
 func TestResolveFolderOutsideRepositoryIsItsOwnProject(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "notes")
 
-	assertResult(t, Input{ProjectPath: folder + string(filepath.Separator), AlternateProject: "My Notes"},
+	assertResult(t, Input{ProjectPath: folder + string(filepath.Separator), Fallback: "My Notes"},
 		Result{Project: "notes", ProjectPath: folder})
 }
 
@@ -123,7 +123,7 @@ func homeRepository(t *testing.T) string {
 // given: the server keys the project by that path, so rewriting it would
 // split the project's history.
 func TestResolveSourceWithoutFolderKeepsItsOwnIdentity(t *testing.T) {
-	assertResult(t, Input{ProjectPath: "Amp", AlternateProject: "amp"},
+	assertResult(t, Input{ProjectPath: "Amp", Fallback: "amp"},
 		Result{Project: "amp", ProjectPath: "Amp"})
 }
 
@@ -135,7 +135,7 @@ func TestResolveExplicitProjectWinsOverRepository(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(repo, ".git"))
 	folder := filepath.Join(repo, "apps", "web") + string(filepath.Separator)
 
-	assertResult(t, Input{Entity: filepath.Join(folder, "page.tsx"), ProjectPath: folder, Project: "Web App", AlternateProject: "web", Branch: "main"},
+	assertResult(t, Input{Entity: filepath.Join(folder, "page.tsx"), ProjectPath: folder, Project: "Web App", Fallback: "web", Branch: "main"},
 		Result{Project: "Web App", ProjectPath: folder, Branch: "main"})
 }
 

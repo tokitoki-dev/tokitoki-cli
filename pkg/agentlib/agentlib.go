@@ -128,22 +128,22 @@ type SyncOptions struct {
 type Heartbeat struct {
 	Entity    string
 	Timestamp time.Time
-	// Project is a name the editor insists on; AlternateProject one it only
-	// offers. ProjectPath is the editor's folder. SendHeartbeat files the event
-	// under the project internal/project decides from them — with only an
-	// alternate name, the same one AI agents working there are filed under.
-	Project          string
-	AlternateProject string
-	ProjectPath      string
-	Language         string
-	Branch           string
-	Editor           string
-	Plugin           string
-	Category         string
-	IsWrite          bool
-	LineNumber       int
-	CursorPosition   int
-	LinesInFile      int
+	// ProjectPath is the editor's root folder. SendHeartbeat files the event
+	// under the project internal/project decides from it and Entity — the
+	// same one AI agents working there are filed under. Project, a name the
+	// editor insists on, overrides that; only editors released before the
+	// CLI detected repositories send it.
+	Project        string
+	ProjectPath    string
+	Language       string
+	Branch         string
+	Editor         string
+	Plugin         string
+	Category       string
+	IsWrite        bool
+	LineNumber     int
+	CursorPosition int
+	LinesInFile    int
 	// Lines the user typed and deleted in this file since its previous
 	// heartbeat. The server files every line on an IDE heartbeat as human
 	// work, so the editor must count only what a person typed — see the
@@ -550,11 +550,10 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	// An identity file that cannot be read is skipped and must not cost the
 	// heartbeat itself.
 	resolved, err := project.Resolve(project.Input{
-		Entity:           heartbeat.Entity,
-		ProjectPath:      heartbeat.ProjectPath,
-		Project:          heartbeat.Project,
-		AlternateProject: heartbeat.AlternateProject,
-		Branch:           heartbeat.Branch,
+		Entity:      heartbeat.Entity,
+		ProjectPath: heartbeat.ProjectPath,
+		Project:     heartbeat.Project,
+		Branch:      heartbeat.Branch,
 	})
 	if err != nil {
 		c.logger.Warn("project identity file ignored", "error", err)

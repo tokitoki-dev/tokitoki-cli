@@ -362,7 +362,7 @@ func TestRunProjectPrintsRepositoryOfFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, stdout := runCapturingStdout(t, []string{"project", "--project-folder", folder, "--alternate-project", "web"})
+	code, stdout := runCapturingStdout(t, []string{"project", "--project-folder", folder})
 	if code != 0 {
 		t.Fatalf("run(project) = %d, want 0", code)
 	}

@@ -26,10 +26,10 @@ type Input struct {
 	// repositories send their own name this way and read their figures back
 	// under that name, so it has to keep winning.
 	Project string
-	// AlternateProject is the source's own name for the project, used only
-	// when nothing on disk names it: an agent's folder name, an editor's
-	// heartbeat --alternate-project.
-	AlternateProject string
+	// Fallback is the source's own label for the work, used only when nothing
+	// on disk names the project: an agent's folder name, or a tool's own name
+	// ("amp") when it records no folder at all.
+	Fallback string
 	// Branch is the source's branch. An identity file can override it.
 	Branch string
 }
@@ -49,7 +49,7 @@ type Result struct {
 //  2. Project
 //  3. the repository holding Entity, then ProjectPath
 //  4. ProjectPath's folder
-//  5. AlternateProject, else Unknown
+//  5. Fallback, else Unknown
 //
 // Steps 1 and 3 only search absolute paths. The Result is always usable: an
 // error reports an identity file that could not be read, in which case
@@ -75,7 +75,7 @@ func Resolve(in Input) (Result, error) {
 			return Result{Project: name, ProjectPath: path, Branch: branch}, err
 		}
 	}
-	return named(usage.NormalizeProject(in.AlternateProject), in.ProjectPath, branch), err
+	return named(usage.NormalizeProject(in.Fallback), in.ProjectPath, branch), err
 }
 
 // named files the work under a name the source gave, with the source's path
