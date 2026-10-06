@@ -130,11 +130,14 @@ type Heartbeat struct {
 	Timestamp time.Time
 	// ProjectPath is the editor's root folder. SendHeartbeat files the event
 	// under the project internal/project decides from it and Entity — the
-	// same one AI agents working there are filed under. Project, a name the
-	// editor insists on, overrides that; only editors released before the
-	// CLI detected repositories send it.
+	// same one AI agents working there are filed under.
+	ProjectPath string
+	// Project is a name the editor insists on, overriding that decision.
+	//
+	// Deprecated: only editor plugins released before the CLI named projects
+	// from repositories send it; current ones leave it empty. Delete it with
+	// project.Input.Project.
 	Project        string
-	ProjectPath    string
 	Language       string
 	Branch         string
 	Editor         string

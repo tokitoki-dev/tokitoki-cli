@@ -22,9 +22,13 @@ type Input struct {
 	// folder, an agent's working directory.
 	ProjectPath string
 	// Project is a name the source insists on: heartbeat --project. Only an
-	// identity file outranks it. Editors released before Tokitoki looked at
-	// repositories send their own name this way and read their figures back
-	// under that name, so it has to keep winning.
+	// identity file outranks it.
+	//
+	// Deprecated: kept only for editor plugins released before the CLI named
+	// projects from repositories. They send their IDE project name this way
+	// and read their figures back under that name, so it has to keep winning
+	// for them; current plugins never set it. Delete it, and step 2 of
+	// Resolve, once those plugin builds are gone.
 	Project string
 	// Fallback is the source's own label for the work, used only when nothing
 	// on disk names the project: an agent's folder name, or a tool's own name
@@ -46,7 +50,7 @@ type Result struct {
 // Resolve names the project. The first step that answers wins:
 //
 //  1. a .tokitoki identity file above Entity, then above ProjectPath
-//  2. Project
+//  2. Project (deprecated, older editor plugins only)
 //  3. the repository holding Entity, then ProjectPath
 //  4. ProjectPath's folder
 //  5. Fallback, else Unknown
@@ -62,6 +66,7 @@ func Resolve(in Input) (Result, error) {
 	if found {
 		return result, nil
 	}
+	// Compatibility only — see Input.Project.
 	if name := strings.TrimSpace(in.Project); name != "" {
 		return named(name, in.ProjectPath, branch), err
 	}

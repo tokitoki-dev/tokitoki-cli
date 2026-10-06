@@ -244,7 +244,10 @@ func runHeartbeat(args []string) int {
 	flags.SetOutput(os.Stderr)
 	entity := flags.String("entity", "", "absolute path of the active file")
 	timestamp := flags.Float64("time", 0, "heartbeat time as Unix seconds")
-	project := flags.String("project", "", "project name; only a .tokitoki file outranks it")
+	// Deprecated: --project exists only for editor plugins released before
+	// the CLI named projects from repositories; current plugins never pass
+	// it. Delete it with project.Input.Project.
+	project := flags.String("project", "", "deprecated: project name for older editor plugins")
 	projectFolder := flags.String("project-folder", "", "absolute project root")
 	language := flags.String("language", "", "file language")
 	branch := flags.String("branch", "", "source-control branch")
@@ -498,15 +501,14 @@ func runToday(args []string) int {
 	return 0
 }
 
-// runProject prints the project a heartbeat with the same flags would be
-// filed under. Editors ask it for the name to show and to pass as `today
+// runProject prints the project a heartbeat from the same file and folder
+// would be filed under. Editors ask it for the name to show and to pass as `today
 // --project` / `stats --project`, so their status bars read the project the
 // heartbeats land in instead of re-deriving it. Local, no key needed.
 func runProject(args []string) int {
 	flags := flag.NewFlagSet("tokitoki project", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	entity := flags.String("entity", "", "absolute path of the active file")
-	name := flags.String("project", "", "project name; only a .tokitoki file outranks it")
 	projectFolder := flags.String("project-folder", "", "the editor's folder")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -524,7 +526,6 @@ func runProject(args []string) int {
 	resolved, err := project.Resolve(project.Input{
 		Entity:      *entity,
 		ProjectPath: *projectFolder,
-		Project:     *name,
 	})
 	if err != nil {
 		logger.Warn("project identity file ignored", "error", err)
@@ -1080,9 +1081,9 @@ Required:
 Optional:
   --time SECONDS                Unix time of the activity (default: now)
   --project-folder DIR          The editor's root folder
-  --project NAME                Name the project; only a .tokitoki file
-                                outranks it (see Project). Editors leave it
-                                out and let the CLI decide
+  --project NAME                Deprecated, for older editor plugins only:
+                                name the project; only a .tokitoki file
+                                outranks it (see Project)
   --language LANG               Programming language (default: from the path)
   --branch NAME                 Source-control branch
   --category NAME               coding, code reviewing, debugging, building
@@ -1097,13 +1098,12 @@ Optional:
 Project:
   First match wins:
     1. a .tokitoki file above the entity, then above --project-folder
-    2. --project
+    2. --project (deprecated, older editor plugins only)
     3. the repository holding the entity, then --project-folder
        (a git worktree counts as its repository; a submodule as its own)
     4. the --project-folder folder itself
-  Without --project the project is decided the way it is for AI agents
-  working in the same folder. 'tokitoki project' prints the answer without
-  recording anything.
+  The project is decided the way it is for AI agents working in the same
+  folder. 'tokitoki project' prints the answer without recording anything.
 
 Example:
   tokitoki heartbeat \
@@ -1176,16 +1176,14 @@ Examples:
 		case "project":
 			fmt.Fprint(os.Stderr, `project [OPTIONS]
 
-Print, as JSON, the project a heartbeat with the same options would be
-filed under. Nothing is recorded and no API key is needed: editors use it
+Print, as JSON, the project a heartbeat from the same file and folder
+would be filed under. Nothing is recorded and no API key is needed: editors use it
 to show the name their heartbeats land in, and to pass it on to
 'today --project' and 'stats --project'.
 
 Options (at least one of --entity, --project-folder):
   --entity FILE                 File being edited
   --project-folder DIR          The editor's root folder
-  --project NAME                Name the project; only a .tokitoki file
-                                outranks it
 
 The rules are the heartbeat's: see 'tokitoki help heartbeat'.
 
