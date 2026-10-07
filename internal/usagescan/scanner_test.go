@@ -1,8 +1,10 @@
 package usagescan
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,25 +234,39 @@ func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
 	}
 }
 
-func TestResolveProjectsPreservesPerEventBranchWithoutOverride(t *testing.T) {
-	projectDir := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(projectDir, ".tokitoki"),
-		[]byte("shared-name\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
+// An agent's log records the branch of the folder it was started in. Started
+// in a folder of repositories, that is no branch at all ("HEAD"), and the work
+// is in one of the repositories: each event takes the branch that repository
+// had checked out when the event happened, whatever the provider said.
+func TestResolveProjectsTakesEachEventsBranchFromItsCheckout(t *testing.T) {
+	workspace := t.TempDir()
+	repo := filepath.Join(workspace, "tracklm-nextjs")
+	switched := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	for path, contents := range map[string]string{
+		filepath.Join(repo, ".git", "HEAD"): "ref: refs/heads/feature\n",
+		filepath.Join(repo, ".git", "logs", "HEAD"): fmt.Sprintf(
+			"%[1]s %[1]s Dev <dev@example.com> %[2]d +0000\tcommit (initial): first\n"+
+				"%[1]s %[1]s Dev <dev@example.com> %[3]d +0000\tcheckout: moving from main to feature\n",
+			strings.Repeat("a", 40), switched.Add(-24*time.Hour).Unix(), switched.Unix()),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	entity := filepath.Join(repo, "app", "page.tsx")
 	entries := []usage.Entry{
-		{ID: "one", ProjectPath: projectDir, Branch: "main"},
-		{ID: "two", ProjectPath: projectDir, Branch: "feature"},
+		{ID: "before", ProjectPath: workspace, Entity: entity, Branch: "HEAD", Timestamp: switched.Add(-time.Hour)},
+		{ID: "after", ProjectPath: workspace, Entity: entity, Branch: "HEAD", Timestamp: switched.Add(time.Hour)},
+		{ID: "folder", ProjectPath: workspace, Branch: "HEAD", Timestamp: switched.Add(time.Hour)},
 	}
 	(&Scanner{}).resolveProjects(entries)
-	if entries[0].Project != "shared-name" || entries[1].Project != "shared-name" {
-		t.Fatalf("projects = %q/%q, want shared-name", entries[0].Project, entries[1].Project)
-	}
-	if entries[0].Branch != "main" || entries[1].Branch != "feature" {
-		t.Fatalf("branches = %q/%q, want preserved", entries[0].Branch, entries[1].Branch)
+	for i, want := range []string{"main", "feature", ""} {
+		if entries[i].Branch != want {
+			t.Errorf("%s branch = %q, want %q", entries[i].ID, entries[i].Branch, want)
+		}
 	}
 }
 

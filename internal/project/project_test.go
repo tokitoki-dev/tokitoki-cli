@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
@@ -18,8 +19,8 @@ func TestResolveSubfolderOfRepositoryIsTheRepository(t *testing.T) {
 	cwd := filepath.Join(repo, "cps-web", "apps", "web", "src")
 	mustMkdirAll(t, cwd)
 
-	assertResult(t, Input{ProjectPath: cwd, Fallback: "src", Branch: "main"},
-		Result{Project: "cps-dev", ProjectPath: repo, Branch: "main"})
+	assertResult(t, Input{ProjectPath: cwd, Fallback: "src"},
+		Result{Project: "cps-dev", ProjectPath: repo})
 }
 
 // A folder holding several repositories is opened, and a file in one of them
@@ -137,8 +138,8 @@ func TestResolveExplicitProjectWinsOverRepository(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(repo, ".git"))
 	folder := filepath.Join(repo, "apps", "web") + string(filepath.Separator)
 
-	assertResult(t, Input{Entity: filepath.Join(folder, "page.tsx"), ProjectPath: folder, Project: "Web App", Fallback: "web", Branch: "main"},
-		Result{Project: "Web App", ProjectPath: folder, Branch: "main"})
+	assertResult(t, Input{Entity: filepath.Join(folder, "page.tsx"), ProjectPath: folder, Project: "Web App", Fallback: "web"},
+		Result{Project: "Web App", ProjectPath: folder})
 }
 
 func TestResolveIdentityFileWinsOverExplicitProject(t *testing.T) {
@@ -155,20 +156,41 @@ func TestResolveNothingKnownIsUnknown(t *testing.T) {
 }
 
 func TestResolveIdentityFileWinsOverRepository(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "payments-api")
-	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	repo := gitCheckout(t, filepath.Join(t.TempDir(), "payments-api"), "main")
 	writeProjectFile(t, repo, "customer-portal\nrelease/2026\n")
+	in := Input{Entity: filepath.Join(repo, "src", "main.go"), ProjectPath: repo, Branch: "wrong-branch"}
 
-	assertResult(t, Input{Entity: filepath.Join(repo, "src", "main.go"), ProjectPath: repo, Branch: "wrong-branch"},
-		Result{Project: "customer-portal", ProjectPath: repo, Branch: "release/2026"})
+	assertResult(t, in, Result{Project: "customer-portal", ProjectPath: repo})
+	assertBranch(t, in, "release/2026")
 }
 
+// Outside any git checkout nothing on disk knows a branch, so the one the
+// source claims stands.
 func TestResolveEmptyIdentityFileNamesItsFolderAndKeepsBranch(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "sample-project")
 	writeProjectFile(t, projectDir, "")
+	in := Input{Entity: filepath.Join(projectDir, "src", "main.go"), Branch: "main"}
 
-	assertResult(t, Input{Entity: filepath.Join(projectDir, "src", "main.go"), Branch: "main"},
-		Result{Project: "sample-project", ProjectPath: projectDir, Branch: "main"})
+	assertResult(t, in, Result{Project: "sample-project", ProjectPath: projectDir})
+	assertBranch(t, in, "main")
+}
+
+// An agent started in a folder of repositories works in one of them: the
+// branch is that repository's, whatever the agent recorded for the folder.
+func TestResolveBranchIsTheCheckoutOfTheWork(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "tracklm")
+	repo := gitCheckout(t, filepath.Join(workspace, "tracklm-nextjs"), "dev")
+
+	assertBranch(t, Input{Entity: filepath.Join(repo, "app", "page.tsx"), ProjectPath: workspace}, "dev")
+	assertBranch(t, Input{ProjectPath: filepath.Join(repo, "app")}, "dev")
+	assertBranch(t, Input{ProjectPath: workspace}, "")
+}
+
+// The checkout knows its own branch better than any editor that reports it.
+func TestResolveCheckoutBranchWinsOverClaimedBranch(t *testing.T) {
+	repo := gitCheckout(t, filepath.Join(t.TempDir(), "payments-api"), "dev")
+
+	assertBranch(t, Input{Entity: filepath.Join(repo, "main.go"), ProjectPath: repo, Branch: "editor-branch"}, "dev")
 }
 
 func TestResolvePlaceholderUsesNestedRepository(t *testing.T) {
@@ -236,9 +258,47 @@ func TestResolveUnreadableIdentityFileFallsBackToRepository(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve() error = nil, want the unreadable identity file reported")
 	}
-	if want := (Result{Project: "payments-api", ProjectPath: repo}); got != want {
-		t.Fatalf("Resolve() = %+v, want %+v", got, want)
+	if got.Project != "payments-api" || got.ProjectPath != repo {
+		t.Fatalf("Resolve() = %q at %q, want payments-api at %q", got.Project, got.ProjectPath, repo)
 	}
+}
+
+// The remote travels with the project only when uploaded paths, which are
+// relative to the project's folder, are paths in the repository: when that
+// folder is the checkout's root.
+func TestResolveGitRemoteOnlyForTheCheckoutRoot(t *testing.T) {
+	root := t.TempDir()
+	repo := withRemote(t, gitCheckout(t, filepath.Join(root, "company", "payments-api"), "main"), "git@github.com:acme/payments-api.git")
+	entity := filepath.Join(repo, "src", "main.go")
+
+	assertRemote(t, Input{Entity: entity, ProjectPath: filepath.Join(root, "company")}, "git@github.com:acme/payments-api.git")
+	assertRemote(t, Input{ProjectPath: filepath.Join(repo, "src")}, "git@github.com:acme/payments-api.git")
+
+	// A deprecated --project keeps the editor's folder, here a subfolder.
+	assertRemote(t, Input{Entity: entity, ProjectPath: filepath.Join(repo, "src"), Project: "Payments"}, "")
+
+	// An identity file above the repository makes the project a folder of
+	// repositories; one at its root leaves the repository the project.
+	writeProjectFile(t, filepath.Join(root, "company"), "company\n")
+	assertRemote(t, Input{Entity: entity}, "")
+	writeProjectFile(t, repo, "payments\n")
+	assertRemote(t, Input{Entity: entity}, "git@github.com:acme/payments-api.git")
+}
+
+func TestResolveGitRemoteOfWorktree(t *testing.T) {
+	repo := withRemote(t, gitCheckout(t, filepath.Join(t.TempDir(), "payments-api"), "main"), "git@github.com:acme/payments-api.git")
+	gitDir := filepath.Join(repo, ".git", "worktrees", "fix-login")
+	worktree := filepath.Join(repo, ".claude", "worktrees", "fix-login")
+	mustMkdirAll(t, gitDir)
+	mustWriteFile(t, filepath.Join(gitDir, "commondir"), "../..\n")
+	mustMkdirAll(t, worktree)
+	mustWriteFile(t, filepath.Join(worktree, ".git"), "gitdir: "+gitDir+"\n")
+
+	assertRemote(t, Input{Entity: filepath.Join(worktree, "src", "main.go"), ProjectPath: worktree}, "git@github.com:acme/payments-api.git")
+}
+
+func TestResolveGitRemoteOutsideGit(t *testing.T) {
+	assertRemote(t, Input{ProjectPath: filepath.Join(t.TempDir(), "notes")}, "")
 }
 
 func assertResult(t *testing.T, input Input, want Result) {
@@ -247,9 +307,45 @@ func assertResult(t *testing.T, input Input, want Result) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("Resolve(%+v) = %+v, want %+v", input, got, want)
+	if got.Project != want.Project || got.ProjectPath != want.ProjectPath {
+		t.Fatalf("Resolve(%+v) = %q at %q, want %q at %q", input, got.Project, got.ProjectPath, want.Project, want.ProjectPath)
 	}
+}
+
+func assertBranch(t *testing.T, input Input, want string) {
+	t.Helper()
+	got, err := Resolve(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch := got.Branches.At(time.Now()); branch != want {
+		t.Fatalf("Resolve(%+v) branch = %q, want %q", input, branch, want)
+	}
+}
+
+func assertRemote(t *testing.T, input Input, want string) {
+	t.Helper()
+	got, err := Resolve(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GitRemote != want {
+		t.Fatalf("Resolve(%+v) remote = %q, want %q", input, got.GitRemote, want)
+	}
+}
+
+func withRemote(t *testing.T, repo, url string) string {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = "+url+"\n")
+	return repo
+}
+
+// gitCheckout makes dir a checkout of branch that has never switched.
+func gitCheckout(t *testing.T, dir, branch string) string {
+	t.Helper()
+	mustMkdirAll(t, filepath.Join(dir, ".git"))
+	mustWriteFile(t, filepath.Join(dir, ".git", "HEAD"), "ref: refs/heads/"+branch+"\n")
+	return dir
 }
 
 func writeProjectFile(t *testing.T, dir, contents string) {

@@ -121,6 +121,10 @@ Line one is the project name, line two (optional) the branch. `{project}`
 expands to the repository's name (Git, Mercurial, or Subversion), e.g.
 `my-company/{project}`.
 
+Without that second line, the branch comes from the Git checkout itself: the
+one it had checked out when the work happened, read from its reflog. Editors
+and AI agents get the same answer, whatever branch an agent's own log claims.
+
 ## Other clients
 
 [VS Code](https://github.com/tokitoki-dev/tokitoki-vscode) ·

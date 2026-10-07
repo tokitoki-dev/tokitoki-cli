@@ -77,9 +77,6 @@ func TestLoadsStoreEntry(t *testing.T) {
 			TotalTokens:           30772,
 		},
 	})
-	if entries[0].Branch != "main" {
-		t.Fatalf("branch = %q, want main", entries[0].Branch)
-	}
 	if entries[0].ProjectPath != "/home/dev/widget" {
 		t.Fatalf("project path = %q, want /home/dev/widget", entries[0].ProjectPath)
 	}

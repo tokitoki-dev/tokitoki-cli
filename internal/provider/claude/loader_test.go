@@ -188,8 +188,8 @@ func TestReadUsageFileEmitsOneFileEditPerToolResult(t *testing.T) {
 	if small.ToolUseID != "toolu-1" || small.ID != usage.StableID("claude", "edit", "toolu-1") {
 		t.Fatalf("small edit keyed on %q / %q, want tool_use id", small.ToolUseID, small.ID)
 	}
-	if small.Project != "app" || small.ProjectPath != "/repo/app" || small.Branch != "main" || small.Language != "Go" {
-		t.Fatalf("edit context = project %q path %q branch %q language %q", small.Project, small.ProjectPath, small.Branch, small.Language)
+	if small.Project != "app" || small.ProjectPath != "/repo/app" || small.Language != "Go" {
+		t.Fatalf("edit context = project %q path %q language %q", small.Project, small.ProjectPath, small.Language)
 	}
 	if small.Data.Message.Usage != (TokenUsage{}) {
 		t.Fatalf("edit carries tokens: %+v", small.Data.Message.Usage)
@@ -429,28 +429,6 @@ func TestParseLineToleratesNullFieldsAndTornLines(t *testing.T) {
 		if entries := parseLine(torn, "session"); len(entries) != 0 {
 			t.Fatalf("torn line %s produced %+v", torn, entries)
 		}
-	}
-}
-
-func TestReadUsageFileCapturesGitBranch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
-	mkdirAll(t, filepath.Dir(path))
-	writeFile(t, path, `{"timestamp":"2026-05-21T01:02:03Z","gitBranch":"feature/login","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}`)
-
-	entries, err := ReadUsageFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("len(entries) = %d, want 1", len(entries))
-	}
-	if entries[0].Branch != "feature/login" {
-		t.Fatalf("branch = %q, want feature/login", entries[0].Branch)
-	}
-
-	converted := ConvertEntries(entries)
-	if converted[0].Branch != "feature/login" {
-		t.Fatalf("converted branch = %q, want feature/login", converted[0].Branch)
 	}
 }
 

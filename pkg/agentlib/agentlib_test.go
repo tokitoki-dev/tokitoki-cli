@@ -220,6 +220,40 @@ func TestSendHeartbeatIdentityFileOverridesEditor(t *testing.T) {
 	}
 }
 
+// Editors that read the branch themselves (Sakura) send it, but the checkout
+// is where the branch lives; what the editor says only fills in when the
+// checkout cannot say.
+func TestSendHeartbeatCheckoutBranchWinsOverEditor(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "payments-api")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	mustWriteFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/dev\n")
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:      filepath.Join(repo, "main.go"),
+		Editor:      "sakura",
+		ProjectPath: repo,
+		Branch:      "editor-branch",
+	})
+	if entry.Branch != "dev" {
+		t.Fatalf("branch = %q, want the checkout's dev", entry.Branch)
+	}
+}
+
+func TestSendHeartbeatCarriesTheCheckoutsRemote(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "payments-api")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+	mustWriteFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = git@github.com:acme/payments-api.git\n")
+
+	entry := sendAndQueue(t, Heartbeat{
+		Entity:      filepath.Join(repo, "src", "main.go"),
+		Editor:      "vscode",
+		ProjectPath: repo,
+	})
+	if entry.GitRemote != "git@github.com:acme/payments-api.git" {
+		t.Fatalf("remote = %q, want origin's", entry.GitRemote)
+	}
+}
+
 // An editor opened on a monorepo package reports the package folder; the
 // work is in the repository, the same project the AI agents there report.
 func TestSendHeartbeatEditorFolderInsideRepositoryIsTheRepository(t *testing.T) {

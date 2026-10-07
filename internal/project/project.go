@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/git"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
@@ -34,7 +35,8 @@ type Input struct {
 	// on disk names the project: an agent's folder name, or a tool's own name
 	// ("amp") when it records no folder at all.
 	Fallback string
-	// Branch is the source's branch. An identity file can override it.
+	// Branch is a branch the source claims: heartbeat --branch. It counts only
+	// when the checkout's own record has no answer.
 	Branch string
 }
 
@@ -44,7 +46,32 @@ type Input struct {
 type Result struct {
 	Project     string
 	ProjectPath string
-	Branch      string
+	// Branches tells which branch the work was on at the time it was done.
+	Branches Branches
+	// GitRemote is the address of the git checkout's remote, set only when
+	// ProjectPath is that checkout's root: uploaded paths are relative to
+	// ProjectPath, and only then are they paths in the repository.
+	GitRemote string
+}
+
+// Branches tells which branch the work was on. An identity file's branch
+// line pins it; otherwise the checkout's own record decides, and what the
+// source claims counts only when that record has no answer.
+type Branches struct {
+	pinned   string
+	checkout git.Branches
+	claimed  string
+}
+
+// At reports the branch the work done at t was on, or "" when nothing says.
+func (b Branches) At(t time.Time) string {
+	if b.pinned != "" {
+		return b.pinned
+	}
+	if name := b.checkout.At(t); name != "" {
+		return name
+	}
+	return b.claimed
 }
 
 // Resolve names the project. The first step that answers wins:
@@ -58,35 +85,62 @@ type Result struct {
 // Steps 1 and 3 only search absolute paths. The Result is always usable: an
 // error reports an identity file that could not be read, in which case
 // identity files were ignored and the steps after them decided.
+//
+// The branch and the remote come from the git checkout the work is in, found
+// in the same places, the nearest first — never from an agent's log: an
+// agent records the branch of the folder it was started in, which need not be
+// the checkout the work landed in.
 func Resolve(in Input) (Result, error) {
 	dirs := searchDirs(in)
-	branch := strings.TrimSpace(in.Branch)
+	result, err := identify(in, dirs)
 
-	result, found, err := fromIdentityFile(dirs, branch)
+	repo, ok := workCheckout(dirs)
+	result.Branches.checkout = repo.Branches()
+	result.Branches.claimed = strings.TrimSpace(in.Branch)
+	if ok && repo.Root == filepath.Clean(result.ProjectPath) {
+		result.GitRemote = repo.Remote()
+	}
+	return result, err
+}
+
+// identify runs the naming steps Resolve lists.
+func identify(in Input, dirs []string) (Result, error) {
+	result, found, err := fromIdentityFile(dirs)
 	if found {
 		return result, nil
 	}
 	// Compatibility only — see Input.Project.
 	if name := strings.TrimSpace(in.Project); name != "" {
-		return named(name, in.ProjectPath, branch), err
+		return named(name, in.ProjectPath), err
 	}
 	for _, dir := range dirs {
 		if root, name, ok := repository(dir); ok {
-			return Result{Project: name, ProjectPath: root, Branch: branch}, err
+			return Result{Project: name, ProjectPath: root}, err
 		}
 	}
 	if path := absolute(in.ProjectPath); path != "" {
 		if name := folderName(path); name != "" {
-			return Result{Project: name, ProjectPath: path, Branch: branch}, err
+			return Result{Project: name, ProjectPath: path}, err
 		}
 	}
-	return named(usage.NormalizeProject(in.Fallback), in.ProjectPath, branch), err
+	return named(usage.NormalizeProject(in.Fallback), in.ProjectPath), err
 }
 
 // named files the work under a name the source gave, with the source's path
 // exactly as it sent it — what this CLI always recorded for such a source.
-func named(name, path, branch string) Result {
-	return Result{Project: name, ProjectPath: strings.TrimSpace(path), Branch: branch}
+func named(name, path string) Result {
+	return Result{Project: name, ProjectPath: strings.TrimSpace(path)}
+}
+
+// workCheckout finds the git checkout the work is in: the nearest one
+// holding any of dirs, most precise first.
+func workCheckout(dirs []string) (git.Repo, bool) {
+	for _, dir := range dirs {
+		if repo, ok := git.Find(dir); ok && owns(repo.Root, dir) {
+			return repo, true
+		}
+	}
+	return git.Repo{}, false
 }
 
 // searchDirs lists where the work happened, most precise first.
@@ -101,7 +155,7 @@ func searchDirs(in Input) []string {
 	return dirs
 }
 
-func fromIdentityFile(dirs []string, branch string) (Result, bool, error) {
+func fromIdentityFile(dirs []string) (Result, bool, error) {
 	for _, dir := range dirs {
 		file, found, err := projectfile.Find(dir)
 		if err != nil {
@@ -111,10 +165,7 @@ func fromIdentityFile(dirs []string, branch string) (Result, bool, error) {
 			continue
 		}
 		root := filepath.Dir(file.Path)
-		if file.Branch != "" {
-			branch = file.Branch
-		}
-		return Result{Project: identityName(file.Project, dir, root), ProjectPath: root, Branch: branch}, true, nil
+		return Result{Project: identityName(file.Project, dir, root), ProjectPath: root, Branches: Branches{pinned: file.Branch}}, true, nil
 	}
 	return Result{}, false, nil
 }

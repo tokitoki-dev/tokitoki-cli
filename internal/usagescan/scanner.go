@@ -311,7 +311,8 @@ func (s *Scanner) scanStreaming(streamer streamProvider, scanned map[string]usag
 }
 
 // resolveProjects replaces each entry's project with the one project.Resolve
-// decides. What a provider put there — an agent's working directory and its
+// decides, and its branch with the one the checkout was on when the event
+// happened. What a provider put there — an agent's working directory and its
 // folder name — is only the input: an agent that cd'd into src/ is still
 // working in the repository around it.
 //
@@ -322,7 +323,6 @@ func (s *Scanner) resolveProjects(entries []usage.Entry) {
 		entityDir   string
 		projectPath string
 		project     string
-		branch      string
 	}
 	cache := make(map[cacheKey]project.Result)
 
@@ -333,7 +333,6 @@ func (s *Scanner) resolveProjects(entries []usage.Entry) {
 			Entity:      entries[i].Entity,
 			ProjectPath: entries[i].ProjectPath,
 			Fallback:    entries[i].Project,
-			Branch:      entries[i].Branch,
 		}
 		// Resolve only looks at an entity's folder, so events about sibling
 		// files share one lookup.
@@ -341,7 +340,6 @@ func (s *Scanner) resolveProjects(entries []usage.Entry) {
 			entityDir:   entityDir(input.Entity),
 			projectPath: strings.TrimSpace(input.ProjectPath),
 			project:     strings.TrimSpace(input.Fallback),
-			branch:      strings.TrimSpace(input.Branch),
 		}
 		resolved, ok := cache[key]
 		if !ok {
@@ -357,7 +355,8 @@ func (s *Scanner) resolveProjects(entries []usage.Entry) {
 		}
 		entries[i].Project = resolved.Project
 		entries[i].ProjectPath = resolved.ProjectPath
-		entries[i].Branch = resolved.Branch
+		entries[i].Branch = resolved.Branches.At(entries[i].Timestamp)
+		entries[i].GitRemote = resolved.GitRemote
 	}
 }
 

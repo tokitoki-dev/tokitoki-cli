@@ -178,7 +178,7 @@ func assertRepo(t *testing.T, dir string, want Repo) {
 	if !ok {
 		t.Fatalf("Find(%q) found nothing, want %+v", dir, want)
 	}
-	if got != want {
+	if got.Root != want.Root || got.Name != want.Name {
 		t.Fatalf("Find(%q) = %+v, want %+v", dir, got, want)
 	}
 }

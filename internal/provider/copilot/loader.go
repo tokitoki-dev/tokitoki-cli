@@ -124,7 +124,7 @@ func loadEntries(paths []string, filter usage.FileFilter) ([]usage.Entry, error)
 }
 
 // buildStoreEntries turns the usage database rows into entries. The sessions
-// table names the directory and branch each session ran in; the transcript
+// table names the directory each session ran in; the transcript
 // contributes the file changes and language evidence, each attached to the
 // session's last API call at or before its own timestamp — a diff follows
 // the request that made it.
@@ -151,7 +151,6 @@ func buildStoreEntries(events []storeEvent, sessions map[string]storeSession, co
 			"GitHub Copilot CLI",
 			event.tokens,
 		)
-		entry.Branch = agentdata.FirstNonEmpty(session.branch, branchOf(context))
 		entry.ID = storeEntryID(event)
 		entries = append(entries, entry)
 		bySession[event.sessionID] = append(bySession[event.sessionID], i)
@@ -218,13 +217,6 @@ func attachSessionContext(entries []usage.Entry, indexes []int, context *session
 		}
 		entries[index].Language = usage.NormalizeLanguage(language)
 	}
-}
-
-func branchOf(context *sessionContext) string {
-	if context == nil {
-		return ""
-	}
-	return context.branch
 }
 
 // storeEntryID identifies a database row by its content, not its position:

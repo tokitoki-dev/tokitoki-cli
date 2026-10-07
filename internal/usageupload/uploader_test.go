@@ -233,3 +233,20 @@ func TestDevicePayloadOmitsEmptyName(t *testing.T) {
 		t.Fatalf("payload = %s, want no device name", body)
 	}
 }
+
+// The remote goes up under its wire name, and an event without one carries
+// no empty field for the server to mistake for "no remote any more".
+func TestEventCarriesGitRemote(t *testing.T) {
+	for remote, want := range map[string]string{
+		"git@github.com:acme/payments-api.git": `"git_remote":"git@github.com:acme/payments-api.git"`,
+		"":                                     "",
+	} {
+		body, err := json.Marshal(convertEvent(usage.Entry{ID: "e", GitRemote: remote}, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(body), `"git_remote"`); got != (want != "") || !strings.Contains(string(body), want) {
+			t.Fatalf("event = %s, want %s", body, want)
+		}
+	}
+}

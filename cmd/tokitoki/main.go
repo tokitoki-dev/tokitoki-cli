@@ -250,7 +250,7 @@ func runHeartbeat(args []string) int {
 	project := flags.String("project", "", "deprecated: project name for older editor plugins")
 	projectFolder := flags.String("project-folder", "", "absolute project root")
 	language := flags.String("language", "", "file language")
-	branch := flags.String("branch", "", "source-control branch")
+	branch := flags.String("branch", "", "branch, used only when the checkout's own cannot be read")
 	editor := flags.String("editor", "eclipse", "editor identifier")
 	plugin := flags.String("plugin", "", "editor and plugin version")
 	category := flags.String("category", "coding", "activity category")
@@ -1085,7 +1085,8 @@ Optional:
                                 name the project; only a .tokitoki file
                                 outranks it (see Project)
   --language LANG               Programming language (default: from the path)
-  --branch NAME                 Source-control branch
+  --branch NAME                 Branch, used only when the Git checkout's own
+                                cannot be read
   --category NAME               coding, code reviewing, debugging, building
                                 (default: coding)
   --write                       Mark as a file write (default: read)

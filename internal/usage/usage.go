@@ -270,8 +270,11 @@ type Entry struct {
 	Entity     string `json:"entity,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 	Branch     string `json:"branch,omitempty"`
-	Category   string `json:"category,omitempty"`
-	IsWrite    *bool  `json:"is_write,omitempty"`
+	// GitRemote is the remote of the git checkout the work is in, set only
+	// when ProjectPath is that checkout's root (project.Result.GitRemote).
+	GitRemote string `json:"git_remote,omitempty"`
+	Category  string `json:"category,omitempty"`
+	IsWrite   *bool  `json:"is_write,omitempty"`
 	// LinesAdded/LinesRemoved count the source lines the agent added and
 	// removed in this event's file modifications, for providers that record
 	// diffs. Zero means "no diff recorded", not "no change".

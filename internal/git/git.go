@@ -24,6 +24,13 @@ type Repo struct {
 	// Name is the repository's name, the same from every worktree of it, so
 	// all of them are one project.
 	Name string
+	// gitDir is the checkout's own git directory, holding its HEAD and the
+	// reflog of HEAD: .git itself, or where a worktree's or submodule's .git
+	// file points. Empty when that pointer cannot be followed.
+	gitDir string
+	// commonDir is the git directory the checkout shares with its repository,
+	// holding the config: a linked worktree's main .git, else gitDir itself.
+	commonDir string
 }
 
 // Find reports the repository dir is in, searching dir and then its parents
@@ -57,27 +64,38 @@ func open(dir string) (Repo, bool) {
 	if err != nil {
 		return Repo{}, false
 	}
-	repo := Repo{Root: dir, Name: filepath.Base(dir)}
+	repo := Repo{Root: dir, Name: filepath.Base(dir), gitDir: dotGit, commonDir: dotGit}
 	if !info.IsDir() {
-		if common, ok := commonDir(dotGit); ok {
+		repo.gitDir = pointedDir(dotGit)
+		repo.commonDir = repo.gitDir
+		if common, ok := commonDir(repo.gitDir); ok {
 			repo.Name = repoName(common)
+			repo.commonDir = common
 		}
 	}
 	return repo, true
 }
 
-// commonDir follows a .git file to a linked worktree's shared git directory.
-func commonDir(dotGit string) (string, bool) {
+// pointedDir follows a .git file to the git directory it names, or "" when
+// it names none.
+func pointedDir(dotGit string) string {
 	line, ok := firstLine(dotGit)
 	if !ok {
-		return "", false
+		return ""
 	}
 	gitDir, ok := strings.CutPrefix(line, "gitdir:")
 	if !ok {
+		return ""
+	}
+	return resolve(filepath.Dir(dotGit), strings.TrimSpace(gitDir))
+}
+
+// commonDir follows a linked worktree's git directory to the one it shares
+// with its repository. A submodule's has no commondir: it shares nothing.
+func commonDir(gitDir string) (string, bool) {
+	if gitDir == "" {
 		return "", false
 	}
-	gitDir = resolve(filepath.Dir(dotGit), strings.TrimSpace(gitDir))
-
 	common, ok := firstLine(filepath.Join(gitDir, "commondir"))
 	if !ok || common == "" {
 		return "", false

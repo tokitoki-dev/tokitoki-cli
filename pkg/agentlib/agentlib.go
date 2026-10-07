@@ -563,7 +563,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	}
 	heartbeat.Project = resolved.Project
 	heartbeat.ProjectPath = resolved.ProjectPath
-	heartbeat.Branch = resolved.Branch
+	heartbeat.Branch = resolved.Branches.At(heartbeat.Timestamp)
 	if strings.TrimSpace(heartbeat.Language) == "" {
 		heartbeat.Language = langdetect.FromPath(heartbeat.Entity)
 	}
@@ -589,6 +589,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		Entity:       strings.TrimSpace(heartbeat.Entity),
 		EntityType:   "file",
 		Branch:       strings.TrimSpace(heartbeat.Branch),
+		GitRemote:    resolved.GitRemote,
 		Category:     strings.TrimSpace(heartbeat.Category),
 		IsWrite:      &isWrite,
 		LinesAdded:   uint64(max(heartbeat.LinesAdded, 0)),

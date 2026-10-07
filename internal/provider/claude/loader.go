@@ -29,7 +29,6 @@ type UsageEntry struct {
 	Version           *string      `json:"version"`
 	Entrypoint        *string      `json:"entrypoint"`
 	CWD               *string      `json:"cwd"`
-	GitBranch         *string      `json:"gitBranch"`
 	Message           UsageMessage `json:"message"`
 	CostUSD           *float64     `json:"costUSD"`
 	RequestID         *string      `json:"requestId"`
@@ -121,7 +120,6 @@ type LoadedEntry struct {
 	Model               string             `json:"model,omitempty"`
 	Language            string             `json:"language"`
 	Client              string             `json:"client,omitempty"`
-	Branch              string             `json:"branch,omitempty"`
 	Entity              string             `json:"entity,omitempty"`
 	IsWrite             bool               `json:"is_write,omitempty"`
 	LinesAdded          uint64             `json:"lines_added,omitempty"`
@@ -184,7 +182,6 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			Language:     usage.NormalizeLanguage(entry.Language),
 			OS:           usage.NormalizeOS(runtime.GOOS),
 			Client:       entry.Client,
-			Branch:       entry.Branch,
 			Entity:       entry.Entity,
 			EntityType:   entityType,
 			IsWrite:      isWrite,
@@ -547,7 +544,6 @@ func decodeEnvelope(raw map[string]json.RawMessage) UsageEntry {
 	decodeField(raw, "version", &data.Version)
 	decodeField(raw, "entrypoint", &data.Entrypoint)
 	decodeField(raw, "cwd", &data.CWD)
-	decodeField(raw, "gitBranch", &data.GitBranch)
 	decodeField(raw, "requestId", &data.RequestID)
 	decodeField(raw, "costUSD", &data.CostUSD)
 	decodeField(raw, "isApiErrorMessage", &data.IsAPIErrorMessage)
@@ -593,10 +589,6 @@ func baseEntry(data UsageEntry, timestamp time.Time, sessionID string) LoadedEnt
 	if data.Entrypoint != nil {
 		client = usage.NormalizeClient(*data.Entrypoint)
 	}
-	branch := ""
-	if data.GitBranch != nil {
-		branch = strings.TrimSpace(*data.GitBranch)
-	}
 	return LoadedEntry{
 		Data:        data,
 		Timestamp:   timestamp,
@@ -605,7 +597,6 @@ func baseEntry(data UsageEntry, timestamp time.Time, sessionID string) LoadedEnt
 		SessionID:   sessionID,
 		ProjectPath: projectPath,
 		Client:      client,
-		Branch:      branch,
 	}
 }
 

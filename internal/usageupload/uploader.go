@@ -88,6 +88,9 @@ type Event struct {
 	Entity          string `json:"entity,omitempty"`
 	EntityType      string `json:"entity_type,omitempty"`
 	Branch          string `json:"branch,omitempty"`
+	// GitRemote is the project's git remote as the checkout has it, less any
+	// credentials; the server keeps it on the project, not the event.
+	GitRemote string `json:"git_remote,omitempty"`
 	// No `editor` field: on a heartbeat it duplicated SourceProvider and
 	// Client, on an AI event it was never set, and the server stopped storing
 	// it (server migration 0060). The server still accepts it from older CLIs.
@@ -412,6 +415,7 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Entity:                     relativeEntity(entry.ProjectPath, entry.Entity),
 		EntityType:                 entry.EntityType,
 		Branch:                     entry.Branch,
+		GitRemote:                  entry.GitRemote,
 		Category:                   entry.Category,
 		IsWrite:                    entry.IsWrite,
 		LinesAdded:                 entry.LinesAdded,
