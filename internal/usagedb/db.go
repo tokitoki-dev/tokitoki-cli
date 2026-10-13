@@ -145,7 +145,10 @@ func stampVersion(db *sql.DB) error {
 // tool calls became events (tool_call, tool_result), and the history they
 // were never read from is only reached by reading it again. Every event the
 // re-read produces besides those already exists and is ignored.
-const eventSchemaVersion = 6
+//
+// Version 7 clears it once more: prompts became events (prompt, prompt_end),
+// and the questions already on disk are only reached by reading them again.
+const eventSchemaVersion = 7
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -170,9 +173,9 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	// One full re-read serves both: a database older than 5 gains its edits
-	// and its tool calls from the same pass.
-	if version < 6 {
+	// One full re-read serves every version since 5: a database older than
+	// any of them gains its edits, tool calls and prompts from the same pass.
+	if version < 7 {
 		if _, err := db.Exec(`DELETE FROM scanned_files`); err != nil {
 			return err
 		}

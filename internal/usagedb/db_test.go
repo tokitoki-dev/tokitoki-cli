@@ -587,11 +587,11 @@ func TestReleaseClaimsLeavesResolvedEventsAlone(t *testing.T) {
 // transcript from the start: that is how file edits recorded before edits
 // became events of their own get into the database. Events already stored
 // keep their rows and their upload state.
-// Versions 5 and 6 each made the scanner read every transcript again (file
-// edits, then tool calls). A database left at either older version re-reads;
+// Versions 5, 6 and 7 each made the scanner read every transcript again (file
+// edits, tool calls, then prompts). A database left at either older version re-reads;
 // the events it already holds survive untouched.
 func TestOpenClearsScannedFilesWhenUpgradingFromOlderVersions(t *testing.T) {
-	for _, from := range []int{4, 5} {
+	for _, from := range []int{4, 5, 6} {
 		t.Run(fmt.Sprintf("from v%d", from), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "old.db")
 

@@ -138,8 +138,9 @@ func TestBuildDoesNotCountFileEditsAsEvents(t *testing.T) {
 	}
 }
 
-// Tool calls are side effects of a request too, both halves of them. They
-// count no request and no token, and add no model of their own.
+// Tool calls are side effects of a request too, both halves of them, and a
+// prompt is the boundary of some. None counts a request or a token, or adds
+// a model of its own.
 func TestBuildDoesNotCountToolCallsAsEvents(t *testing.T) {
 	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
 	call := entry(now.Add(-time.Hour), "claude", "claude-fable-5", "tracklm", 1000)
@@ -159,7 +160,15 @@ func TestBuildDoesNotCountToolCallsAsEvents(t *testing.T) {
 		Tool:      &usage.ToolCall{CallID: "toolu-1", Status: usage.ToolStatusOK},
 	}
 
-	report := Build([]usage.Entry{call, invoked, finished}, 7, now)
+	asked := usage.Entry{
+		Provider:  usage.ProviderClaude,
+		EventKind: usage.EventKindPrompt,
+		Timestamp: now.Add(-time.Hour).Add(-time.Second),
+		Project:   "tracklm",
+		Prompt:    &usage.PromptTurn{PromptID: "p-1", Origin: "human"},
+	}
+
+	report := Build([]usage.Entry{asked, call, invoked, finished}, 7, now)
 
 	if report.Totals.Events != 1 || report.Totals.TotalTokens != 1000 {
 		t.Fatalf("tool halves counted: events=%d tokens=%d", report.Totals.Events, report.Totals.TotalTokens)

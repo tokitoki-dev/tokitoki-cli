@@ -115,6 +115,8 @@ type Event struct {
 	// Tool is the tool_call / tool_result payload. Sent as stored: no paths
 	// in it to make relative, and nothing in it that identifies a machine.
 	Tool *usage.ToolCall `json:"tool,omitempty"`
+	// Prompt is the prompt / prompt_end payload. Ids and timings only.
+	Prompt *usage.PromptTurn `json:"prompt,omitempty"`
 }
 
 type Response struct {
@@ -432,6 +434,7 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		ReasoningOutputTokens:      entry.Usage.ReasoningOutputTokens,
 		TotalTokens:                entry.Usage.TotalTokens,
 		Tool:                       entry.Tool,
+		Prompt:                     entry.Prompt,
 	}
 }
 

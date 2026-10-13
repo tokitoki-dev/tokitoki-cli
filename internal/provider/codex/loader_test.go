@@ -534,3 +534,92 @@ func TestReadUsageFileEmitsToolCallsInEveryShape(t *testing.T) {
 		}
 	}
 }
+
+// A turn's task_started is a prompt's start; its task_complete or
+// turn_aborted is the end, with codex's own timings. Each keyed on turn_id.
+func TestReadUsageFileEmitsPromptHalves(t *testing.T) {
+	content := `{"timestamp":"2026-10-12T01:00:00Z","type":"session_meta","payload":{"id":"session-1","cwd":"/repo/app","originator":"codex_vscode","source":"vscode"}}
+{"timestamp":"2026-10-12T01:00:00Z","type":"turn_context","payload":{"cwd":"/repo/app","model":"gpt-5.5"}}
+{"timestamp":"2026-10-12T01:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-done","started_at":1791766801}}
+{"timestamp":"2026-10-12T01:00:30Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t-done","duration_ms":29000,"time_to_first_token_ms":5200.7}}
+{"timestamp":"2026-10-12T01:01:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-stopped"}}
+{"timestamp":"2026-10-12T01:02:00Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t-stopped","reason":"interrupted","duration_ms":60000}}
+{"timestamp":"2026-10-12T01:03:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-error"}}
+{"timestamp":"2026-10-12T01:04:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t-error","error":{"message":"at capacity"}}}
+{"timestamp":"2026-10-12T01:05:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-old"}}
+{"timestamp":"2026-10-12T01:05:40Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t-old","error":null}}
+{"timestamp":"2026-10-12T01:06:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"never-started","duration_ms":1}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-x.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	all, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := map[string]usage.Entry{}
+	ends := map[string]usage.Entry{}
+	for _, entry := range all {
+		switch entry.EventKind {
+		case usage.EventKindPrompt:
+			starts[entry.Prompt.PromptID] = entry
+		case usage.EventKindPromptEnd:
+			ends[entry.Prompt.PromptID] = entry
+		}
+	}
+	if len(starts) != 4 || len(ends) != 4 {
+		t.Fatalf("starts=%d ends=%d, want 4/4 (no end for a turn never started)", len(starts), len(ends))
+	}
+	start := starts["t-done"]
+	if start.ID != usage.StableID("codex", usage.EventKindPrompt, "t-done") || start.SessionID != "session-1" ||
+		start.Project != "app" || start.Prompt.Origin != "" || start.Usage != (usage.TokenUsage{}) {
+		t.Fatalf("start = %+v", start)
+	}
+	want := map[string]struct {
+		outcome         string
+		duration, first int64
+	}{
+		"t-done":    {usage.PromptCompleted, 29000, 5200},
+		"t-stopped": {usage.PromptAborted, 60000, -1},
+		"t-error":   {usage.PromptFailed, -1, -1},
+		"t-old":     {usage.PromptCompleted, -1, -1},
+	}
+	millis := func(v *int64) int64 {
+		if v == nil {
+			return -1
+		}
+		return *v
+	}
+	for id, w := range want {
+		end := ends[id]
+		if end.Prompt.Outcome != w.outcome || millis(end.Prompt.DurationMS) != w.duration || millis(end.Prompt.FirstTokenMS) != w.first {
+			t.Fatalf("end %s = %+v, want %+v", id, end.Prompt, w)
+		}
+		if end.ID != usage.StableID("codex", usage.EventKindPromptEnd, id) || end.Prompt.Origin != "" {
+			t.Fatalf("end %s keyed wrong: %+v", id, end)
+		}
+	}
+}
+
+// A thread another thread spawned opens with a copy of its parent's turns,
+// under the parent's turn ids. Those are the parent's prompts, reported by
+// the parent's rollout; the copy emits none of them, nor its own.
+func TestReadUsageFileSkipsSubagentPrompts(t *testing.T) {
+	content := `{"timestamp":"2026-10-12T01:00:00Z","type":"session_meta","payload":{"id":"child-1","cwd":"/repo/app","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-1","depth":1}}}}}
+{"timestamp":"2026-10-12T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-parent"}}
+{"timestamp":"2026-10-12T01:00:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t-parent","duration_ms":1000}}
+{"timestamp":"2026-10-12T01:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-child"}}
+`
+	path := filepath.Join(t.TempDir(), "sessions", "rollout-child.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, content)
+
+	all, err := ReadUsageFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("entries = %+v, want none", all)
+	}
+}

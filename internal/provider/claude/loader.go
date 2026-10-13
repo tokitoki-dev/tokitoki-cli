@@ -99,6 +99,9 @@ func (s *Speed) UnmarshalJSON(data []byte) error {
 //     that carries it is also an api_call line.
 //   - usage.EventKindToolResult: a tool_result block — the outcome of the
 //     call it names. The same line may also be a file_edit.
+//   - usage.EventKindPrompt: a prompt line — what a person (or a background
+//     task's notification) submitted, keyed on its promptId. Only where it
+//     began; never its text.
 //
 // A line yields one entry per kind it carries. No entry depends on any other
 // line. A transcript can be parsed from any
@@ -127,6 +130,7 @@ type LoadedEntry struct {
 	Files               []usage.FileChange `json:"files,omitempty"`
 	ToolUseID           string             `json:"tool_use_id,omitempty"`
 	Tool                *usage.ToolCall    `json:"tool,omitempty"`
+	Prompt              *usage.PromptTurn  `json:"prompt,omitempty"`
 	UsageLimitResetTime *time.Time         `json:"usage_limit_reset_time,omitempty"`
 }
 
@@ -190,6 +194,7 @@ func ConvertEntries(entries []LoadedEntry) []usage.Entry {
 			Files:        entry.Files,
 			Raw:          raw,
 			Tool:         entry.Tool,
+			Prompt:       entry.Prompt,
 			Usage: usage.TokenUsage{
 				InputTokens:                tokens.InputTokens,
 				OutputTokens:               tokens.OutputTokens,
@@ -498,9 +503,11 @@ func parseLine(line []byte, sessionID string) (entries []LoadedEntry) {
 	mayBeEdit := bytes.Contains(line, []byte(`"toolUseResult"`)) &&
 		(bytes.Contains(line, []byte(`"structuredPatch"`)) || bytes.Contains(line, []byte(`"type":"create"`)))
 	mayBeCall := bytes.Contains(line, []byte(`"usage":{`))
+	mayBePrompt := bytes.Contains(line, []byte(`"promptId"`)) &&
+		bytes.Contains(line, []byte(`"type":"user"`))
 	mayBeTool := bytes.Contains(line, []byte(`"type":"tool_use"`)) ||
 		bytes.Contains(line, []byte(`"type":"tool_result"`))
-	if !mayBeEdit && !mayBeCall && !mayBeTool {
+	if !mayBeEdit && !mayBeCall && !mayBeTool && !mayBePrompt {
 		return nil
 	}
 
@@ -531,7 +538,93 @@ func parseLine(line []byte, sessionID string) (entries []LoadedEntry) {
 	if mayBeTool {
 		entries = append(entries, parseToolBlocks(raw, base)...)
 	}
+	if mayBePrompt {
+		if entry, ok := parsePromptLine(raw, base); ok {
+			entries = append(entries, entry)
+		}
+	}
 	return entries
+}
+
+// parsePromptLine builds the prompt entry for a line that submits a prompt:
+// a user line carrying a promptId that is neither a tool's result, nor
+// Claude Code's own injected context (isMeta), nor a subagent's task
+// (isSidechain — that is part of the prompt that launched it, not a new one).
+//
+// Every line of one turn carries the same promptId — the prompt, an image
+// pasted with it, the tool results that follow — so each such line yields the
+// same entry ID and the store keeps the first, which is the prompt itself.
+// The ID survives a forked session, as tool_use ids do.
+//
+// The prompt's text is read only to name its origin, and goes no further.
+func parsePromptLine(raw map[string]json.RawMessage, base LoadedEntry) (LoadedEntry, bool) {
+	var promptID, turnOrigin string
+	var isMeta, isSidechain bool
+	decodeField(raw, "promptId", &promptID)
+	decodeField(raw, "isMeta", &isMeta)
+	decodeField(raw, "isSidechain", &isSidechain)
+	decodeField(raw, "turnOrigin", &turnOrigin)
+	if promptID == "" || isMeta || isSidechain {
+		return LoadedEntry{}, false
+	}
+	var message struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if !decodeField(raw, "message", &message) {
+		return LoadedEntry{}, false
+	}
+	text, ok := promptText(message.Content)
+	if !ok {
+		return LoadedEntry{}, false
+	}
+
+	entry := base
+	entry.Kind = usage.EventKindPrompt
+	entry.ID = usage.StableID(string(usage.ProviderClaude), usage.EventKindPrompt, promptID)
+	entry.Prompt = &usage.PromptTurn{PromptID: promptID, Origin: promptOrigin(turnOrigin, text)}
+	return entry, true
+}
+
+// promptText reads a user line's content as a prompt: its text, or false when
+// the line is a tool's result rather than something submitted.
+func promptText(content json.RawMessage) (string, bool) {
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		return text, true
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return "", false
+	}
+	for _, block := range blocks {
+		if block.Type == "tool_result" {
+			return "", false
+		}
+	}
+	for _, block := range blocks {
+		if block.Type == "text" {
+			return block.Text, true
+		}
+	}
+	// An image pasted on its own is still a prompt.
+	return "", true
+}
+
+// promptOrigin says what submitted a prompt. Recent Claude Code writes it as
+// turnOrigin. Older versions only mark a background task's notification, by
+// the tag it opens with; anything else they wrote was typed by a person, but
+// that is left for the reader to conclude rather than stated here.
+func promptOrigin(turnOrigin, text string) string {
+	if turnOrigin != "" {
+		return turnOrigin
+	}
+	if strings.HasPrefix(strings.TrimSpace(text), "<task-notification>") {
+		return "task_notification"
+	}
+	return ""
 }
 
 // decodeEnvelope reads the line-level fields one at a time. Claude Code's

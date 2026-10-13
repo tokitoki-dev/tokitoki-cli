@@ -30,6 +30,9 @@ type sessionMetaPayload struct {
 	ID         string `json:"id"`
 	CWD        string `json:"cwd"`
 	Originator string `json:"originator"`
+	// "vscode", "cli", or for a thread another thread spawned,
+	// {"subagent": {...}}. Raw: only that last shape is read.
+	Source json.RawMessage `json:"source"`
 }
 
 type turnContextPayload struct {
@@ -44,7 +47,16 @@ type eventPayload struct {
 	// item_completed only. Raw: items are every kind of thing a turn
 	// produces, and only the tool kinds are read.
 	Item json.RawMessage `json:"item"`
-	Info struct {
+	// task_started, task_complete and turn_aborted.
+	TurnID string `json:"turn_id"`
+	// task_complete and turn_aborted: codex's own timings for the turn.
+	// Floats, though codex writes whole numbers: a fraction must not fail
+	// the decode of the line.
+	DurationMS   *float64 `json:"duration_ms"`
+	FirstTokenMS *float64 `json:"time_to_first_token_ms"`
+	// task_complete: set when the turn ended on an error.
+	Error json.RawMessage `json:"error"`
+	Info  struct {
 		LastTokenUsage  *tokenUsagePayload `json:"last_token_usage"`
 		TotalTokenUsage *tokenUsagePayload `json:"total_token_usage"`
 	} `json:"info"`
@@ -151,6 +163,12 @@ type fileState struct {
 	// item_completed is the outcome of a call already seen or a call of its
 	// own.
 	toolCalls map[string]string
+	// turns holds the turn ids this file has started, so an end is only
+	// emitted for a turn whose start is known.
+	turns map[string]bool
+	// subagent is set for a thread another thread spawned, whose rollout
+	// opens with a copy of its parent's turns: it emits no prompts.
+	subagent bool
 }
 
 type patchFile struct {
@@ -193,6 +211,12 @@ func parseLine(line []byte, state *fileState) []usage.Entry {
 		if client := usage.NormalizeClient(payload.Originator); client != "" {
 			state.client = client
 		}
+		var source struct {
+			Subagent json.RawMessage `json:"subagent"`
+		}
+		if json.Unmarshal(payload.Source, &source) == nil && len(source.Subagent) > 0 {
+			state.subagent = true
+		}
 		return nil
 	case "turn_context":
 		var payload turnContextPayload
@@ -224,6 +248,12 @@ func parseLine(line []byte, state *fileState) []usage.Entry {
 				return nil
 			}
 			return state.toolResult(envelope.Timestamp, payload.CallID, statusOf(*payload.Success))
+		}
+		if payload.Type == "task_started" {
+			return state.promptStart(envelope.Timestamp, payload.TurnID)
+		}
+		if payload.Type == "task_complete" || payload.Type == "turn_aborted" {
+			return state.promptEnd(envelope.Timestamp, payload)
 		}
 		if payload.Type == "item_completed" {
 			return toolEntriesFromItem(envelope.Timestamp, payload.Item, state)

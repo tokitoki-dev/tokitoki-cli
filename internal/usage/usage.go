@@ -45,6 +45,11 @@ const UnknownLanguage = "Unknown"
 //     tool an agent ran: the invocation and, from a later line, its outcome.
 //     Both carry Tool and nothing else — no tokens, no lines. The server
 //     merges them by call id into a table of their own.
+//   - EventKindPrompt and EventKindPromptEnd are the two halves of one
+//     prompt an agent worked on: where it began and, for agents that record
+//     it, how it ended. Both carry Prompt and nothing else — never the
+//     prompt's text. The server reads a prompt's calls and tools back from
+//     the session's own events.
 //   - EventKindHeartbeat is an editor activity sample.
 //
 // The server counts requests over api_call rows and sums line changes over
@@ -54,16 +59,19 @@ const (
 	EventKindFileEdit   = "file_edit"
 	EventKindToolCall   = "tool_call"
 	EventKindToolResult = "tool_result"
+	EventKindPrompt     = "prompt"
+	EventKindPromptEnd  = "prompt_end"
 	EventKindHeartbeat  = "heartbeat"
 )
 
 // CountsAsRequest reports whether an event of this kind is a request: an API
-// call, or an editor heartbeat. Edits and tool calls are side effects of a
-// request that is already counted. An empty kind is an API call — the only
+// call, or an editor heartbeat. Edits, tool calls and prompt boundaries are
+// facts about requests that are already counted. An empty kind is an API call — the only
 // thing a provider that predates the field ever produced.
 func CountsAsRequest(kind string) bool {
 	switch kind {
-	case EventKindFileEdit, EventKindToolCall, EventKindToolResult:
+	case EventKindFileEdit, EventKindToolCall, EventKindToolResult,
+		EventKindPrompt, EventKindPromptEnd:
 		return false
 	default:
 		return true
@@ -92,6 +100,29 @@ type ToolCall struct {
 const (
 	ToolStatusOK    = "ok"
 	ToolStatusError = "error"
+)
+
+// PromptTurn is one half of a prompt an agent worked on, keyed by the
+// agent's own id for it. The start half sets Origin; the end half sets
+// Outcome and the agent's own timings. Neither sets the other's fields, and
+// neither ever carries the prompt's text.
+type PromptTurn struct {
+	// PromptID is Claude's promptId or Codex's turn_id: one per prompt, and
+	// carried unchanged into a forked session.
+	PromptID string `json:"prompt_id"`
+	// Origin says what submitted the prompt — "human", "task_notification" —
+	// and is empty where the agent does not say.
+	Origin string `json:"origin,omitempty"`
+	// Outcome is PromptCompleted, PromptAborted or PromptFailed.
+	Outcome      string `json:"outcome,omitempty"`
+	DurationMS   *int64 `json:"duration_ms,omitempty"`
+	FirstTokenMS *int64 `json:"first_token_ms,omitempty"`
+}
+
+const (
+	PromptCompleted = "completed"
+	PromptAborted   = "aborted"
+	PromptFailed    = "failed"
 )
 
 // UnknownProject is the single spelling every provider uses when a project
@@ -287,6 +318,8 @@ type Entry struct {
 	Usage TokenUsage     `json:"usage"`
 	// Tool is set on tool_call and tool_result events, and only there.
 	Tool *ToolCall `json:"tool,omitempty"`
+	// Prompt is set on prompt and prompt_end events, and only there.
+	Prompt *PromptTurn `json:"prompt,omitempty"`
 }
 
 // NormalizeOS maps a Go runtime.GOOS value to a human-readable name.

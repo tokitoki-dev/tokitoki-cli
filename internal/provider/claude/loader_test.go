@@ -789,3 +789,66 @@ func TestReadUsageFileEmitsToolCallHalves(t *testing.T) {
 		}
 	}
 }
+
+// A prompt is a user line carrying a promptId that someone submitted: not a
+// tool's result, not Claude Code's injected context, not a subagent's task.
+// Every line of a turn carries the turn's promptId, so they all yield the one
+// entry and the store keeps the first.
+func TestReadUsageFileEmitsPrompts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects", "project-a", "session-a.jsonl")
+	mkdirAll(t, filepath.Dir(path))
+	writeFile(t, path, `
+{"type":"user","timestamp":"2026-10-12T01:00:00Z","cwd":"/repo/app","promptId":"p-human","turnOrigin":"human","message":{"role":"user","content":[{"type":"image","source":{}},{"type":"text","text":"why is this slow?"}]}}
+{"type":"user","timestamp":"2026-10-12T01:00:00Z","cwd":"/repo/app","promptId":"p-human","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>context</system-reminder>"}]}}
+{"timestamp":"2026-10-12T01:00:02Z","requestId":"req-1","cwd":"/repo/app","message":{"id":"msg-1","model":"claude","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","id":"toolu-1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","timestamp":"2026-10-12T01:00:03Z","cwd":"/repo/app","promptId":"p-human","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-1","content":"ok"}]}}
+{"type":"user","timestamp":"2026-10-12T01:05:00Z","cwd":"/repo/app","promptId":"p-old","message":{"role":"user","content":"typed before turnOrigin existed"}}
+{"type":"user","timestamp":"2026-10-12T01:06:00Z","cwd":"/repo/app","promptId":"p-old","message":{"role":"user","content":"[Request interrupted by user]"}}
+{"type":"user","timestamp":"2026-10-12T01:07:00Z","cwd":"/repo/app","promptId":"p-note","message":{"role":"user","content":"  <task-notification>\n<task-id>x</task-id>"}}
+{"type":"user","timestamp":"2026-10-12T01:08:00Z","cwd":"/repo/app","promptId":"p-image","message":{"role":"user","content":[{"type":"image","source":{}}]}}
+{"type":"user","timestamp":"2026-10-12T01:09:00Z","cwd":"/repo/app","promptId":"p-side","isSidechain":true,"message":{"role":"user","content":"a subagent's task"}}
+{"type":"user","timestamp":"2026-10-12T01:10:00Z","cwd":"/repo/app","message":{"role":"user","content":"no promptId at all"}}
+`)
+
+	loaded, err := LoadEntriesFromPaths([]string{filepath.Dir(filepath.Dir(filepath.Dir(path)))}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := map[string]LoadedEntry{}
+	for _, entry := range ofKind(loaded, usage.EventKindPrompt) {
+		prompts[entry.Prompt.PromptID] = entry
+	}
+	want := map[string]string{"p-human": "human", "p-old": "", "p-note": "task_notification", "p-image": ""}
+	if len(prompts) != len(want) {
+		t.Fatalf("prompts = %v, want %v", keys(prompts), want)
+	}
+	for id, origin := range want {
+		entry, ok := prompts[id]
+		if !ok || entry.Prompt.Origin != origin {
+			t.Fatalf("prompt %s = %+v, want origin %q", id, entry.Prompt, origin)
+		}
+		if entry.ID != usage.StableID("claude", usage.EventKindPrompt, id) || entry.SessionID != "session-a" || entry.Project != "app" {
+			t.Fatalf("prompt %s keyed or placed wrong: %+v", id, entry)
+		}
+	}
+	if !prompts["p-old"].Timestamp.Equal(time.Date(2026, 10, 12, 1, 5, 0, 0, time.UTC)) {
+		t.Fatalf("p-old started at %v, want its first line", prompts["p-old"].Timestamp)
+	}
+	// The turn's tool result is a tool result and nothing more.
+	if len(ofKind(loaded, usage.EventKindToolResult)) != 1 || len(ofKind(loaded, usage.EventKindAPICall)) != 1 {
+		t.Fatalf("other kinds disturbed: %+v", loaded)
+	}
+	for _, converted := range ConvertEntries(ofKind(loaded, usage.EventKindPrompt)) {
+		if converted.Prompt == nil || converted.Tool != nil || converted.Usage != (usage.TokenUsage{}) || converted.EventKind != usage.EventKindPrompt {
+			t.Fatalf("converted prompt = %+v", converted)
+		}
+	}
+}
+
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

@@ -294,8 +294,9 @@ func (state *fileState) toolCall(timestamp string, call *usage.ToolCall, ran tim
 		state.toolCalls = make(map[string]string)
 	}
 	state.toolCalls[call.CallID] = call.Name
-	entry := state.toolEntry(usage.EventKindToolCall, at.Add(-ran), call)
+	entry := state.entry(usage.EventKindToolCall, call.CallID, at.Add(-ran))
 	entry.Model = state.model
+	entry.Tool = call
 	return []usage.Entry{entry}
 }
 
@@ -309,13 +310,17 @@ func (state *fileState) toolResult(timestamp, callID, status string) []usage.Ent
 	if err != nil {
 		return nil
 	}
-	return []usage.Entry{state.toolEntry(usage.EventKindToolResult, at, &usage.ToolCall{CallID: callID, Status: status})}
+	entry := state.entry(usage.EventKindToolResult, callID, at)
+	entry.Tool = &usage.ToolCall{CallID: callID, Status: status}
+	return []usage.Entry{entry}
 }
 
-func (state *fileState) toolEntry(kind string, at time.Time, call *usage.ToolCall) usage.Entry {
+// entry is the base of every event keyed on an id codex assigned — a call's
+// halves, a turn's halves: the id, the kind, and the session it happened in.
+func (state *fileState) entry(kind, id string, at time.Time) usage.Entry {
 	return usage.Entry{
 		Provider:    usage.ProviderCodex,
-		ID:          usage.StableID(string(usage.ProviderCodex), kind, call.CallID),
+		ID:          usage.StableID(string(usage.ProviderCodex), kind, id),
 		EventKind:   kind,
 		Timestamp:   at,
 		Date:        at.In(time.Local).Format("2006-01-02"),
@@ -325,7 +330,6 @@ func (state *fileState) toolEntry(kind string, at time.Time, call *usage.ToolCal
 		Language:    stateLanguage(state),
 		OS:          usage.NormalizeOS(runtime.GOOS),
 		Client:      state.client,
-		Tool:        call,
 	}
 }
 
