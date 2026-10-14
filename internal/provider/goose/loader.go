@@ -1,6 +1,7 @@
 package goose
 
 import (
+	"database/sql"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -63,10 +64,12 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 	}
 	defer db.Close()
 
+	// Older Goose databases predate sessions.updated_at and working_dir.
+	// Selecting NULL in their place gives every schema the same row shape.
 	rows, err := db.Query(`
-		SELECT id, model_config_json, provider_name, created_at, total_tokens,
-		       input_tokens, output_tokens, accumulated_total_tokens,
-		       accumulated_input_tokens, accumulated_output_tokens
+		SELECT id, model_config_json, created_at, ` + optionalColumn(db, "updated_at") + `,
+		       total_tokens, input_tokens, output_tokens, accumulated_total_tokens,
+		       accumulated_input_tokens, accumulated_output_tokens, ` + optionalColumn(db, "working_dir") + `
 		FROM sessions
 		WHERE model_config_json IS NOT NULL AND TRIM(model_config_json) != ''
 	`)
@@ -77,24 +80,41 @@ func loadDatabase(path string) ([]usage.Entry, error) {
 
 	entries := make([]usage.Entry, 0)
 	for rows.Next() {
-		var id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput any
-		if !agentdb.ScanAny(rows, &id, &modelConfig, &providerName, &createdAt, &total, &input, &output, &accumulatedTotal, &accumulatedInput, &accumulatedOutput) {
+		var id, modelConfig, createdAt, updatedAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput, cwd any
+		if !agentdb.ScanAny(rows, &id, &modelConfig, &createdAt, &updatedAt, &total, &input, &output, &accumulatedTotal, &accumulatedInput, &accumulatedOutput, &cwd) {
 			continue
 		}
-		if entry, ok := rowEntry(path, id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput); ok {
+		if entry, ok := rowEntry(path, id, modelConfig, createdAt, updatedAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput, cwd); ok {
 			entries = append(entries, entry)
 		}
 	}
 	return entries, rows.Err()
 }
 
-func rowEntry(path string, id, modelConfig, providerName, createdAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput any) (usage.Entry, bool) {
+// optionalColumn selects a sessions column older databases lack, or NULL
+// where it is missing. A failed lookup reads as missing, so the scan falls
+// back to the older shape instead of failing.
+func optionalColumn(db *sql.DB, column string) string {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?`, column).Scan(&n); err != nil || n == 0 {
+		return "NULL"
+	}
+	return column
+}
+
+// rowEntry reads one session's running total (see Provider.ReportsRunningTotals).
+func rowEntry(path string, id, modelConfig, createdAt, updatedAt, total, input, output, accumulatedTotal, accumulatedInput, accumulatedOutput, cwd any) (usage.Entry, bool) {
 	sessionID := agentdb.SqlString(id)
 	model := modelName(agentdb.SqlString(modelConfig))
 	if sessionID == "" || model == "" {
 		return usage.Entry{}, false
 	}
-	timestamp, ok := timestamp(agentdb.SqlString(createdAt))
+	// When the session last moved, which is when its growth since the
+	// previous read happened; its start on databases that do not say.
+	at, ok := timestamp(agentdb.SqlString(updatedAt))
+	if !ok {
+		at, ok = timestamp(agentdb.SqlString(createdAt))
+	}
 	if !ok {
 		return usage.Entry{}, false
 	}
@@ -112,9 +132,12 @@ func rowEntry(path string, id, modelConfig, providerName, createdAt, total, inpu
 	if !usageprovider.NonZero(tokens) {
 		return usage.Entry{}, false
 	}
-	entry := usageprovider.BaseEntry(usage.ProviderGoose, timestamp, "goose", "Goose", sessionID, model, "Goose", tokens)
+	projectPath := "Goose"
+	if dir, _, ok := usage.ProjectFromCWD(agentdb.SqlString(cwd)); ok {
+		projectPath = dir
+	}
+	entry := usageprovider.BaseEntry(usage.ProviderGoose, at, "goose", projectPath, sessionID, model, "Goose", tokens)
 	usageprovider.SetSource(&entry, path, 0, 0, 0)
-	entry.ID = usageprovider.StableEntryID(entry, "goose:"+sessionID+":"+agentdb.SqlString(providerName))
 	return entry, true
 }
 

@@ -156,10 +156,10 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 			continue
 		}
 
-		// A file edit is not a request: it is a side effect of one that is
-		// already counted. Its lines still matter and its activity still
-		// moves the clock; only the request count leaves it out.
-		isRequest := entry.EventKind != usage.EventKindFileEdit
+		// A file edit or a tool call is not a request: it is a side effect of
+		// one that is already counted. Its activity still moves the clock;
+		// only the request count leaves it out.
+		isRequest := usage.CountsAsRequest(entry.EventKind)
 
 		day := &report.Daily[index]
 		if isRequest {

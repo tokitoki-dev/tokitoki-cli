@@ -45,7 +45,6 @@ type timedCandidate struct {
 type sessionContext struct {
 	cwd     string
 	gitRoot string
-	branch  string
 
 	changes    []timedChange
 	candidates []timedCandidate
@@ -135,7 +134,6 @@ func handleSessionStart(data map[string]any, context *sessionContext) {
 	}
 	context.cwd = agentdata.FirstNonEmpty(agentdata.StringField(block, "cwd"), context.cwd)
 	context.gitRoot = agentdata.FirstNonEmpty(agentdata.StringField(block, "gitRoot"), context.gitRoot)
-	context.branch = agentdata.FirstNonEmpty(agentdata.StringField(block, "branch"), context.branch)
 }
 
 func handleToolStart(data map[string]any, timestamp time.Time, context *sessionContext, toolNames map[string]string) {

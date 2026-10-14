@@ -16,6 +16,11 @@ func (p Provider) WithPaths(paths []string) usageprovider.Provider {
 	return p
 }
 
+// ReportsRunningTotals says each entry is a session's total so far — Droid
+// rewrites a session's settings file as the session grows — not one API call; the store keeps the
+// growth between reads (usagedb.InsertGrowth).
+func (Provider) ReportsRunningTotals() bool { return true }
+
 // Provider returns the Droid provider id.
 func (Provider) Provider() usage.Provider { return usage.ProviderDroid }
 

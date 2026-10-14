@@ -25,6 +25,10 @@ type WantEntry struct {
 	SessionID string
 	Project   string
 	Tokens    usage.TokenUsage
+	// RunningTotal marks a session's total so far rather than one event: it
+	// carries no ID, because the store keys the growth between reads instead
+	// (usagedb.InsertGrowth).
+	RunningTotal bool
 }
 
 // AssertSingleEntry checks that a provider loaded exactly one entry matching
@@ -53,7 +57,7 @@ func AssertSingleEntry(t *testing.T, entries []usage.Entry, err error, want Want
 	if entry.Usage != want.Tokens {
 		t.Fatalf("usage = %#v, want %#v", entry.Usage, want.Tokens)
 	}
-	if entry.ID == "" {
+	if entry.ID == "" && !want.RunningTotal {
 		t.Fatal("ID is empty")
 	}
 }

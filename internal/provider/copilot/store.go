@@ -14,14 +14,12 @@ import (
 
 // The Copilot CLI stopped exporting OpenTelemetry files and now records every
 // API call in ~/.copilot/session-store.db: assistant_usage_events holds the
-// per-call token counts and sessions holds the working directory and branch
-// the session ran in.
+// per-call token counts and sessions holds the working directory the session
+// ran in.
 
 // storeSession is one row of the sessions table: where a session ran.
 type storeSession struct {
-	cwd        string
-	repository string
-	branch     string
+	cwd string
 }
 
 // storeEvent is one row of assistant_usage_events: one API call's usage.
@@ -49,21 +47,17 @@ func loadStoreDatabase(path string) ([]storeEvent, map[string]storeSession, erro
 
 func queryStoreSessions(db *sql.DB) map[string]storeSession {
 	sessions := make(map[string]storeSession)
-	rows, err := db.Query(`SELECT id, COALESCE(cwd, ''), COALESCE(repository, ''), COALESCE(branch, '') FROM sessions`)
+	rows, err := db.Query(`SELECT id, COALESCE(cwd, '') FROM sessions`)
 	if err != nil {
 		return sessions
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, cwd, repository, branch string
-		if err := rows.Scan(&id, &cwd, &repository, &branch); err != nil {
+		var id, cwd string
+		if err := rows.Scan(&id, &cwd); err != nil {
 			continue
 		}
-		sessions[id] = storeSession{
-			cwd:        strings.TrimSpace(cwd),
-			repository: strings.TrimSpace(repository),
-			branch:     strings.TrimSpace(branch),
-		}
+		sessions[id] = storeSession{cwd: strings.TrimSpace(cwd)}
 	}
 	return sessions
 }

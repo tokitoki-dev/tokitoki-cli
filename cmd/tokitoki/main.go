@@ -24,6 +24,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/logship"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/project"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/selfupdate"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/telemetry"
@@ -159,6 +160,9 @@ func dispatch(args []string) int {
 	if len(args) > 0 && args[0] == "today" {
 		return runToday(args[1:])
 	}
+	if len(args) > 0 && args[0] == "project" {
+		return runProject(args[1:])
+	}
 	if len(args) > 0 && args[0] == "upload" {
 		return runUploadSwitch(args[1:])
 	}
@@ -240,10 +244,13 @@ func runHeartbeat(args []string) int {
 	flags.SetOutput(os.Stderr)
 	entity := flags.String("entity", "", "absolute path of the active file")
 	timestamp := flags.Float64("time", 0, "heartbeat time as Unix seconds")
-	project := flags.String("project", "", "project name")
+	// Deprecated: --project exists only for editor plugins released before
+	// the CLI named projects from repositories; current plugins never pass
+	// it. Delete it with project.Input.Project.
+	project := flags.String("project", "", "deprecated: project name for older editor plugins")
 	projectFolder := flags.String("project-folder", "", "absolute project root")
 	language := flags.String("language", "", "file language")
-	branch := flags.String("branch", "", "source-control branch")
+	branch := flags.String("branch", "", "branch, used only when the checkout's own cannot be read")
 	editor := flags.String("editor", "eclipse", "editor identifier")
 	plugin := flags.String("plugin", "", "editor and plugin version")
 	category := flags.String("category", "coding", "activity category")
@@ -489,6 +496,44 @@ func runToday(args []string) int {
 		return fail(logger, err)
 	}
 	if err := writeJSON(os.Stdout, report); err != nil {
+		return fail(logger, err)
+	}
+	return 0
+}
+
+// runProject prints the project a heartbeat from the same file and folder
+// would be filed under. Editors ask it for the name to show and to pass as `today
+// --project` / `stats --project`, so their status bars read the project the
+// heartbeats land in instead of re-deriving it. Local, no key needed.
+func runProject(args []string) int {
+	flags := flag.NewFlagSet("tokitoki project", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	entity := flags.String("entity", "", "absolute path of the active file")
+	projectFolder := flags.String("project-folder", "", "the editor's folder")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "tokitoki project does not accept positional arguments")
+		return 2
+	}
+	if strings.TrimSpace(*entity) == "" && strings.TrimSpace(*projectFolder) == "" {
+		fmt.Fprintln(os.Stderr, "tokitoki project requires --entity or --project-folder")
+		return 2
+	}
+
+	logger := defaultLogger()
+	resolved, err := project.Resolve(project.Input{
+		Entity:      *entity,
+		ProjectPath: *projectFolder,
+	})
+	if err != nil {
+		logger.Warn("project identity file ignored", "error", err)
+	}
+	if err := writeJSON(os.Stdout, map[string]string{
+		"project":      resolved.Project,
+		"project_path": resolved.ProjectPath,
+	}); err != nil {
 		return fail(logger, err)
 	}
 	return 0
@@ -958,6 +1003,7 @@ Commands:
   verify key [<KEY>]            Test API key connectivity (default: stored key)
   stats [--days N] [--project NAME]  Report local usage stats as JSON
   today [--project NAME]        Show today's active time from the server as JSON
+  project --project-folder DIR  Show the project a folder's work is filed under
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
   server-url                    Show which server this binary reports to
@@ -1034,10 +1080,13 @@ Required:
 
 Optional:
   --time SECONDS                Unix time of the activity (default: now)
-  --project NAME                Project name (default: the folder's name)
-  --project-folder DIR          Project root directory
+  --project-folder DIR          The editor's root folder
+  --project NAME                Deprecated, for older editor plugins only:
+                                name the project; only a .tokitoki file
+                                outranks it (see Project)
   --language LANG               Programming language (default: from the path)
-  --branch NAME                 Source-control branch
+  --branch NAME                 Branch, used only when the Git checkout's own
+                                cannot be read
   --category NAME               coding, code reviewing, debugging, building
                                 (default: coding)
   --write                       Mark as a file write (default: read)
@@ -1047,10 +1096,19 @@ Optional:
   --lines-removed N             Lines the user deleted since the last heartbeat
   --plugin STRING               Editor and plugin versions
 
+Project:
+  First match wins:
+    1. a .tokitoki file above the entity, then above --project-folder
+    2. --project (deprecated, older editor plugins only)
+    3. the repository holding the entity, then --project-folder
+       (a git worktree counts as its repository; a submodule as its own)
+    4. the --project-folder folder itself
+  The project is decided the way it is for AI agents working in the same
+  folder. 'tokitoki project' prints the answer without recording anything.
+
 Example:
   tokitoki heartbeat \
     --entity /repo/main.go \
-    --project myrepo \
     --project-folder /repo \
     --editor vscode \
     --language go
@@ -1116,6 +1174,26 @@ Examples:
   tokitoki upload status
   tokitoki upload enable
 `)
+		case "project":
+			fmt.Fprint(os.Stderr, `project [OPTIONS]
+
+Print, as JSON, the project a heartbeat from the same file and folder
+would be filed under. Nothing is recorded and no API key is needed: editors use it
+to show the name their heartbeats land in, and to pass it on to
+'today --project' and 'stats --project'.
+
+Options (at least one of --entity, --project-folder):
+  --entity FILE                 File being edited
+  --project-folder DIR          The editor's root folder
+
+The rules are the heartbeat's: see 'tokitoki help heartbeat'.
+
+Output:
+  {"project":"payments-api","project_path":"/Users/me/src/payments-api"}
+
+Example:
+  tokitoki project --project-folder ~/src/payments-api/apps/web
+`)
 		case "today":
 			fmt.Fprint(os.Stderr, `today [--project NAME]
 
@@ -1126,7 +1204,8 @@ as the dashboard, so every machine holding the key shows one number.
 Options:
   --project NAME                Also report NAME's share of the day, as
                                 "project" — what an editor window shows
-                                for the folder it has open
+                                for the folder it has open, named by
+                                'tokitoki project'
 
 Details:
   The last successful answer is kept in the data directory. When the
@@ -1195,6 +1274,7 @@ COMMANDS
   verify key [<KEY>]            Test API key
   stats [--days N]              Report local usage stats as JSON (default 30 days)
   today [--project NAME]        Today's active time and tokens, from the server
+  project [OPTIONS]             Show the project a file or folder belongs to
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
   server-url                    Show which server this binary reports to

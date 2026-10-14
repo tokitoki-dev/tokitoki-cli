@@ -32,8 +32,8 @@ const (
 
 const UnknownLanguage = "Unknown"
 
-// Event kinds. An AI provider's events are one of the first two; IDE
-// front-ends send the third.
+// Event kinds. IDE front-ends send heartbeats; every other kind is an AI
+// provider's.
 //
 //   - EventKindAPICall is one API round trip: tokens, model, session. The
 //     unit of cost.
@@ -41,14 +41,88 @@ const UnknownLanguage = "Unknown"
 //     lines added and removed. It carries no tokens — the round trip that
 //     issued the edit already carries them, and counting them here again
 //     would bill the same call twice.
+//   - EventKindToolCall and EventKindToolResult are the two halves of one
+//     tool an agent ran: the invocation and, from a later line, its outcome.
+//     Both carry Tool and nothing else — no tokens, no lines. The server
+//     merges them by call id into a table of their own.
+//   - EventKindPrompt and EventKindPromptEnd are the two halves of one
+//     prompt an agent worked on: where it began and, for agents that record
+//     it, how it ended. Both carry Prompt and nothing else — never the
+//     prompt's text. The server reads a prompt's calls and tools back from
+//     the session's own events.
 //   - EventKindHeartbeat is an editor activity sample.
 //
 // The server counts requests over api_call rows and sums line changes over
 // every row, so a provider that emits both kinds reports both correctly.
 const (
-	EventKindAPICall   = "api_call"
-	EventKindFileEdit  = "file_edit"
-	EventKindHeartbeat = "heartbeat"
+	EventKindAPICall    = "api_call"
+	EventKindFileEdit   = "file_edit"
+	EventKindToolCall   = "tool_call"
+	EventKindToolResult = "tool_result"
+	EventKindPrompt     = "prompt"
+	EventKindPromptEnd  = "prompt_end"
+	EventKindHeartbeat  = "heartbeat"
+)
+
+// CountsAsRequest reports whether an event of this kind is a request: an API
+// call, or an editor heartbeat. Edits, tool calls and prompt boundaries are
+// facts about requests that are already counted. An empty kind is an API call — the only
+// thing a provider that predates the field ever produced.
+func CountsAsRequest(kind string) bool {
+	switch kind {
+	case EventKindFileEdit, EventKindToolCall, EventKindToolResult,
+		EventKindPrompt, EventKindPromptEnd:
+		return false
+	default:
+		return true
+	}
+}
+
+// ToolCall is one half of a tool an agent ran, keyed by the agent's own call
+// id. The invocation half sets Name (and MCPServer, Programs); the outcome
+// half sets Status. Neither sets the other's fields.
+type ToolCall struct {
+	// CallID is the id the API or the agent's runtime gave the call: toolu_…,
+	// call_…, exec-<uuid>. It survives a session being forked, which is what
+	// makes it the call's identity.
+	CallID string `json:"call_id"`
+	// MCPServer names the server of an MCP tool, as the agent spells it.
+	// Empty for the agent's built-in tools.
+	MCPServer string `json:"mcp_server,omitempty"`
+	Name      string `json:"name,omitempty"`
+	// Programs are the command names a shell call ran, as shellcmd reads
+	// them. Never the arguments: commands carry paths and secrets.
+	Programs []string `json:"programs,omitempty"`
+	// Status is ToolStatusOK or ToolStatusError.
+	Status string `json:"status,omitempty"`
+}
+
+const (
+	ToolStatusOK    = "ok"
+	ToolStatusError = "error"
+)
+
+// PromptTurn is one half of a prompt an agent worked on, keyed by the
+// agent's own id for it. The start half sets Origin; the end half sets
+// Outcome and the agent's own timings. Neither sets the other's fields, and
+// neither ever carries the prompt's text.
+type PromptTurn struct {
+	// PromptID is Claude's promptId or Codex's turn_id: one per prompt, and
+	// carried unchanged into a forked session.
+	PromptID string `json:"prompt_id"`
+	// Origin says what submitted the prompt — "human", "task_notification" —
+	// and is empty where the agent does not say.
+	Origin string `json:"origin,omitempty"`
+	// Outcome is PromptCompleted, PromptAborted or PromptFailed.
+	Outcome      string `json:"outcome,omitempty"`
+	DurationMS   *int64 `json:"duration_ms,omitempty"`
+	FirstTokenMS *int64 `json:"first_token_ms,omitempty"`
+}
+
+const (
+	PromptCompleted = "completed"
+	PromptAborted   = "aborted"
+	PromptFailed    = "failed"
 )
 
 // UnknownProject is the single spelling every provider uses when a project
@@ -87,6 +161,30 @@ type TokenUsage struct {
 	CachedInputTokens          uint64 `json:"cached_input_tokens,omitempty"`
 	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
 	TotalTokens                uint64 `json:"total_tokens"`
+}
+
+// Since is the growth from earlier to u, field by field. A field that shrank
+// — a source that reset its count — grew by nothing rather than by a negative
+// amount. Every field must be listed: one left out reads as zero growth.
+func (u TokenUsage) Since(earlier TokenUsage) TokenUsage {
+	return TokenUsage{
+		InputTokens:                grown(u.InputTokens, earlier.InputTokens),
+		OutputTokens:               grown(u.OutputTokens, earlier.OutputTokens),
+		CacheCreationInputTokens:   grown(u.CacheCreationInputTokens, earlier.CacheCreationInputTokens),
+		CacheCreation5mInputTokens: grown(u.CacheCreation5mInputTokens, earlier.CacheCreation5mInputTokens),
+		CacheCreation1hInputTokens: grown(u.CacheCreation1hInputTokens, earlier.CacheCreation1hInputTokens),
+		CacheReadInputTokens:       grown(u.CacheReadInputTokens, earlier.CacheReadInputTokens),
+		CachedInputTokens:          grown(u.CachedInputTokens, earlier.CachedInputTokens),
+		ReasoningOutputTokens:      grown(u.ReasoningOutputTokens, earlier.ReasoningOutputTokens),
+		TotalTokens:                grown(u.TotalTokens, earlier.TotalTokens),
+	}
+}
+
+func grown(now, before uint64) uint64 {
+	if now > before {
+		return now - before
+	}
+	return 0
 }
 
 // FileChange records the diff one event applied to a single file.
@@ -203,8 +301,11 @@ type Entry struct {
 	Entity     string `json:"entity,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 	Branch     string `json:"branch,omitempty"`
-	Category   string `json:"category,omitempty"`
-	IsWrite    *bool  `json:"is_write,omitempty"`
+	// GitRemote is the remote of the git checkout the work is in, set only
+	// when ProjectPath is that checkout's root (project.Result.GitRemote).
+	GitRemote string `json:"git_remote,omitempty"`
+	Category  string `json:"category,omitempty"`
+	IsWrite   *bool  `json:"is_write,omitempty"`
 	// LinesAdded/LinesRemoved count the source lines the agent added and
 	// removed in this event's file modifications, for providers that record
 	// diffs. Zero means "no diff recorded", not "no change".
@@ -215,6 +316,10 @@ type Entry struct {
 	Files []FileChange   `json:"files,omitempty"`
 	Raw   map[string]any `json:"raw,omitempty"`
 	Usage TokenUsage     `json:"usage"`
+	// Tool is set on tool_call and tool_result events, and only there.
+	Tool *ToolCall `json:"tool,omitempty"`
+	// Prompt is set on prompt and prompt_end events, and only there.
+	Prompt *PromptTurn `json:"prompt,omitempty"`
 }
 
 // NormalizeOS maps a Go runtime.GOOS value to a human-readable name.

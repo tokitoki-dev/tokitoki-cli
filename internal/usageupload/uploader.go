@@ -88,6 +88,9 @@ type Event struct {
 	Entity          string `json:"entity,omitempty"`
 	EntityType      string `json:"entity_type,omitempty"`
 	Branch          string `json:"branch,omitempty"`
+	// GitRemote is the project's git remote as the checkout has it, less any
+	// credentials; the server keeps it on the project, not the event.
+	GitRemote string `json:"git_remote,omitempty"`
 	// No `editor` field: on a heartbeat it duplicated SourceProvider and
 	// Client, on an AI event it was never set, and the server stopped storing
 	// it (server migration 0060). The server still accepts it from older CLIs.
@@ -109,6 +112,11 @@ type Event struct {
 	CacheReadInputTokens       uint64 `json:"cache_read_input_tokens,omitempty"`
 	ReasoningOutputTokens      uint64 `json:"reasoning_output_tokens,omitempty"`
 	TotalTokens                uint64 `json:"total_tokens,omitempty"`
+	// Tool is the tool_call / tool_result payload. Sent as stored: no paths
+	// in it to make relative, and nothing in it that identifies a machine.
+	Tool *usage.ToolCall `json:"tool,omitempty"`
+	// Prompt is the prompt / prompt_end payload. Ids and timings only.
+	Prompt *usage.PromptTurn `json:"prompt,omitempty"`
 }
 
 type Response struct {
@@ -409,6 +417,7 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Entity:                     relativeEntity(entry.ProjectPath, entry.Entity),
 		EntityType:                 entry.EntityType,
 		Branch:                     entry.Branch,
+		GitRemote:                  entry.GitRemote,
 		Category:                   entry.Category,
 		IsWrite:                    entry.IsWrite,
 		LinesAdded:                 entry.LinesAdded,
@@ -424,6 +433,8 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		CacheReadInputTokens:       entry.Usage.CacheReadInputTokens,
 		ReasoningOutputTokens:      entry.Usage.ReasoningOutputTokens,
 		TotalTokens:                entry.Usage.TotalTokens,
+		Tool:                       entry.Tool,
+		Prompt:                     entry.Prompt,
 	}
 }
 

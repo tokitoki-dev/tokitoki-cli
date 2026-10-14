@@ -1,9 +1,15 @@
 package usageprovider
 
 import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
@@ -79,6 +85,39 @@ func StreamFiles(
 		}
 	}
 	return nil
+}
+
+// headScanBytes bounds how far HeadCWD reads. The record it looks for opens
+// the file; a metadata line or two may precede it, a transcript may not.
+const headScanBytes = 64 << 10
+
+// HeadCWD returns the cwd of the first JSONL record near the start of path
+// whose type is one of types, or "" when there is none.
+//
+// It is for agents that write their working directory once, in a session
+// record at the head of the file. Reading it separately from the head is what
+// lets a parse that resumes mid-file still know where the session ran.
+func HeadCWD(path string, types ...string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(io.LimitReader(file, headScanBytes))
+	for scanner.Scan() {
+		var record struct {
+			Type string `json:"type"`
+			CWD  string `json:"cwd"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &record) != nil {
+			continue
+		}
+		if cwd := strings.TrimSpace(record.CWD); cwd != "" && slices.Contains(types, record.Type) {
+			return cwd
+		}
+	}
+	return ""
 }
 
 // SortEntriesByTimestampDesc orders entries newest first, the order every
@@ -173,14 +212,53 @@ func SetSource(entry *usage.Entry, source string, line int, start, end int64) {
 	entry.SourceEnd = end
 }
 
-// StableEntryID derives a deterministic id from an entry's source position
-// and contents.
+// EventID keys an event by what its agent recorded about it: the provider
+// and the agent's own ids for it. Nothing about where the record was read
+// from, and nothing this CLI derives — a project, a path, a normalized model —
+// goes in. The server deduplicates on this id alone, so reading or naming
+// things differently must never mint a new one for an event already sent.
+func EventID(provider usage.Provider, keys ...string) string {
+	return usage.StableID(append([]string{string(provider)}, keys...)...)
+}
+
+// MessageID keys an event by the id its agent gave the message, within the
+// session it belongs to. A record that carries no id falls back to ContentID,
+// with extra telling apart records otherwise alike.
+func MessageID(entry usage.Entry, messageID string, extra ...string) string {
+	if messageID = strings.TrimSpace(messageID); messageID == "" {
+		return ContentID(entry, extra...)
+	}
+	return EventID(entry.Provider, entry.SessionID, messageID)
+}
+
+// ContentID keys an event its agent gave no id: the session, the moment and
+// the tokens it recorded. Two records alike in all of those are one event.
+func ContentID(entry usage.Entry, extra ...string) string {
+	u := entry.Usage
+	keys := []string{
+		"content",
+		entry.SessionID,
+		entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		strconv.FormatUint(u.InputTokens, 10),
+		strconv.FormatUint(u.OutputTokens, 10),
+		strconv.FormatUint(u.CacheCreationInputTokens, 10),
+		strconv.FormatUint(u.CacheReadInputTokens, 10),
+		strconv.FormatUint(u.CachedInputTokens, 10),
+		strconv.FormatUint(u.ReasoningOutputTokens, 10),
+		strconv.FormatUint(u.TotalTokens, 10),
+	}
+	return EventID(entry.Provider, append(keys, extra...)...)
+}
+
+// StableEntryID hashes the whole entry — its source position (the byte
+// offset, which unlike a line number survives a resumed scan) and the
+// project, path and model this CLI derived included — so the slightest change
+// in how a record is read mints a new id for an event already sent.
 //
-// The position is the byte offset, not the line number. A scan that resumes
-// mid-file starts counting lines from 1 again, so a line-based id would give
-// the same record a different identity depending on where the previous pass
-// happened to stop. The byte offset is a property of the file itself and does
-// not move.
+// Deprecated: new code keys events with EventID, MessageID or ContentID. This
+// stays only where events were already uploaded under it (Copilot, and the
+// id-less records of Gemini, Kilo, OpenCode and WorkBuddy): re-keying those
+// would upload their history a second time.
 func StableEntryID(entry usage.Entry, extra ...string) string {
 	parts := []string{
 		string(entry.Provider),

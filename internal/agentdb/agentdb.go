@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/agentdata"
 
@@ -67,6 +68,10 @@ func SqlString(value any) string {
 			return ""
 		}
 		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case time.Time:
+		// A column declared TIMESTAMP or DATETIME comes back from the driver
+		// as time.Time, whose default String() no timestamp parser reads.
+		return typed.UTC().Format(time.RFC3339Nano)
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
 	}

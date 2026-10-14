@@ -20,7 +20,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/deviceauth"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/langdetect"
-	"github.com/tokitoki-dev/tokitoki-cli/internal/projectfile"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/project"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/statusbar"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
@@ -126,10 +126,18 @@ type SyncOptions struct {
 
 // Heartbeat describes one IDE activity sample.
 type Heartbeat struct {
-	Entity         string
-	Timestamp      time.Time
+	Entity    string
+	Timestamp time.Time
+	// ProjectPath is the editor's root folder. SendHeartbeat files the event
+	// under the project internal/project decides from it and Entity — the
+	// same one AI agents working there are filed under.
+	ProjectPath string
+	// Project is a name the editor insists on, overriding that decision.
+	//
+	// Deprecated: only editor plugins released before the CLI named projects
+	// from repositories send it; current ones leave it empty. Delete it with
+	// project.Input.Project.
 	Project        string
-	ProjectPath    string
 	Language       string
 	Branch         string
 	Editor         string
@@ -542,17 +550,20 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	if heartbeat.Timestamp.IsZero() {
 		heartbeat.Timestamp = time.Now().UTC()
 	}
-	// A project identity file is an optional override; one that exists but
-	// cannot be read must not cost the heartbeat itself.
-	if err := applyProjectFile(&heartbeat); err != nil {
+	// An identity file that cannot be read is skipped and must not cost the
+	// heartbeat itself.
+	resolved, err := project.Resolve(project.Input{
+		Entity:      heartbeat.Entity,
+		ProjectPath: heartbeat.ProjectPath,
+		Project:     heartbeat.Project,
+		Branch:      heartbeat.Branch,
+	})
+	if err != nil {
 		c.logger.Warn("project identity file ignored", "error", err)
 	}
-	if strings.TrimSpace(heartbeat.Project) == "" {
-		heartbeat.Project = filepath.Base(strings.TrimSpace(heartbeat.ProjectPath))
-	}
-	if strings.TrimSpace(heartbeat.Project) == "" {
-		heartbeat.Project = "unknown"
-	}
+	heartbeat.Project = resolved.Project
+	heartbeat.ProjectPath = resolved.ProjectPath
+	heartbeat.Branch = resolved.Branches.At(heartbeat.Timestamp)
 	if strings.TrimSpace(heartbeat.Language) == "" {
 		heartbeat.Language = langdetect.FromPath(heartbeat.Entity)
 	}
@@ -578,6 +589,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		Entity:       strings.TrimSpace(heartbeat.Entity),
 		EntityType:   "file",
 		Branch:       strings.TrimSpace(heartbeat.Branch),
+		GitRemote:    resolved.GitRemote,
 		Category:     strings.TrimSpace(heartbeat.Category),
 		IsWrite:      &isWrite,
 		LinesAdded:   uint64(max(heartbeat.LinesAdded, 0)),
@@ -631,24 +643,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		return nil
 	}
 	return usageupload.SyncPending(ctx, settings, usageDB)
-}
-
-func applyProjectFile(heartbeat *Heartbeat) error {
-	resolved, found, err := projectfile.Resolve(projectfile.Input{
-		Entity:      heartbeat.Entity,
-		ProjectPath: heartbeat.ProjectPath,
-		Branch:      heartbeat.Branch,
-	})
-	if err != nil {
-		return fmt.Errorf("resolve project identity: %w", err)
-	}
-	if !found {
-		return nil
-	}
-	heartbeat.Project = resolved.Project
-	heartbeat.ProjectPath = resolved.ProjectPath
-	heartbeat.Branch = resolved.Branch
-	return nil
 }
 
 func normalizeProviderDirs(raw map[Provider][]string) map[usage.Provider][]string {

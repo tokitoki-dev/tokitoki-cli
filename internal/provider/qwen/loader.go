@@ -100,9 +100,13 @@ func parseChatFileFrom(path string, start int64) ([]usage.Entry, int64, error) {
 		if !usageprovider.NonZero(tokens) {
 			continue
 		}
-		entry := usageprovider.BaseEntry(usage.ProviderQwen, timestamp, "qwen", project, sessionID, model, "Qwen", tokens)
+		projectPath := project
+		if dir, _, ok := usage.ProjectFromCWD(agentdata.StringField(record, "cwd")); ok {
+			projectPath = dir
+		}
+		entry := usageprovider.BaseEntry(usage.ProviderQwen, timestamp, "qwen", projectPath, sessionID, model, "Qwen", tokens)
 		usageprovider.SetSource(&entry, path, line.Line, line.Start, line.End)
-		entry.ID = usageprovider.StableEntryID(entry)
+		entry.ID = usageprovider.MessageID(entry, agentdata.StringField(record, "uuid"))
 		entries = append(entries, entry)
 	}
 	return entries, consumed, nil

@@ -41,10 +41,11 @@ func TestLoadsEntry(t *testing.T) {
 	}()
 
 	providertest.AssertSingleEntry(t, entries, err, providertest.WantEntry{
-		Provider:  usage.ProviderHermes,
-		Model:     "gpt-5.5",
-		SessionID: "session-a",
-		Project:   "hermes",
+		RunningTotal: true,
+		Provider:     usage.ProviderHermes,
+		Model:        "gpt-5.5",
+		SessionID:    "session-a",
+		Project:      "hermes",
 		Tokens: usage.TokenUsage{
 			InputTokens:              100,
 			OutputTokens:             50,
