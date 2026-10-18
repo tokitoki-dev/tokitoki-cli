@@ -138,8 +138,16 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 
 	// The database read is in no particular order and the gap rule needs time
 	// order. Sorted on a copy: the caller's slice is not ours to reorder.
-	ordered := make([]usage.Entry, len(entries))
-	copy(ordered, entries)
+	//
+	// Frontmost-app heartbeats are left out, as the server's usage_events_view
+	// leaves them out (0078): they are the densest events there are, and an
+	// hour in a browser between two edits would become an hour of coding.
+	ordered := make([]usage.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.SourceType != usage.SourceTypeApp {
+			ordered = append(ordered, entry)
+		}
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].Timestamp.Before(ordered[j].Timestamp)
 	})

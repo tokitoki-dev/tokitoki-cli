@@ -242,6 +242,9 @@ func maybeCheckUpdate(logger *slog.Logger) {
 func runHeartbeat(args []string) int {
 	flags := flag.NewFlagSet("tokitoki heartbeat", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
+	sourceType := flags.String("source-type", "ide", "ide (an editor on a file) or app (the app in front)")
+	provider := flags.String("provider", "", "what produced it: an editor's id, or an app's bundle id")
+	clientName := flags.String("client", "", "its name as a person sees it")
 	entity := flags.String("entity", "", "absolute path of the active file")
 	timestamp := flags.Float64("time", 0, "heartbeat time as Unix seconds")
 	// Deprecated: --project exists only for editor plugins released before
@@ -253,7 +256,7 @@ func runHeartbeat(args []string) int {
 	branch := flags.String("branch", "", "branch, used only when the checkout's own cannot be read")
 	editor := flags.String("editor", "eclipse", "editor identifier")
 	plugin := flags.String("plugin", "", "editor and plugin version")
-	category := flags.String("category", "coding", "activity category")
+	category := flags.String("category", "", "an editor's activity (default coding), or an app's declared category")
 	write := flags.Bool("write", false, "mark this heartbeat as a file write")
 	lineNumber := flags.Int("lineno", 0, "one-based cursor line")
 	cursorPosition := flags.Int("cursorpos", 0, "one-based cursor column")
@@ -267,12 +270,28 @@ func runHeartbeat(args []string) int {
 		fmt.Fprintln(os.Stderr, "tokitoki heartbeat does not accept positional arguments")
 		return 2
 	}
-	if strings.TrimSpace(*entity) == "" {
-		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --entity")
-		return 2
-	}
-	if strings.TrimSpace(*editor) == "" {
-		fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --editor")
+	// --editor names an editor, and only an editor heartbeat has one. Its
+	// default ("eclipse", for the plugin that never passed it) must not become
+	// an app's name.
+	editorName := ""
+	switch *sourceType {
+	case "ide":
+		if strings.TrimSpace(*entity) == "" {
+			fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --entity")
+			return 2
+		}
+		if strings.TrimSpace(*provider) == "" && strings.TrimSpace(*editor) == "" {
+			fmt.Fprintln(os.Stderr, "tokitoki heartbeat requires --editor")
+			return 2
+		}
+		editorName = *editor
+	case "app":
+		if strings.TrimSpace(*provider) == "" {
+			fmt.Fprintln(os.Stderr, "tokitoki heartbeat --source-type app requires --provider")
+			return 2
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "tokitoki heartbeat --source-type must be ide or app")
 		return 2
 	}
 
@@ -281,13 +300,6 @@ func runHeartbeat(args []string) int {
 	// makes. Deferred so it counts the install whether or not the send fails.
 	defer telemetry.MaybePing(defaultLogger(), usageupload.BaseURL())
 
-	heartbeatTime := time.Now().UTC()
-	if *timestamp != 0 {
-		seconds := int64(*timestamp)
-		nanoseconds := int64((*timestamp - float64(seconds)) * float64(time.Second))
-		heartbeatTime = time.Unix(seconds, nanoseconds).UTC()
-	}
-
 	client, err := agentlib.New(agentlib.Options{Logger: defaultLogger()})
 	if err != nil {
 		return fail(defaultLogger(), err)
@@ -295,13 +307,16 @@ func runHeartbeat(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), agentlib.DefaultUploadTimeout)
 	defer cancel()
 	err = client.SendHeartbeat(ctx, agentlib.Heartbeat{
+		SourceType:     *sourceType,
+		Provider:       *provider,
+		Client:         *clientName,
 		Entity:         *entity,
-		Timestamp:      heartbeatTime,
+		Timestamp:      heartbeatTime(*timestamp),
 		Project:        *project,
 		ProjectPath:    *projectFolder,
 		Language:       *language,
 		Branch:         *branch,
-		Editor:         *editor,
+		Editor:         editorName,
 		Plugin:         *plugin,
 		Category:       *category,
 		IsWrite:        *write,
@@ -318,6 +333,17 @@ func runHeartbeat(args []string) int {
 		return fail(defaultLogger(), err)
 	}
 	return 0
+}
+
+// heartbeatTime is a --time flag's instant: Unix seconds with a fraction, or
+// now when the flag was left at zero.
+func heartbeatTime(unixSeconds float64) time.Time {
+	if unixSeconds == 0 {
+		return time.Now().UTC()
+	}
+	seconds := int64(unixSeconds)
+	nanoseconds := int64((unixSeconds - float64(seconds)) * float64(time.Second))
+	return time.Unix(seconds, nanoseconds).UTC()
 }
 
 func parseRunFlags(args []string) (workerFlags, bool) {
@@ -1012,7 +1038,7 @@ Commands:
     uninstall                   Unregister service
     start|stop|restart|status   Control service
   update                        Check and install new version
-  heartbeat                     Submit heartbeat event
+  heartbeat                     Submit heartbeat event (editor or app)
   version, -v, --version        Show version
   help, -h, --help              Show this message
 
@@ -1072,14 +1098,13 @@ Details:
 		case "heartbeat":
 			fmt.Fprint(os.Stderr, `heartbeat [OPTIONS]
 
-Submit a heartbeat event (project activity marker).
+Submit a heartbeat: an editor working on a file (the default), or the app
+in front (--source-type app).
 
-Required:
-  --entity FILE                 File being edited
-  --editor NAME                 Editor name (e.g., vscode, vim)
-
-Optional:
-  --time SECONDS                Unix time of the activity (default: now)
+Editor heartbeat:
+  --entity FILE                 File being edited (required)
+  --editor NAME                 Editor name, e.g. vscode, vim; sets both
+                                --provider and --client (default: eclipse)
   --project-folder DIR          The editor's root folder
   --project NAME                Deprecated, for older editor plugins only:
                                 name the project; only a .tokitoki file
@@ -1094,10 +1119,24 @@ Optional:
   --lines-in-file N             Length of the file
   --lines-added N               Lines the user typed since the last heartbeat
   --lines-removed N             Lines the user deleted since the last heartbeat
-  --plugin STRING               Editor and plugin versions
+
+App heartbeat (--source-type app):
+  --provider ID                 The app's id from the OS, e.g. a macOS bundle
+                                id (required)
+  --client NAME                 The app's name as a person sees it
+  --category TYPE               The category the app declares for itself
+                                (LSApplicationCategoryType)
+  The editor options above do not apply: an app heartbeat has no file.
+
+Both:
+  --source-type TYPE            ide (default) or app
+  --provider ID, --client NAME  What produced it and its name; for an editor
+                                they override what --editor sets
+  --time SECONDS                Unix time of the activity (default: now)
+  --plugin STRING               Reporting client and its version
 
 Project:
-  First match wins:
+  Editor heartbeats only. First match wins:
     1. a .tokitoki file above the entity, then above --project-folder
     2. --project (deprecated, older editor plugins only)
     3. the repository holding the entity, then --project-folder
@@ -1106,12 +1145,25 @@ Project:
   The project is decided the way it is for AI agents working in the same
   folder. 'tokitoki project' prints the answer without recording anything.
 
-Example:
+Time:
+  The server credits each heartbeat with the time until the next one: up to
+  15 minutes for an editor, whose events can pause while someone reads; at
+  most 90 seconds for an app, whose client sends one every minute while
+  someone is at the computer. App time is kept apart from coding time:
+  'tokitoki stats' and every coding figure on the dashboard leave app
+  heartbeats out.
+
+Examples:
   tokitoki heartbeat \
     --entity /repo/main.go \
     --project-folder /repo \
     --editor vscode \
     --language go
+
+  tokitoki heartbeat --source-type app \
+    --provider com.tinyspeck.slackmacgap \
+    --client Slack \
+    --category public.app-category.business
 `)
 		case "data-dir":
 			fmt.Fprint(os.Stderr, `data-dir
@@ -1278,7 +1330,7 @@ COMMANDS
   upload enable|disable|status  Turn uploading on or off
   data-dir                      Show where this binary keeps its state
   server-url                    Show which server this binary reports to
-  heartbeat [OPTIONS]           Submit a heartbeat event
+  heartbeat [OPTIONS]           Submit a heartbeat: an editor's file or the app in front
   update                        Install the latest version
   version                       Show version
 

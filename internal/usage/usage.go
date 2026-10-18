@@ -275,6 +275,19 @@ func (e *Entry) ApplyFileChange(change FileChange) {
 	e.EntityType = "file"
 }
 
+// What kind of activity an event is — the server's closed set, which every
+// event names itself rather than leaving the server to assume one.
+//
+// SourceTypeApp marks a frontmost-app heartbeat: Provider is the app's own id
+// (a macOS bundle id) and Client its name. It is not coding activity, and
+// nothing that measures coding time counts it — here or on the server (0078).
+// Nor is it in a project: an app event leaves Project empty.
+const (
+	SourceTypeAI  = "ai"
+	SourceTypeIDE = "ide"
+	SourceTypeApp = "app"
+)
+
 type Entry struct {
 	Provider    Provider  `json:"provider"`
 	ID          string    `json:"id,omitempty"`

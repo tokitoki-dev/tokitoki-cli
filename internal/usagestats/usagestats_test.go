@@ -225,3 +225,37 @@ func TestBuildFloorIsPerDay(t *testing.T) {
 		t.Fatalf("the provider spans the same three days, got %d", report.Providers[0].ActiveSeconds)
 	}
 }
+
+// Frontmost-app heartbeats are not coding: an hour in a browser between two
+// edits must not close the gap between them (0078).
+func TestBuildLeavesAppHeartbeatsOut(t *testing.T) {
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
+	start := now.Add(-3 * time.Hour)
+	app := func(ts time.Time) usage.Entry {
+		return usage.Entry{
+			Provider:   "com.google.Chrome",
+			SourceType: usage.SourceTypeApp,
+			Client:     "Google Chrome",
+			Timestamp:  ts,
+		}
+	}
+	entries := []usage.Entry{
+		entry(start, "claude", "m", "p", 1),
+		app(start.Add(10 * time.Minute)),
+		app(start.Add(20 * time.Minute)),
+		app(start.Add(30 * time.Minute)),
+		entry(start.Add(40*time.Minute), "claude", "m", "p", 1),
+	}
+
+	report := Build(entries, 7, now)
+
+	// The two claude events are 40 minutes apart — a break — so the day is
+	// the floor alone, exactly as if the browser had never been in front.
+	if report.Totals.Events != 2 || report.Daily[6].ActiveSeconds != 60 {
+		t.Fatalf("events=%d active=%d, want 2 and 60 (app heartbeats left out)",
+			report.Totals.Events, report.Daily[6].ActiveSeconds)
+	}
+	if len(report.Providers) != 1 || report.Providers[0].Name != "claude" {
+		t.Fatalf("providers = %+v, want claude alone — an app is not a provider here", report.Providers)
+	}
+}

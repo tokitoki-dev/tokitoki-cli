@@ -175,7 +175,7 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(payload.Events))
 	}
 	event := payload.Events[0]
-	if event.SourceType != "ide" || event.SourceProvider != "eclipse" || event.EventKind != "heartbeat" {
+	if event.SourceType != "ide" || event.Provider != "eclipse" || event.EventKind != "heartbeat" {
 		t.Fatalf("source fields = %+v, want Eclipse IDE heartbeat", event)
 	}
 	// The entity is uploaded relative to the project folder: the absolute
@@ -188,6 +188,75 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 	}
 	if got := event.Raw["line_number"]; got != float64(7) && got != 7 {
 		t.Fatalf("line_number = %#v, want 7", got)
+	}
+}
+
+// The app in front goes through the same command as an editor's file. What
+// is an editor's alone must not leak into it: --editor's default "eclipse"
+// is no app's name, and "coding" is no app's category.
+func TestRunHeartbeatUploadsAnAppEvent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if code := run([]string{"set", "key", "tokitoki_test_key"}); code != 0 {
+		t.Fatalf("run(set key) = %d, want 0", code)
+	}
+
+	var payload usageupload.Payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := io.Reader(r.Body)
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gr, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer gr.Close()
+			body = gr
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		accepted := []string{}
+		for _, event := range payload.Events {
+			accepted = append(accepted, event.ID)
+		}
+		_ = json.NewEncoder(w).Encode(usageupload.Response{OK: true, Accepted: accepted, Duplicate: []string{}, Rejected: []usageupload.Reject{}})
+	}))
+	defer server.Close()
+	previousServer := config.ServerURL
+	config.ServerURL = server.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
+
+	code := run([]string{
+		"heartbeat",
+		"--source-type", "app",
+		"--provider", "com.tinyspeck.slackmacgap",
+		"--client", "Slack",
+		"--category", "public.app-category.business",
+		"--time", "1784188800.25",
+		"--plugin", "tokitoki-macos/0.1.8",
+	})
+	if code != 0 {
+		t.Fatalf("run(heartbeat --source-type app) = %d, want 0", code)
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(payload.Events))
+	}
+	event := payload.Events[0]
+	if event.SourceType != "app" || event.Provider != "com.tinyspeck.slackmacgap" || event.Client != "Slack" {
+		t.Fatalf("source fields = %q %q %q, want app / bundle id / Slack", event.SourceType, event.Provider, event.Client)
+	}
+	if event.Category != "public.app-category.business" {
+		t.Fatalf("category = %q, want the app's declared one", event.Category)
+	}
+	if event.Entity != "" || event.Project != "" || event.Language != "" || event.IsWrite != nil {
+		t.Fatalf("file fields = %q %q %q %v, want none on an app heartbeat",
+			event.Entity, event.Project, event.Language, event.IsWrite)
+	}
+
+	// An app heartbeat must name its app.
+	if code := run([]string{"heartbeat", "--source-type", "app", "--client", "Slack"}); code != 2 {
+		t.Fatalf("run(heartbeat --source-type app without --provider) = %d, want 2", code)
 	}
 }
 

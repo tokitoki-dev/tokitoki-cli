@@ -398,3 +398,95 @@ func TestSetAndGetHostname(t *testing.T) {
 		t.Fatal("Hostname() still returns the cleared override")
 	}
 }
+
+// pendingOne sends one heartbeat and returns the one event it queued.
+func pendingOne(t *testing.T, heartbeat Heartbeat) usage.Entry {
+	t.Helper()
+	client := newTestClient(t)
+	if err := client.SendHeartbeat(context.Background(), heartbeat); err != nil {
+		t.Fatalf("SendHeartbeat() = %v", err)
+	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(client.DataDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	pending, err := usageDB.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(pending))
+	}
+	return pending[0]
+}
+
+func TestSendHeartbeatQueuesAnAppAsItsOwnSource(t *testing.T) {
+	at := time.Date(2026, 10, 16, 9, 30, 0, 250_000_000, time.UTC)
+	entry := pendingOne(t, Heartbeat{
+		SourceType: usage.SourceTypeApp,
+		Provider:   " com.microsoft.VSCode ",
+		Client:     "Visual Studio Code",
+		Category:   "public.app-category.developer-tools",
+		Plugin:     "tokitoki-macos/0.2.0",
+		Timestamp:  at,
+	})
+
+	// The bundle id is kept as sent, case included: it is already one
+	// spelling per app, and the server stores it unslugged.
+	if entry.SourceType != usage.SourceTypeApp || entry.Provider != "com.microsoft.VSCode" || entry.Client != "Visual Studio Code" {
+		t.Fatalf("source = %q %q %q, want app / com.microsoft.VSCode / Visual Studio Code",
+			entry.SourceType, entry.Provider, entry.Client)
+	}
+	if !entry.Timestamp.Equal(at) || entry.EventKind != usage.EventKindHeartbeat {
+		t.Fatalf("time %v kind %q, want %v heartbeat", entry.Timestamp, entry.EventKind, at)
+	}
+	// The category is the app's own declaration, as reported — never the
+	// "coding" an editor heartbeat defaults to.
+	if entry.Category != "public.app-category.developer-tools" {
+		t.Fatalf("category = %q, want the declared one", entry.Category)
+	}
+	// Nothing of a file: no entity, project or language — not even the
+	// "Unknown" an agent's unnamed folder gets — and no write flag.
+	if entry.Entity != "" || entry.Project != "" || entry.Language != "" || entry.IsWrite != nil {
+		t.Fatalf("file fields = %q %q %q %v, want all empty", entry.Entity, entry.Project, entry.Language, entry.IsWrite)
+	}
+	if len(entry.Raw) != 1 || entry.Raw["plugin"] != "tokitoki-macos/0.2.0" {
+		t.Fatalf("raw = %v, want the plugin alone", entry.Raw)
+	}
+	// One formula for every heartbeat; an app's entity and write flag are
+	// simply empty in it.
+	want := usage.StableID("app", "com.microsoft.VSCode", "", at.Format(time.RFC3339Nano), "false")
+	if entry.ID != want {
+		t.Fatalf("id = %q, want %q", entry.ID, want)
+	}
+}
+
+// Merging app heartbeats into SendHeartbeat must not move an editor
+// heartbeat's key: the same file at the same instant is the same event it
+// always was, or a resend would count twice.
+func TestSendHeartbeatKeepsTheEditorKey(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "main.go")
+	at := time.Date(2026, 10, 16, 9, 30, 0, 0, time.UTC)
+	entry := pendingOne(t, Heartbeat{Entity: file, Editor: "Visual Studio Code", Timestamp: at, IsWrite: true})
+
+	want := usage.StableID("ide", "visual studio code", file, at.Format(time.RFC3339Nano), "true")
+	if entry.ID != want || entry.SourceType != usage.SourceTypeIDE || entry.Client != "Visual Studio Code" || entry.Category != "coding" {
+		t.Fatalf("editor heartbeat = %q %q %q %q, want the key, type, client and category it always had",
+			entry.ID, entry.SourceType, entry.Client, entry.Category)
+	}
+}
+
+func TestSendHeartbeatRefusesWhatItCannotName(t *testing.T) {
+	client := newTestClient(t)
+	cases := map[string]Heartbeat{
+		"app without a provider": {SourceType: usage.SourceTypeApp, Client: "Slack"},
+		"editor without a file":  {Editor: "vscode"},
+		"unknown source type":    {SourceType: "ai", Provider: "claude"},
+	}
+	for name, heartbeat := range cases {
+		if err := client.SendHeartbeat(context.Background(), heartbeat); err == nil {
+			t.Errorf("%s: SendHeartbeat() = nil, want an error", name)
+		}
+	}
+}

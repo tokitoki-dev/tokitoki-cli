@@ -176,6 +176,45 @@ func TestScanUsesRegisteredProvider(t *testing.T) {
 	}
 }
 
+// Everything a provider reads is an agent's, and the CLI says so on every
+// event it queues — the server never has to assume a type. The ID the provider
+// built is untouched: stating the type must not re-upload anything.
+func TestScanQueuesProviderEntriesAsAIActivity(t *testing.T) {
+	dir := t.TempDir()
+	db, err := usagedb.Open(filepath.Join(dir, "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	provider := fakeProvider{
+		provider: usage.Provider("fixture"),
+		entries: []usage.Entry{{
+			Provider:  usage.Provider("fixture"),
+			ID:        "typed-event",
+			Timestamp: time.Now().UTC().Add(-time.Minute),
+			Date:      time.Now().UTC().Format("2006-01-02"),
+			Project:   "tracklm",
+		}},
+	}
+	if _, err := New(db, &provider).Scan(map[usage.Provider][]string{
+		provider.provider: {dir},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := db.PendingEvents(time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(pending))
+	}
+	if pending[0].SourceType != usage.SourceTypeAI || pending[0].ID != "typed-event" {
+		t.Fatalf("queued %q as %q, want typed-event as %q", pending[0].ID, pending[0].SourceType, usage.SourceTypeAI)
+	}
+}
+
 func TestScanAppliesProjectFileToAgentEvents(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "checkout-folder")

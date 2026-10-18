@@ -326,8 +326,14 @@ func insertEvent(stmt *sql.Stmt, entry usage.Entry) (int, error) {
 	if entry.ID == "" {
 		return 0, fmt.Errorf("usage event id is required")
 	}
-	entry.Language = usage.NormalizeLanguage(entry.Language)
-	entry.Project = usage.NormalizeProject(entry.Project)
+	// An unnamed project or language is "Unknown" — for an agent or an
+	// editor, which always work in some folder on some file. An app is
+	// neither; its empty Project and Language are the fact, not a gap to
+	// fill (0078).
+	if entry.SourceType != usage.SourceTypeApp {
+		entry.Language = usage.NormalizeLanguage(entry.Language)
+		entry.Project = usage.NormalizeProject(entry.Project)
+	}
 	// Every stored event names its kind. Providers that predate the
 	// field only ever produced API calls, so that is what an unset kind
 	// means — stated here once rather than defaulted by every reader.

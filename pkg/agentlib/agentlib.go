@@ -3,6 +3,7 @@
 package agentlib
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -124,10 +125,32 @@ type SyncOptions struct {
 	ProviderDirs map[Provider][]string
 }
 
-// Heartbeat describes one IDE activity sample.
+// Heartbeat describes one activity sample: an editor working on a file
+// (SourceType ide, the default) or an app in front (SourceType app).
 type Heartbeat struct {
-	Entity    string
+	// SourceType is usage.SourceTypeIDE — the default, and all an editor
+	// plugin ever sends — or usage.SourceTypeApp.
+	SourceType string
+	// Provider is what produced the heartbeat and Client the name a person
+	// sees: an editor's id and display name, or an app's bundle id and name.
+	// Editor sets both at once, which is what every editor plugin sends;
+	// Provider or Client, when given, wins over it.
+	Provider string
+	Client   string
+	Editor   string
+	// Category is what the time went to: an editor's activity (coding when
+	// empty, debugging, …), or the category an app declares for itself
+	// (LSApplicationCategoryType), reported as is.
+	Category  string
+	Plugin    string
 	Timestamp time.Time
+
+	// The rest describe a file, and only an editor heartbeat has one. An app
+	// heartbeat leaves them empty: what is open inside an app takes a
+	// permission its client does not ask for.
+
+	// Entity is the file; required for an editor heartbeat.
+	Entity string
 	// ProjectPath is the editor's root folder. SendHeartbeat files the event
 	// under the project internal/project decides from it and Entity — the
 	// same one AI agents working there are filed under.
@@ -140,9 +163,6 @@ type Heartbeat struct {
 	Project        string
 	Language       string
 	Branch         string
-	Editor         string
-	Plugin         string
-	Category       string
 	IsWrite        bool
 	LineNumber     int
 	CursorPosition int
@@ -537,19 +557,69 @@ func (c *Client) Scan(options SyncOptions) error {
 	return c.withDataLock(app.Ingest)
 }
 
-// SendHeartbeat persists an IDE activity event before attempting upload. If
-// the network is unavailable the event stays queued in the shared local
+// SendHeartbeat queues one activity sample, editor or app, and attempts upload.
+// If the network is unavailable the event stays queued in the shared local
 // database and a later heartbeat or normal sync retries it with backoff.
+//
+// One heartbeat, one key: hash(source type, provider, entity, time, write).
+// An app heartbeat has no entity and never writes, so its key is the same
+// formula with those two empty, not a second formula.
 func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
-	if strings.TrimSpace(heartbeat.Entity) == "" {
-		return errors.New("heartbeat entity is required")
-	}
-	if strings.TrimSpace(heartbeat.Editor) == "" {
-		return errors.New("heartbeat editor is required")
-	}
+	sourceType := cmp.Or(strings.TrimSpace(heartbeat.SourceType), usage.SourceTypeIDE)
+	provider := cmp.Or(strings.TrimSpace(heartbeat.Provider), strings.TrimSpace(heartbeat.Editor))
 	if heartbeat.Timestamp.IsZero() {
 		heartbeat.Timestamp = time.Now().UTC()
 	}
+	timestamp := heartbeat.Timestamp.UTC()
+
+	entry := usage.Entry{
+		SourceType: sourceType,
+		EventKind:  usage.EventKindHeartbeat,
+		Timestamp:  timestamp,
+		Date:       timestamp.Format("2006-01-02"),
+		OS:         usage.NormalizeOS(runtime.GOOS),
+		Client:     cmp.Or(strings.TrimSpace(heartbeat.Client), strings.TrimSpace(heartbeat.Editor)),
+		Category:   strings.TrimSpace(heartbeat.Category),
+		Raw:        map[string]any{"plugin": strings.TrimSpace(heartbeat.Plugin)},
+	}
+	switch sourceType {
+	case usage.SourceTypeIDE:
+		if strings.TrimSpace(heartbeat.Entity) == "" {
+			return errors.New("heartbeat entity is required")
+		}
+		if provider == "" {
+			return errors.New("heartbeat editor is required")
+		}
+		// An editor arrives spelled the way its host spells itself; lower
+		// case here, and the server's slug merges the rest.
+		entry.Provider = usage.Provider(strings.ToLower(provider))
+		c.describeFile(&entry, heartbeat)
+	case usage.SourceTypeApp:
+		if provider == "" {
+			return errors.New("app heartbeat provider is required")
+		}
+		// A bundle id is already one spelling per app, chosen by its
+		// developer: kept as sent, case included.
+		entry.Provider = usage.Provider(provider)
+	default:
+		return fmt.Errorf("heartbeat source type %q is neither ide nor app", sourceType)
+	}
+
+	entry.ID = usage.StableID(
+		entry.SourceType,
+		string(entry.Provider),
+		entry.Entity,
+		timestamp.Format(time.RFC3339Nano),
+		fmt.Sprintf("%t", heartbeat.IsWrite),
+	)
+	return c.enqueue(ctx, entry)
+}
+
+// describeFile fills in what an editor heartbeat knows by being about a file:
+// the project and branch it belongs to — decided the way they are for AI
+// agents working in the same folder — its language, the cursor, and the lines
+// typed since the last heartbeat.
+func (c *Client) describeFile(entry *usage.Entry, heartbeat Heartbeat) {
 	// An identity file that cannot be read is skipped and must not cost the
 	// heartbeat itself.
 	resolved, err := project.Resolve(project.Input{
@@ -561,53 +631,37 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	if err != nil {
 		c.logger.Warn("project identity file ignored", "error", err)
 	}
-	heartbeat.Project = resolved.Project
-	heartbeat.ProjectPath = resolved.ProjectPath
-	heartbeat.Branch = resolved.Branches.At(heartbeat.Timestamp)
-	if strings.TrimSpace(heartbeat.Language) == "" {
-		heartbeat.Language = langdetect.FromPath(heartbeat.Entity)
+	language := heartbeat.Language
+	if strings.TrimSpace(language) == "" {
+		language = langdetect.FromPath(heartbeat.Entity)
 	}
-	if strings.TrimSpace(heartbeat.Category) == "" {
-		heartbeat.Category = "coding"
-	}
-	if ctx == nil {
-		ctx = context.Background()
+	if entry.Category == "" {
+		entry.Category = "coding"
 	}
 
 	isWrite := heartbeat.IsWrite
-	entry := usage.Entry{
-		Provider:     usage.Provider(strings.ToLower(strings.TrimSpace(heartbeat.Editor))),
-		SourceType:   "ide",
-		EventKind:    usage.EventKindHeartbeat,
-		Timestamp:    heartbeat.Timestamp.UTC(),
-		Date:         heartbeat.Timestamp.UTC().Format("2006-01-02"),
-		Project:      strings.TrimSpace(heartbeat.Project),
-		ProjectPath:  strings.TrimSpace(heartbeat.ProjectPath),
-		Language:     usage.NormalizeLanguage(heartbeat.Language),
-		OS:           usage.NormalizeOS(runtime.GOOS),
-		Client:       strings.TrimSpace(heartbeat.Editor),
-		Entity:       strings.TrimSpace(heartbeat.Entity),
-		EntityType:   "file",
-		Branch:       strings.TrimSpace(heartbeat.Branch),
-		GitRemote:    resolved.GitRemote,
-		Category:     strings.TrimSpace(heartbeat.Category),
-		IsWrite:      &isWrite,
-		LinesAdded:   uint64(max(heartbeat.LinesAdded, 0)),
-		LinesRemoved: uint64(max(heartbeat.LinesRemoved, 0)),
-		Raw: map[string]any{
-			"plugin":          strings.TrimSpace(heartbeat.Plugin),
-			"line_number":     heartbeat.LineNumber,
-			"cursor_position": heartbeat.CursorPosition,
-			"lines_in_file":   heartbeat.LinesInFile,
-		},
+	entry.Entity = strings.TrimSpace(heartbeat.Entity)
+	entry.EntityType = "file"
+	entry.Project = strings.TrimSpace(resolved.Project)
+	entry.ProjectPath = strings.TrimSpace(resolved.ProjectPath)
+	entry.Branch = strings.TrimSpace(resolved.Branches.At(heartbeat.Timestamp))
+	entry.GitRemote = resolved.GitRemote
+	entry.Language = usage.NormalizeLanguage(language)
+	entry.IsWrite = &isWrite
+	entry.LinesAdded = uint64(max(heartbeat.LinesAdded, 0))
+	entry.LinesRemoved = uint64(max(heartbeat.LinesRemoved, 0))
+	entry.Raw["line_number"] = heartbeat.LineNumber
+	entry.Raw["cursor_position"] = heartbeat.CursorPosition
+	entry.Raw["lines_in_file"] = heartbeat.LinesInFile
+}
+
+// enqueue persists one event and then drains the queue. The network being
+// unavailable leaves the event queued in the shared local database, and a
+// later heartbeat or normal sync retries it with backoff.
+func (c *Client) enqueue(ctx context.Context, entry usage.Entry) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	entry.ID = usage.StableID(
-		entry.SourceType,
-		string(entry.Provider),
-		entry.Entity,
-		entry.Timestamp.Format(time.RFC3339Nano),
-		fmt.Sprintf("%t", heartbeat.IsWrite),
-	)
 
 	usageDB, err := usagedb.Open(store.UsageDBPath(c.dataDir))
 	if err != nil {

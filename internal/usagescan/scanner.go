@@ -184,7 +184,7 @@ func (s *Scanner) scanProvider(provider usageprovider.Provider, paths []string, 
 	if err != nil {
 		return result, err
 	}
-	s.resolveProjects(entries)
+	s.prepare(entries)
 	insert := s.db.InsertEvents
 	if totals, ok := configured.(totalsProvider); ok && totals.ReportsRunningTotals() {
 		insert = s.db.InsertGrowth
@@ -288,7 +288,7 @@ func (s *Scanner) scanStreaming(streamer streamProvider, scanned map[string]usag
 	}
 
 	emit := func(path string, entries []usage.Entry, offset int64) error {
-		s.resolveProjects(entries)
+		s.prepare(entries)
 		inserted, err := s.db.InsertEvents(entries)
 		if err != nil {
 			return err
@@ -318,6 +318,19 @@ func (s *Scanner) scanStreaming(streamer streamProvider, scanned map[string]usag
 //
 // It runs after providers have built their event IDs, so a project decided
 // differently never changes an ID and never re-uploads an event.
+// prepare finishes what a provider read before it is queued: what kind of
+// activity it is, and which project it belongs to. Everything a provider reads
+// is an agent's log, so this is where an event becomes "ai" — stated here,
+// once, rather than assumed by the server of any event that names no type.
+// It runs after providers have built their event IDs, and no ID includes
+// either field, so neither can re-upload an event.
+func (s *Scanner) prepare(entries []usage.Entry) {
+	for i := range entries {
+		entries[i].SourceType = usage.SourceTypeAI
+	}
+	s.resolveProjects(entries)
+}
+
 func (s *Scanner) resolveProjects(entries []usage.Entry) {
 	type cacheKey struct {
 		entityDir   string

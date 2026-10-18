@@ -61,12 +61,14 @@ type DevicePayload struct {
 }
 
 type Event struct {
-	ID             string `json:"id"`
-	Provider       string `json:"provider"`
-	SourceType     string `json:"source_type,omitempty"`
-	SourceProvider string `json:"source_provider,omitempty"`
-	EventKind      string `json:"event_kind,omitempty"`
-	Timestamp      string `json:"timestamp"`
+	ID string `json:"id"`
+	// Provider is what produced the event: the agent, the editor, the app. It
+	// is sent once, under the name the server's column has (server migration
+	// 0078). Earlier CLIs also sent a source_provider field with the same value.
+	Provider   string `json:"provider"`
+	SourceType string `json:"source_type,omitempty"`
+	EventKind  string `json:"event_kind,omitempty"`
+	Timestamp  string `json:"timestamp"`
 	// The machine's IANA zone ("Asia/Tokyo"), omitted when it cannot be
 	// resolved — see usage.MachineTimezone. Never a fixed abbreviation like
 	// "JST": those are ambiguous across regions and cannot be re-expanded.
@@ -91,7 +93,7 @@ type Event struct {
 	// GitRemote is the project's git remote as the checkout has it, less any
 	// credentials; the server keeps it on the project, not the event.
 	GitRemote string `json:"git_remote,omitempty"`
-	// No `editor` field: on a heartbeat it duplicated SourceProvider and
+	// No `editor` field: on a heartbeat it duplicated Provider and
 	// Client, on an AI event it was never set, and the server stopped storing
 	// it (server migration 0060). The server still accepts it from older CLIs.
 	Category                 string             `json:"category,omitempty"`
@@ -400,18 +402,19 @@ func BaseURL() string {
 // exact per-event fact.
 func convertEvent(entry usage.Entry, zoneName string) Event {
 	return Event{
-		ID:                         entry.ID,
-		Provider:                   string(entry.Provider),
-		SourceType:                 entry.SourceType,
-		SourceProvider:             string(entry.Provider),
-		EventKind:                  entry.EventKind,
-		Timestamp:                  entry.Timestamp.UTC().Format(time.RFC3339Nano),
-		Timezone:                   zoneName,
-		SessionID:                  entry.SessionID,
-		Project:                    entry.Project,
-		ProjectPathHash:            hashProjectPath(entry.ProjectPath),
-		Model:                      entry.Model,
-		Language:                   usage.NormalizeLanguage(entry.Language),
+		ID:              entry.ID,
+		Provider:        string(entry.Provider),
+		SourceType:      entry.SourceType,
+		EventKind:       entry.EventKind,
+		Timestamp:       entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		Timezone:        zoneName,
+		SessionID:       entry.SessionID,
+		Project:         entry.Project,
+		ProjectPathHash: hashProjectPath(entry.ProjectPath),
+		Model:           entry.Model,
+		// As queued: the queue already spells a missing language "Unknown",
+		// except on an app event, which has none (0078).
+		Language:                   entry.Language,
 		OS:                         entry.OS,
 		Client:                     entry.Client,
 		Entity:                     relativeEntity(entry.ProjectPath, entry.Entity),
