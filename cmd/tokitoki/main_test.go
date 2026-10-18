@@ -249,9 +249,12 @@ func TestRunHeartbeatUploadsAnAppEvent(t *testing.T) {
 	if event.Category != "public.app-category.business" {
 		t.Fatalf("category = %q, want the app's declared one", event.Category)
 	}
-	if event.Entity != "" || event.Project != "" || event.Language != "" || event.IsWrite != nil {
-		t.Fatalf("file fields = %q %q %q %v, want none on an app heartbeat",
-			event.Entity, event.Project, event.Language, event.IsWrite)
+	if event.Project != "Unknown" {
+		t.Fatalf("project = %q, want Unknown: no project is guessed for an app", event.Project)
+	}
+	if event.Entity != "" || event.Language != "Unknown" || event.IsWrite != nil {
+		t.Fatalf("file fields = %q %q %v, want empty, Unknown, nil on an app heartbeat",
+			event.Entity, event.Language, event.IsWrite)
 	}
 
 	// An app heartbeat must name its app.

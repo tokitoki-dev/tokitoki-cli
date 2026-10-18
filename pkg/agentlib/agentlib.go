@@ -601,6 +601,8 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		// A bundle id is already one spelling per app, chosen by its
 		// developer: kept as sent, case included.
 		entry.Provider = usage.Provider(provider)
+		// No project: nothing read without a permission says which project
+		// an app was used for, and a guess would only inflate project time.
 	default:
 		return fmt.Errorf("heartbeat source type %q is neither ide nor app", sourceType)
 	}

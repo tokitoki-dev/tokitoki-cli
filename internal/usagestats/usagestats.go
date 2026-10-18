@@ -140,8 +140,8 @@ func Build(entries []usage.Entry, days int, now time.Time) Report {
 	// order. Sorted on a copy: the caller's slice is not ours to reorder.
 	//
 	// Frontmost-app heartbeats are left out, as the server's usage_events_view
-	// leaves them out (0078): they are the densest events there are, and an
-	// hour in a browser between two edits would become an hour of coding.
+	// leaves them out (0080): this is coding time, and an hour in a browser
+	// between two edits would otherwise become an hour of it.
 	ordered := make([]usage.Entry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.SourceType != usage.SourceTypeApp {

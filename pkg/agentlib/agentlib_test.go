@@ -446,10 +446,12 @@ func TestSendHeartbeatQueuesAnAppAsItsOwnSource(t *testing.T) {
 	if entry.Category != "public.app-category.developer-tools" {
 		t.Fatalf("category = %q, want the declared one", entry.Category)
 	}
-	// Nothing of a file: no entity, project or language — not even the
-	// "Unknown" an agent's unnamed folder gets — and no write flag.
-	if entry.Entity != "" || entry.Project != "" || entry.Language != "" || entry.IsWrite != nil {
-		t.Fatalf("file fields = %q %q %q %v, want all empty", entry.Entity, entry.Project, entry.Language, entry.IsWrite)
+	// No project is guessed for an app: the queue's one spelling of none.
+	if entry.Project != usage.UnknownProject {
+		t.Fatalf("project = %q, want %q", entry.Project, usage.UnknownProject)
+	}
+	if entry.Entity != "" || entry.Language != usage.UnknownLanguage || entry.IsWrite != nil {
+		t.Fatalf("file fields = %q %q %v, want empty, Unknown, nil", entry.Entity, entry.Language, entry.IsWrite)
 	}
 	if len(entry.Raw) != 1 || entry.Raw["plugin"] != "tokitoki-macos/0.2.0" {
 		t.Fatalf("raw = %v, want the plugin alone", entry.Raw)

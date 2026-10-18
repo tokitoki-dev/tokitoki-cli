@@ -227,7 +227,7 @@ func TestBuildFloorIsPerDay(t *testing.T) {
 }
 
 // Frontmost-app heartbeats are not coding: an hour in a browser between two
-// edits must not close the gap between them (0078).
+// edits must not close the gap between them (0080).
 func TestBuildLeavesAppHeartbeatsOut(t *testing.T) {
 	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.Local)
 	start := now.Add(-3 * time.Hour)

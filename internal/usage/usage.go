@@ -279,9 +279,9 @@ func (e *Entry) ApplyFileChange(change FileChange) {
 // event names itself rather than leaving the server to assume one.
 //
 // SourceTypeApp marks a frontmost-app heartbeat: Provider is the app's own id
-// (a macOS bundle id) and Client its name. It is not coding activity, and
-// nothing that measures coding time counts it — here or on the server (0078).
-// Nor is it in a project: an app event leaves Project empty.
+// (a macOS bundle id) and Client its name. It answers which apps the time went
+// to, not what it was for: it names no project, and no figure of coding time
+// counts it — here or on the server (0080).
 const (
 	SourceTypeAI  = "ai"
 	SourceTypeIDE = "ide"
