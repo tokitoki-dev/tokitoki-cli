@@ -254,7 +254,7 @@ func runHeartbeat(args []string) int {
 	projectFolder := flags.String("project-folder", "", "absolute project root")
 	language := flags.String("language", "", "file language")
 	branch := flags.String("branch", "", "branch, used only when the checkout's own cannot be read")
-	editor := flags.String("editor", "eclipse", "editor identifier")
+	editor := flags.String("editor", "", "editor identifier")
 	plugin := flags.String("plugin", "", "editor and plugin version")
 	category := flags.String("category", "", "an editor's activity (default coding), or an app's declared category")
 	write := flags.Bool("write", false, "mark this heartbeat as a file write")
@@ -270,9 +270,9 @@ func runHeartbeat(args []string) int {
 		fmt.Fprintln(os.Stderr, "tokitoki heartbeat does not accept positional arguments")
 		return 2
 	}
-	// --editor names an editor, and only an editor heartbeat has one. Its
-	// default ("eclipse", for the plugin that never passed it) must not become
-	// an app's name.
+	// --editor names an editor, and only an editor heartbeat has one. It has
+	// no default: every editor plugin has always passed it, and a default
+	// would only file a forgetful caller's time under the wrong editor.
 	editorName := ""
 	switch *sourceType {
 	case "ide":
@@ -1103,8 +1103,9 @@ in front (--source-type app).
 
 Editor heartbeat:
   --entity FILE                 File being edited (required)
-  --editor NAME                 Editor name, e.g. vscode, vim; sets both
-                                --provider and --client (default: eclipse)
+  --editor NAME                 Editor name, e.g. vscode, vim (required
+                                unless --provider is given); sets both
+                                --provider and --client
   --project-folder DIR          The editor's root folder
   --project NAME                Deprecated, for older editor plugins only:
                                 name the project; only a .tokitoki file

@@ -479,6 +479,20 @@ func TestSendHeartbeatKeepsTheEditorKey(t *testing.T) {
 	}
 }
 
+// The same key as a literal, read off the queue of the CLI built before app
+// heartbeats existed (b2b84f3^). The test above recomputes the key with
+// StableID; this one also catches a change to StableID itself — which would
+// make every editor plugin still in the field upload its history twice.
+func TestSendHeartbeatEditorKeyIsThePreAppOne(t *testing.T) {
+	at := time.Date(2026, 10, 16, 9, 30, 0, 0, time.UTC)
+	entry := pendingOne(t, Heartbeat{Entity: "/repo/main.go", Editor: "Visual Studio Code", Timestamp: at, IsWrite: true})
+
+	const want = "2e403bd1bb35e97addd4d3d2bbd4a5e61267e3a8e788bd411ebe0d4eda9566a0"
+	if entry.ID != want {
+		t.Fatalf("editor key = %q, want %q", entry.ID, want)
+	}
+}
+
 func TestSendHeartbeatRefusesWhatItCannotName(t *testing.T) {
 	client := newTestClient(t)
 	cases := map[string]Heartbeat{

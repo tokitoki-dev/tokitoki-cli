@@ -412,8 +412,7 @@ func convertEvent(entry usage.Entry, zoneName string) Event {
 		Project:         entry.Project,
 		ProjectPathHash: hashProjectPath(entry.ProjectPath),
 		Model:           entry.Model,
-		// As queued: the queue already spells a missing language "Unknown",
-		// except on an app event, which has none (0078).
+		// As queued: the queue already spells a missing language "Unknown".
 		Language:                   entry.Language,
 		OS:                         entry.OS,
 		Client:                     entry.Client,

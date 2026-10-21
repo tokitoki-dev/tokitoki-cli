@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/config"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/store"
+	"github.com/tokitoki-dev/tokitoki-cli/internal/usagedb"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usageupload"
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
@@ -192,8 +194,7 @@ func TestRunHeartbeatUploadsUnifiedIDEEvent(t *testing.T) {
 }
 
 // The app in front goes through the same command as an editor's file. What
-// is an editor's alone must not leak into it: --editor's default "eclipse"
-// is no app's name, and "coding" is no app's category.
+// is an editor's alone must not leak into it: "coding" is no app's category.
 func TestRunHeartbeatUploadsAnAppEvent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -469,4 +470,44 @@ func runCapturingStdout(t *testing.T, args []string) (int, string) {
 		t.Fatal(err)
 	}
 	return code, string(data)
+}
+
+// --editor has no default. An editor heartbeat names its editor — by --editor,
+// or by --provider — or it is refused; it is never filed under an editor it
+// did not name. Every editor plugin has always passed --editor.
+func TestRunHeartbeatNamesNoEditorItWasNotGiven(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// No key, so nothing should be sent; a server that fails on any request
+	// proves it, and keeps the test off the development server either way.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	previousServer := config.ServerURL
+	config.ServerURL = server.URL
+	t.Cleanup(func() { config.ServerURL = previousServer })
+
+	if code := run([]string{"heartbeat", "--entity", "/repo/main.go"}); code != 2 {
+		t.Fatalf("run(heartbeat without --editor or --provider) = %d, want 2", code)
+	}
+	if code := run([]string{"heartbeat", "--entity", "/repo/main.go", "--provider", "vscode"}); code != 0 {
+		t.Fatalf("run(heartbeat --provider vscode) = %d, want 0", code)
+	}
+
+	dataDir, err := store.InitializeDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageDB, err := usagedb.Open(store.UsageDBPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	pending, err := usageDB.PendingEvents(time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Provider != "vscode" || pending[0].Client != "" {
+		t.Fatalf("queued = %+v, want one vscode heartbeat with no client — never \"eclipse\"", pending)
+	}
 }

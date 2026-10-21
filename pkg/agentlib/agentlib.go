@@ -607,12 +607,15 @@ func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 		return fmt.Errorf("heartbeat source type %q is neither ide nor app", sourceType)
 	}
 
+	// From the event as recorded, never from a flag it does not keep: an
+	// app has no write flag, so --write cannot make two of its heartbeats
+	// differ in id and nothing else. An editor's is the flag as passed.
 	entry.ID = usage.StableID(
 		entry.SourceType,
 		string(entry.Provider),
 		entry.Entity,
 		timestamp.Format(time.RFC3339Nano),
-		fmt.Sprintf("%t", heartbeat.IsWrite),
+		fmt.Sprintf("%t", entry.IsWrite != nil && *entry.IsWrite),
 	)
 	return c.enqueue(ctx, entry)
 }

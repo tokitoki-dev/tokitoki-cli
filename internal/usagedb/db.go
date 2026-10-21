@@ -7,6 +7,7 @@ package usagedb
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,8 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/internal/provider/codex"
 	"github.com/tokitoki-dev/tokitoki-cli/internal/usage"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -88,6 +90,16 @@ func Open(path string) (*DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fresh, err := isFreshDatabase(db)
+	// A file born this instant is switched to WAL by the first connection's
+	// pragma. Two processes racing for that switch — a sync and an app
+	// heartbeat started together on a fresh install — get SQLITE_BUSY at
+	// once: SQLite refuses rather than waits, so busy_timeout never applies.
+	// The loser tries again; once the file is in WAL mode the pragma does
+	// nothing and nothing races again.
+	for attempt := 1; isBusy(err) && attempt < openAttempts; attempt++ {
+		time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+		fresh, err = isFreshDatabase(db)
+	}
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("inspect usage db: %w", err)
@@ -109,6 +121,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate usage db: %w", err)
 	}
 	return &DB{db: db}, nil
+}
+
+// openAttempts bounds that retry: under two seconds of waiting in all.
+const openAttempts = 20
+
+// isBusy reports SQLITE_BUSY in any of its extended forms.
+func isBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func isFreshDatabase(db *sql.DB) (bool, error) {
